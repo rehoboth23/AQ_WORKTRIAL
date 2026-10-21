@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/nginx-proxy-swapped-routes"
+description = "Fix an nginx reverse proxy that routes requests to the wrong backend services due to swapped upstream ports and missing path-stripping slashes."
+keywords = [ "nginx", "reverse-proxy", "routing", "flask", "debugging",]
+
+[metadata]
+difficulty = "medium"
+category = "system-administration"
+tags = [ "nginx", "reverse-proxy", "routing", "flask", "debugging",]
+expert_time_estimate_min = 8.0
+junior_time_estimate_min = 25.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

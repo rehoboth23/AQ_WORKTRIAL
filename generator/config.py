@@ -19,6 +19,18 @@ OPENROUTER_API_BASE = os.environ.get("OPENROUTER_API_BASE", "")
 # (GLM-5.3-Flash) below.
 MODEL = os.environ.get("GENERATOR_MODEL", "z-ai/glm-5.1")
 
+# Per-call timeout and retry count for the authoring model. Retries cover
+# network errors and replies we can't parse.
+LLM_TIMEOUT_SEC = float(os.environ.get("LLM_TIMEOUT_SEC", "600"))
+LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
+
+# How many times the generator may send a failed check (validator / oracle /
+# nop) back to the authoring model for a fix before giving up on a topic.
+MAX_REPAIR_ROUNDS = int(os.environ.get("MAX_REPAIR_ROUNDS", "3"))
+
+# Org part of [task].name ("org/name"), required by the validator.
+TASK_ORG = os.environ.get("TASK_ORG", "afterquery")
+
 # --- Reference agent for the "learnable" band ------------------------------
 # A task is learnable if, run N_RUNS times with EVAL_AGENT + EVAL_MODEL, the
 # number of passing runs lands in [BAND_LOW, BAND_HIGH] (inclusive). Harbor
@@ -37,6 +49,11 @@ BAND_HIGH = int(os.environ.get("BAND_HIGH", "3"))
 # --- Paths -----------------------------------------------------------------
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
 EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Per-topic audit trail (spec, raw LLM replies, check results, summary).
+LOGS_DIR = os.environ.get("GEN_LOGS_DIR", os.path.join(OUTPUT_DIR, "_logs"))
+# Where `harbor run` writes oracle/nop jobs (gitignored).
+JOBS_DIR = os.environ.get("JOBS_DIR", os.path.join(ROOT_DIR, "jobs"))
 
 # Data-provenance canary. Harbor strips leading canary comment lines from
 # instruction.md before showing it to an agent (see harbor/.../task/task.py).

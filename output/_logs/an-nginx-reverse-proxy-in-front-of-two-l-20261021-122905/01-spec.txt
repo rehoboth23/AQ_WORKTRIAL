@@ -1,0 +1,31 @@
+```json
+{
+  "name": "nginx-proxy-swapped-routes",
+  "description": "Fix an nginx reverse proxy that routes requests to the wrong backend services due to swapped upstream ports and missing path-stripping slashes.",
+  "difficulty": "medium",
+  "category": "system-administration",
+  "tags": ["nginx", "reverse-proxy", "routing", "flask", "debugging"],
+  "expert_time_estimate_min": 8,
+  "junior_time_estimate_min": 25,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A developer set up an nginx reverse proxy in front of two local Python Flask microservices — a weather service and an alerts service. The proxy should expose the weather service at /weather/* and the alerts service at /alerts/*, but every request through nginx returns a 404. The Flask services themselves are running fine on their own ports. The developer gave up and asked you to fix the routing.",
+  "environment_setup": "Two Flask microservices are installed under /app: weather_service.py (port 5001, endpoints /forecast and /conditions) and alerts_service.py (port 5002, endpoints /active and /history). Nginx is configured with a server block on port 80 that has two location blocks: /weather/ proxies to 127.0.0.1:5002 and /alerts/ proxies to 127.0.0.1:5001. Both proxy_pass directives are missing the trailing slash, so nginx forwards the full URI (including the location prefix) to the backend instead of stripping it. Supervisord manages all three processes (nginx, weather, alerts). The two bugs — swapped ports and missing trailing slashes — combine so that every proxied request hits the wrong service AND with an unrecognized path, resulting in 404s for all endpoints.",
+  "instruction_summary": "Fix the nginx reverse proxy configuration so that the following four endpoints return correct JSON responses via http://localhost:\n\n- GET /weather/forecast → JSON with service=\"weather\", endpoint=\"forecast\", temp_c=22, condition=\"sunny\"\n- GET /weather/conditions → JSON with service=\"weather\", endpoint=\"conditions\", humidity_pct=45, wind_kph=12\n- GET /alerts/active → JSON with service=\"alerts\", endpoint=\"active\", count=3, highest_severity=\"warning\"\n- GET /alerts/history → JSON with service=\"alerts\", endpoint=\"history\", total=47, last_date=\"2024-11-15\"\n\nThe nginx config is at /etc/nginx/sites-available/default. The Flask services run on 127.0.0.1 ports 5001 and 5002. After fixing the config, reload or restart nginx so the changes take effect.",
+  "solution_outline": [
+    "Read the nginx config at /etc/nginx/sites-available/default and the Flask source files in /app to identify which service runs on which port.",
+    "Identify bug 1: proxy_pass in the /weather/ location points to port 5002 (alerts) instead of 5001 (weather), and vice versa for /alerts/.",
+    "Identify bug 2: both proxy_pass URLs lack a trailing slash, so nginx forwards the full path including the location prefix (e.g., /weather/forecast) instead of stripping it (e.g., /forecast).",
+    "Rewrite the config: swap proxy_pass to http://127.0.0.1:5001/ for /weather/ and http://127.0.0.1:5002/ for /alerts/, both with trailing slashes.",
+    "Run nginx -t to validate, then nginx -s reload to apply the fix."
+  ],
+  "test_plan": [
+    "Test /weather/forecast: curl -s http://localhost/weather/forecast, parse JSON, assert service == 'weather', endpoint == 'forecast', temp_c == 22, condition == 'sunny'.",
+    "Test /weather/conditions: curl -s http://localhost/weather/conditions, parse JSON, assert service == 'weather', endpoint == 'conditions', humidity_pct == 45, wind_kph == 12.",
+    "Test /alerts/active: curl -s http://localhost/alerts/active, parse JSON, assert service == 'alerts', endpoint == 'active', count == 3, highest_severity == 'warning'.",
+    "Test /alerts/history: curl -s http://localhost/alerts/history, parse JSON, assert service == 'alerts', endpoint == 'history', total == 47, last_date == '2024-11-15'.",
+    "Verify no 404s: all four curl calls return HTTP 200."
+  ],
+  "anti_cheat": "The correct responses are generated dynamically by the Flask services from their source code; the agent cannot simply write static files or echo strings. The nginx config is the only thing that needs fixing — the Flask services and their data are correct. A superficial fix that modifies only one bug (e.g., swapping ports but not adding trailing slashes) will still fail because the backends will receive paths like /weather/forecast instead of /forecast. The expected JSON values (22, 45, 3, 47, etc.) are not stored anywhere outside the Flask source, and tests parse the actual HTTP response bodies, not log files or status strings.",
+  "failure_modes": "An agent who fixes only the swapped ports but forgets the trailing slashes will still get 404s, because the backend services receive paths like /weather/forecast instead of /forecast. An agent who adds trailing slashes but does not swap the ports will also get 404s, because requests reach the wrong service. An agent who restarts nginx with an invalid config (e.g., syntax error from a typo) will break the proxy entirely. An agent who kills the Flask services while debugging and does not restart them will also see failures. Each of these is the agent's fault for incomplete diagnosis or careless editing."
+}
+```

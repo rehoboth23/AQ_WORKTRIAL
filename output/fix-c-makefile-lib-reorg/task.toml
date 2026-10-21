@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/fix-c-makefile-lib-reorg"
+description = "Fix a C project's Makefile after a library reorganization broke include paths and linker flags"
+keywords = [ "c", "makefile", "linker", "static-libraries", "include-paths",]
+
+[metadata]
+difficulty = "medium"
+category = "debugging"
+tags = [ "c", "makefile", "linker", "static-libraries", "include-paths",]
+expert_time_estimate_min = 10.0
+junior_time_estimate_min = 30.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

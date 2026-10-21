@@ -1,0 +1,30 @@
+```json
+{
+  "name": "fix-sqlite-migration-corruption",
+  "description": "Diagnose and repair a SQLite database where a migration script silently shuffled data into wrong columns during a table recreation.",
+  "difficulty": "medium",
+  "category": "debugging",
+  "tags": ["sqlite", "database", "migration", "data-corruption", "sql"],
+  "expert_time_estimate_min": 15,
+  "junior_time_estimate_min": 45,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A junior developer ran a schema migration (migrate_v2.sh) on an e-commerce SQLite database to add a cost_price column to the products table. The script completed without any errors or warnings, but afterward the product data is wrong — inventory counts are suspiciously low and every product has an invalid category_id of 0. The agent must figure out exactly how the migration corrupted the data and write a corrective SQL statement to restore all values to their correct columns.",
+  "environment_setup": "The Dockerfile installs sqlite3. A build-time setup script (setup_db.sh) creates /app/store.db with three tables: categories (5 rows), products (8 rows with columns id, name, price, stock, category_id), and orders (5 rows). The setup script is then deleted. Next, /app/migrate_v2.sh is copied in and executed. This script recreates the products table with the new schema (id, name, price, cost_price, stock, category_id) but the INSERT INTO products_new SELECT id, name, price, stock, category_id, 0.0 FROM products maps columns positionally: stock lands in cost_price, category_id lands in stock, and 0.0 lands in category_id. The migration script is left at /app/migrate_v2.sh for the agent to inspect. After the migration, the database contains the shuffled data and schema_version=2.",
+  "instruction_summary": "The SQLite database at /app/store.db is corrupted after the migration script at /app/migrate_v2.sh ran. The products table should have columns in order: id, name, price, cost_price, stock, category_id. Fix the database so all product values are correct. The cost_price column is new and should be 0.0 for all existing products. Every category_id must reference a valid row in the categories table. Stock values must be correct positive integers.",
+  "solution_outline": [
+    "Read /app/migrate_v2.sh and identify that the INSERT INTO products_new SELECT id, name, price, stock, category_id, 0.0 FROM products statement maps columns positionally, putting stock into cost_price and category_id into stock while zeroing category_id.",
+    "Execute a single UPDATE on the products table that reverses the column shuffle: SET category_id = stock (original category_id is currently in stock), stock = CAST(cost_price AS INTEGER) (original stock is currently in cost_price), cost_price = 0.0."
+  ],
+  "test_plan": [
+    "test_schema_has_cost_price: PRAGMA table_info(products) returns columns including cost_price",
+    "test_schema_column_order: PRAGMA table_info(products) returns columns in exact order [id, name, price, cost_price, stock, category_id]",
+    "test_cost_price_zero: every row in products has cost_price = 0.0",
+    "test_stock_values: each product's stock matches the hardcoded original values {1:150, 2:300, 3:75, 4:200, 5:50, 6:120, 7:80, 8:500}",
+    "test_category_ids: each product's category_id matches the hardcoded original values {1:1, 2:2, 3:3, 4:4, 5:5, 6:1, 7:2, 8:3}",
+    "test_no_zero_category_ids: no product has category_id = 0",
+    "test_prices_unchanged: each product's price matches the hardcoded original values within 0.01 tolerance"
+  ],
+  "anti_cheat": "The setup script that created the original data is deleted from the image at build time, so the agent cannot read the original INSERT statements. The migration script is intentionally left visible because it IS the diagnostic clue. The only way to recover the correct data is to understand the positional column mismatch in the INSERT statement and reverse the swap — there is no backup or log of original values. Tests check exact numeric values for every product row, making it impossible to pass by guesswork or partial fixes.",
+  "failure_modes": "An agent might try to re-run the migration script, which would re-corrupt already-corrupted data with no way to recover. An agent might notice category_id=0 is wrong and manually assign categories but fail to fix the swapped stock/cost_price columns. An agent might try to DROP and recreate the products table without knowing the original data. An agent might write an UPDATE that re-reads already-updated columns mid-statement (e.g., two separate UPDATEs) and produce incorrect intermediate values. All of these stem from not carefully tracing the column mapping in the migration's INSERT statement."
+}
+```

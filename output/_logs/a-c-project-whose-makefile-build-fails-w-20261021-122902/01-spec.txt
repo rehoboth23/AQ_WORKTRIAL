@@ -1,0 +1,35 @@
+```json
+{
+  "name": "fix-c-makefile-lib-reorg",
+  "description": "Fix a C project's Makefile after a library reorganization broke include paths and linker flags",
+  "difficulty": "medium",
+  "category": "debugging",
+  "tags": ["c", "makefile", "linker", "static-libraries", "include-paths"],
+  "expert_time_estimate_min": 10,
+  "junior_time_estimate_min": 30,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A C CLI tool called gcomp that performs graph analysis fails to build because its Makefile references an outdated library layout. The libgraph library was reorganized from a single monolithic archive (libgraph.a, graph.h) at /usr/local into three sub-libraries (libgraph_core.a, libgraph_algo.a, libgraph_io.a) with headers split into graph/core.h, graph/algo.h, graph/io.h, all now installed under /opt/libgraph. The old /usr/local installation was removed. The application source code (main.c) was already updated to use the new #include <graph/algo.h> and <graph/io.h> style includes, but the Makefile still has the old -I path (omitted, relying on the old default /usr/local/include), old -L/usr/local/lib, and -lgraph. The README.md still documents the old layout, actively misleading anyone who reads it. Because the new library is at a non-standard prefix, the missing -I/opt/libgraph/include causes 'No such file or directory' on the first compile step. After fixing that, the linker fails with 'cannot find -lgraph'. Even after discovering the three sub-libraries, putting them in the wrong static link order (e.g., -lgraph_core before -lgraph_io) yields cryptic 'undefined reference' errors since libgraph_io depends on symbols from libgraph_core.",
+  "environment_setup": "Ubuntu 24.04 with build-essential. During image build, libgraph is compiled from source and installed to /opt/libgraph: headers at /opt/libgraph/include/graph/{core.h,algo.h,io.h} and static archives at /opt/libgraph/lib/{libgraph_core.a,libgraph_algo.a,libgraph_io.a}. The library build sources are deleted after installation. Internal cross-includes within the library use relative quotes (algo.h does #include \"core.h\"). The application in /app has: main.c (uses #include <graph/algo.h> and <graph/io.h>, calls only io and algo functions — never core directly), a broken Makefile, a misleading README.md referencing /usr/local paths and the old monolithic libgraph, and data/sample.graph (5-node directed graph, 8 edges). The Makefile has three bugs: (1) CFLAGS=-Wall -O2 lacks -I/opt/libgraph/include (old library was in /usr/local/include, a gcc default path, so no -I was needed before); (2) LDFLAGS=-L/usr/local/lib instead of -L/opt/libgraph/lib; (3) LIBS=-lgraph -lm instead of -lgraph_io -lgraph_algo -lgraph_core -lm. Link order matters: libgraph_io.o calls graph_create/graph_destroy/graph_add_edge/graph_edge_count from core, so -lgraph_core must appear after -lgraph_io; placing -lgraph_core first causes the core archive to be skipped (no unresolved symbols match at that point) and then undefined-reference errors arise when io is processed later. There is no libgraph.a anywhere on the system and /usr/local/lib + /usr/local/include are empty of graph-related files.",
+  "instruction_summary": "The gcomp tool in /app fails to build — make errors out with include-path and linker failures after the libgraph library was reorganized from a single archive into three sub-libraries (core, algo, io). Fix the Makefile so that make completes successfully and ./gcomp works correctly. Do not modify any .c or .h files — only change the Makefile. The binary is invoked as: ./gcomp <graph_file> <source_node> <dest_node>. Sample data is in data/sample.graph. For ./gcomp data/sample.graph 0 3 the output should be: Shortest path from 0 to 3: 6.000000 / Connected components: 1 / Total edges: 8. For ./gcomp data/sample.graph 3 0: Shortest path from 3 to 0: unreachable / Connected components: 1 / Total edges: 8.",
+  "solution_outline": [
+    "Add -I/opt/libgraph/include to CFLAGS in the Makefile",
+    "Change LDFLAGS from -L/usr/local/lib to -L/opt/libgraph/lib",
+    "Change LIBS from -lgraph -lm to -lgraph_io -lgraph_algo -lgraph_core -lm (core must come last because libgraph_io depends on core symbols; with static linking, the dependency must appear after its dependents)",
+    "Run make clean && make to build the project successfully"
+  ],
+  "test_plan": [
+    "test_build_succeeds: run make clean && make in /app, assert return code is 0 and stderr contains no error lines",
+    "test_binary_exists: assert /app/gcomp exists and is executable",
+    "test_makefile_include_path: read /app/Makefile, assert it contains -I/opt/libgraph/include",
+    "test_makefile_lib_path: read /app/Makefile, assert it contains -L/opt/libgraph/lib",
+    "test_makefile_correct_libs: read /app/Makefile, assert it contains -lgraph_io, -lgraph_algo, and -lgraph_core; assert it does NOT contain -lgraph as a standalone flag (not -lgraph_*)",
+    "test_shortest_path_0_3: run ./gcomp data/sample.graph 0 3, assert stdout contains 'Shortest path from 0 to 3: 6.000000'",
+    "test_components_sample: same invocation, assert stdout contains 'Connected components: 1'",
+    "test_edge_count_sample: same invocation, assert stdout contains 'Total edges: 8'",
+    "test_unreachable_3_0: run ./gcomp data/sample.graph 3 0, assert stdout contains 'Shortest path from 3 to 0: unreachable'",
+    "test_second_graph: write a 3-node directed graph (0→1 w=1.5, 1→2 w=2.5, 0→2 w=10.0) to a temp file, run ./gcomp on it with args 0 2, assert shortest path is 4.000000 (0→1→2), connected components is 1, total edges is 3"
+  ],
+  "anti_cheat": "The library location (/opt/libgraph) is not documented anywhere accessible — the README.md actively points to the wrong location (/usr/local). The library build source is deleted from the image, so the agent cannot re-install it at the old path. Source files already use correct new-style includes, providing no clues about the old layout. Tests use a second graph not present at build time, preventing hardcoded output. The Makefile content tests ensure the agent actually fixed the flags rather than, e.g., replacing make with a script that hardcodes a gcc command.",
+  "failure_modes": "An agent trusting the README may waste time searching /usr/local/lib and /usr/local/include (which are empty of graph files). An agent who discovers the three .a files but links them alphabetically (-lgraph_algo -lgraph_core -lgraph_io) will get 'undefined reference to graph_create' because core is processed before io. An agent who puts -lgraph_core first ('foundation first' intuition) gets the same linker error. An agent who tries to install the library at /usr/local will fail because the build source is gone and apt has no libgraph package. An agent who modifies source files to change includes instead of fixing the Makefile will still face linker errors and violates the stated constraint."
+}
+```

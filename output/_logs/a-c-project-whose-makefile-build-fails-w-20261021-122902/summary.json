@@ -1,0 +1,56 @@
+{
+  "topic": "a C project whose Makefile build fails with linker and include-path errors after a library was reorganized",
+  "run_id": "a-c-project-whose-makefile-build-fails-w-20261021-122902",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-c-project-whose-makefile-build-fails-w-20261021-122902",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-c-makefile-lib-reorg",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-c-project-whose-makefile-build-fails-w-20261021-122902-r0-oracle",
+          "seconds": 47.3,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-c-project-whose-makefile-build-fails-w-20261021-122902-r0-oracle/fix-c-makefile-lib-reorg__kk97DtJ",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-c-project-whose-makefile-build-fails-w-20261021-122902-r0-nop",
+          "seconds": 25.7,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-c-project-whose-makefile-build-fails-w-20261021-122902-r0-nop/fix-c-makefile-lib-reorg__vBSoG23",
+            "exception": null
+          }
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 3422,
+    "completion_tokens": 55356
+  },
+  "seconds": 696.1,
+  "task_name": "afterquery/fix-c-makefile-lib-reorg"
+}

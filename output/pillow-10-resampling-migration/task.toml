@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/pillow-10-resampling-migration"
+description = "Fix a thumbnail library whose test suite broke after a Pillow 10.x dependency upgrade removed Image.ANTIALIAS."
+keywords = [ "python", "pillow", "dependency-upgrade", "api-migration", "multi-file",]
+
+[metadata]
+difficulty = "medium"
+category = "debugging"
+tags = [ "python", "pillow", "dependency-upgrade", "api-migration", "multi-file",]
+expert_time_estimate_min = 12.0
+junior_time_estimate_min = 35.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

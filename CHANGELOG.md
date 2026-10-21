@@ -40,3 +40,32 @@ Document what you did, why, and any design tradeoffs here.
 **Why:** The README's gateway returned 401 for the provided key. With the endpoint set in `.env`, both glm-5.1 (generator, openai client) and glm-5.3-flash (evaluator, through LiteLLM as Harbor calls it) responded. Keeping the URL out of code and docs means a wrong default can't silently send the key to the wrong endpoint, and changing the endpoint is a one-line edit to `.env`.
 
 **Tradeoff:** If `.env` is missing the endpoint, model calls fail instead of falling back. That's intended: failing loudly is better than sending the key to an unintended server.
+
+## 2026-10-21: Part 1 generator (spec → files → checks → repair)
+
+**What:** `generate_task()` now builds a full Harbor task from a topic and only keeps it if it is correct.
+1. glm-5.1 writes a design spec as JSON (scenario, hidden state, solution outline, test plan, anti-cheat notes, likely failure modes).
+2. glm-5.1 writes the task files from the spec: `instruction.md`, `environment/**`, `solution/solve.sh`, `tests/test_outputs.py`.
+3. Python writes the rest: `task.toml`, `tests/test.sh` (the scaffold's pytest runner) and the canary.
+4. Checks run in order: structural validator → `harbor run -a oracle` (reward must be 1) → `harbor run -a nop` (reward must be 0).
+5. If a check fails, its error output (validator messages, solve.sh output, pytest output, build exception) goes back to glm-5.1, which returns fixed files. Up to `MAX_REPAIR_ROUNDS` (3) rounds.
+
+New modules: `generator/llm.py` (client, retries, reply parsers), `generator/prompts.py`, `generator/checks.py`. New config knobs: `LLM_TIMEOUT_SEC`, `LLM_MAX_RETRIES`, `MAX_REPAIR_ROUNDS`, `TASK_ORG`, `GEN_LOGS_DIR`, `JOBS_DIR`.
+
+**Where things go:** a passing task lands in `output/<task-name>/` and is never overwritten (a name clash gets a time suffix). Every run, pass or fail, leaves an audit trail in `output/_logs/<topic-slug>-<timestamp>/`: `spec.json`, each raw model reply, `events.jsonl` (calls, tokens, check results per round) and `summary.json`. A failed task's last attempt is moved to `last-attempt/` inside its log folder, so `output/` only holds tasks that passed.
+
+**Why / tradeoffs:**
+- *Two stages vs. one call.* Designing first (no code) makes the model commit to the hidden state, the fix and the tests before writing anything, and gives later stages (difficulty tuning) a spec to edit. Costs one extra call.
+- *File blocks vs. JSON for code.* Code inside JSON breaks on escaping; `<<<FILE path>>> … <<<END>>>` blocks don't need any.
+- *Python owns task.toml, test.sh and the canary.* These are fixed boilerplate where model mistakes would only cause validator failures. The model may only write the four content paths and `environment/**`; other paths (e.g. `tests/test.sh`, `../x`) are dropped.
+- *Repair loop vs. fail fast.* Most first drafts fail on small things (a missing package, a wrong path). Feeding the real error back is cheap compared with a fresh generation. The repair prompt forbids weakening tests to make them pass.
+- *Oracle timeout capped at 1/4 of the agent timeout* (15 min) so a hanging solve.sh doesn't stall the pipeline.
+- *Not yet:* the 5-run band eval (Part 2), resume after a kill and safe concurrent runs (Part 4).
+
+**Follow-ups in the same step:**
+- *argparse CLI.* `generate.py` now has a `main()` built on stdlib `argparse`: an optional `topic` (same default as before) and `-o/--output-dir`, plus `--help`. It exits 0 when the task passes and 1 when it fails, so batch scripts can rely on it. `requirements.txt` is unchanged on purpose: argparse is stdlib, and the PyPI `argparse` package is an obsolete backport that can shadow it.
+- *Repair prompts see pytest's output, not install noise.* `test.sh` prints about 3,000 chars of apt/uv output before pytest starts, and the repair error kept only the last 5,000 chars, so a long failure could be cut off. `checks._pytest_excerpt()` now starts at pytest's `test session starts` line, and falls back to the plain tail when pytest never ran (for example an apt failure). On the real SQLite failure, the excerpt went from 5,018 chars of mostly noise to 2,837 chars of pure pytest output.
+
+**Results:** 4 topics (C build, SQLite migration, nginx proxy, Pillow upgrade) → 4 valid, correct tasks in `output/`. 3 needed one repair round, and every repair fixed a real defect without weakening the tests. Totals: about 30k input and 182k output tokens. An independent `harbor run` re-check gave oracle 1 and nop 0 for each task. Details are in `.claude/logs/2026-10-21-part1-generator-test.md`.
+
+**Lessons for Part 2 prompts:** two of the three repairs were bugs in how the tests talk to the container, not in the task itself. In one, tests called `python3` and got the verifier's uv Python instead of the image's. In the other, a test didn't handle sqlite3 printing nothing for an empty `-json` result. Separately, Harbor replaces the Dockerfile `CMD` with `sleep infinity`, so services don't start on their own, and one instruction wrongly implied they do. All of this belongs in `HARBOR_CONTRACT`.

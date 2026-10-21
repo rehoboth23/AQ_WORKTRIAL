@@ -1,0 +1,7 @@
+{"time": "2026-10-21T12:50:40", "event": "start", "topic": "a Python package whose test suite fails only under a pinned dependency upgrade", "model": "z-ai/glm-5.1"}
+{"time": "2026-10-21T12:56:23", "event": "llm_call", "label": "spec", "attempt": 0, "usage": {"prompt_tokens": 919, "completion_tokens": 29738}, "seconds": 343.8}
+{"time": "2026-10-21T13:00:58", "event": "llm_call", "label": "files", "attempt": 0, "usage": {"prompt_tokens": 2180, "completion_tokens": 29131}, "seconds": 274.3}
+{"time": "2026-10-21T13:01:19", "event": "checks", "round": 0, "passed": false, "results": {"validator": true, "oracle": 0.0}}
+{"time": "2026-10-21T13:01:40", "event": "llm_call", "label": "repair-r1", "attempt": 0, "usage": {"prompt_tokens": 7614, "completion_tokens": 2209}, "seconds": 21.5}
+{"time": "2026-10-21T13:02:12", "event": "checks", "round": 1, "passed": true, "results": {"validator": true, "oracle": 1.0, "nop": 0.0}}
+{"time": "2026-10-21T13:02:12", "event": "finish", "status": "ok"}

@@ -1,0 +1,34 @@
+```json
+{
+  "name": "pillow-10-resampling-migration",
+  "description": "Fix a thumbnail library whose test suite broke after a Pillow 10.x dependency upgrade removed Image.ANTIALIAS.",
+  "difficulty": "medium",
+  "category": "debugging",
+  "tags": ["python", "pillow", "dependency-upgrade", "api-migration", "multi-file"],
+  "expert_time_estimate_min": 12,
+  "junior_time_estimate_min": 35,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "The thumbgen library at /app/thumbgen is a thumbnail generation toolkit that was recently upgraded to depend on Pillow 10.x. The code still references Image.ANTIALIAS—a constant removed in Pillow 10.0.0 in favor of Image.Resampling.LANCZOS. The broken references are scattered across four source files: compat.py (a quality-map dictionary evaluated at import time), resizer.py (a default parameter inside a function body), watermark.py (a thumbnail call inside a function), and optimizer.py (a resampling constant in the PNG output branch). The compat module has already migrated some constants to the new API but missed the QUALITY_MAP dictionary, creating an inconsistent partial-migration pattern that confuses diagnosis. Importing the package fails immediately, and after each fix a new AttributeError surfaces from a different file.",
+  "environment_setup": "The Dockerfile starts from python:3.12-slim-bookworm, installs DejaVu fonts (for watermark text rendering) and libjpeg-dev, then pip-installs Pillow==10.3.0 and pytest. The entire thumbgen package is created inline via RUN heredocs: __init__.py exports public functions; compat.py defines RESAMPLE_HIGH/MED/LOW with the new Resampling enum but has a QUALITY_MAP dict still referencing Image.ANTIALIAS; resizer.py has resize_exact (default method=Image.ANTIALIAS), resize_proportional (calls get_resample_method), and resize_to_fill; watermark.py has apply_text_watermark (calls thumbnail with Image.ANTIALIAS); optimizer.py has optimize_for_web with JPEG path (uses compat) and PNG path (uses Image.ANTIALIAS directly). The project is pip-installed in editable mode. Test fixtures in conftest.py create images programmatically. The generator script is deleted after setup.",
+  "instruction_summary": "The thumbgen library at /app/thumbgen was upgraded to Pillow 10.x but its test suite is completely broken. Fix the library source code (under /app/thumbgen/thumbgen/) so all tests pass. Do NOT modify test files or pyproject.toml. Run `pytest -v` from /app/thumbgen to check progress. Verification will confirm: (1) Pillow version remains >= 10.0, (2) no removed Pillow attributes appear in the source, (3) all four public functions (resize_exact, resize_proportional, apply_text_watermark, optimize_for_web) execute correctly, and (4) the project's own test suite passes.",
+  "solution_outline": [
+    "Replace Image.ANTIALIAS with Image.Resampling.LANCZOS in thumbgen/compat.py (the QUALITY_MAP 'high' entry)",
+    "Replace Image.ANTIALIAS with Image.Resampling.LANCZOS in thumbgen/resizer.py (default method in resize_exact)",
+    "Replace Image.ANTIALIAS with Image.Resampling.LANCZOS in thumbgen/watermark.py (thumbnail call in apply_text_watermark)",
+    "Replace Image.ANTIALIAS with Image.Resampling.LANCZOS in thumbgen/optimizer.py (PNG branch in optimize_for_web)",
+    "Run pytest from /app/thumbgen to confirm all tests pass"
+  ],
+  "test_plan": [
+    "test_pillow_version_at_least_10: runs `python3 -c \"import PIL; print(PIL.__version__)\"` via subprocess, asserts major version >= 10",
+    "test_no_antialias_in_source: walks /app/thumbgen/thumbgen/*.py, reads each file, asserts 'Image.ANTIALIAS' does not appear in any source file",
+    "test_resize_exact_works: subprocess runs a script that imports thumbgen.resizer.resize_exact, resizes a 400x300 image to 200x150, and asserts output size is (200, 150)",
+    "test_resize_proportional_works: subprocess runs resize_proportional on a 400x300 image with max_dimension=200 and quality='high', asserts width<=200 and aspect ratio ~4:3",
+    "test_apply_text_watermark_works: subprocess runs apply_text_watermark on a 400x300 image with text 'TEST', asserts result size is (400, 300) and mode is RGBA",
+    "test_optimize_for_web_jpeg: subprocess runs optimize_for_web on an 800x600 image with format='JPEG', asserts result fits within 200x200",
+    "test_optimize_for_web_png: subprocess runs optimize_for_web on an 800x600 image with format='PNG', asserts result is a dict with keys 'small','medium','large' and correct thumbnail sizes",
+    "test_project_test_suite_passes: runs `python3 -m pytest /app/thumbgen/ -v` via subprocess, asserts return code is 0"
+  ],
+  "anti_cheat": "The correct replacement (Image.Resampling.LANCZOS) is never written anywhere in the image—the compat module uses it for the individual RESAMPLE_HIGH constant but never for the QUALITY_MAP or in any other file. An agent cannot simply grep the image for the answer; they must diagnose from AttributeError tracebacks and either know the Pillow 10 migration or inspect Image.Resampling at runtime. Downgrading Pillow fails the version check test. Commenting out broken code fails the functional tests. Adding a compatibility shim like `if hasattr(Image, 'ANTIALIAS')` still leaves the string 'Image.ANTIALIAS' in the source, which the no-removed-attributes test catches.",
+  "failure_modes": "An agent might fix only the first crash (compat.py) and re-run tests, thinking they're done, but miss the three remaining files that fail at function-call time rather than import time. They might also replace Image.ANTIALIAS with the wrong constant (e.g., Image.BILINEAR) which avoids the AttributeError but produces visually incorrect resampling; the functional tests for quality-dependent behavior would catch this. An agent who tries to downgrade Pillow to 9.x instead of fixing the code will be caught by the version-check test. An agent who adds a try/except AttributeError shim with a fallback to Image.ANTIALIAS in the except branch will still fail the source-code scan test."
+}
+```

@@ -1,0 +1,85 @@
+{
+  "topic": "an SQLite database migration script that silently corrupts data during a schema change",
+  "run_id": "an-sqlite-database-migration-script-that-20261021-122903",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-sqlite-database-migration-script-that-20261021-122903",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-sqlite-migration-corruption",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": false,
+          "reward": 0.0,
+          "error": "Oracle check failed: running solution/solve.sh then the tests gave reward 0.0 (expected 1).\n\nVerifier / pytest output (tail):\n...[truncated]...\n\nSetting up librtmp1:arm64 (2.4+20151223.gitfa8646d.1-2build7) ...\nSetting up libk5crypto3:arm64 (1.20.1-6ubuntu2.10) ...\nSetting up libsasl2-2:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...\nSetting up libkrb5-3:arm64 (1.20.1-6ubuntu2.10) ...\nSetting up openssl (3.0.13-0ubuntu3.16) ...\nSetting up publicsuffix (20231001.0357-0.1) ...\nSetting up libldap2:arm64 (2.6.10+dfsg-0ubuntu0.24.04.1) ...\nSetting up ca-certificates (20260816ubuntu0.24.04.1) ...\ndebconf: unable to initialize frontend: Dialog\ndebconf: (TERM is not set, so the dialog frontend is not usable.)\ndebconf: falling back to frontend: Readline\ndebconf: unable to initialize frontend: Readline\ndebconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC entries checked: /etc/perl /usr/local/lib/aarch64-linux-gnu/perl/5.38.2 /usr/local/share/perl/5.38.2 /usr/lib/aarch64-linux-gnu/perl5/5.38 /usr/share/perl5 /usr/lib/aarch64-linux-gnu/perl-base /usr/lib/aarch64-linux-gnu/perl/5.38 /usr/share/perl/5.38 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 8.)\ndebconf: falling back to frontend: Teletype\nUpdating certificates in /etc/ssl/certs...\n120 added, 0 removed; done.\nSetting up libgssapi-krb5-2:arm64 (1.20.1-6ubuntu2.10) ...\nSetting up libssh-4:arm64 (0.10.6-2ubuntu0.5) ...\nSetting up libcurl4t64:arm64 (8.5.0-2ubuntu10.16) ...\nSetting up curl (8.5.0-2ubuntu10.16) ...\nProcessing triggers for libc-bin (2.39-0ubuntu8.9) ...\nProcessing triggers for ca-certificates (20260816ubuntu0.24.04.1) ...\nUpdating certificates in /etc/ssl/certs...\n0 added, 0 removed; done.\nRunning hooks in /etc/ca-certificates/update.d...\ndone.\ndownloading uv 0.9.7 aarch64-unknown-linux-gnu\nno checksums to verify\ninstalling to /root/.local/bin\n  uv\n  uvx\neverything's installed!\n\nTo add $HOME/.local/bin to your PATH, either restart your shell or run:\n\n    source $HOME/.local/bin/env (sh, bash, zsh)\n    source $HOME/.local/bin/env.fish (fish)\nDownloading cpython-3.14.0-linux-aarch64-gnu (download) (28.6MiB)\n Downloading cpython-3.14.0-linux-aarch64-gnu (download)\nDownloading pygments (1.2MiB)\n Downloading pygments\nInstalled 6 packages in 8ms\n============================= test session starts ==============================\nplatform linux -- Python 3.14.0, pytest-8.4.1, pluggy-1.7.0\nrootdir: /tests\nplugins: json-ctrf-0.3.5\ncollected 7 items\n\n../tests/test_outputs.py .....F.                                         [100%]\n\n=================================== FAILURES ===================================\n__________________________ test_no_zero_category_ids ___________________________\n\n    def test_no_zero_category_ids():\n>       rows = query_db(\"SELECT id, category_id FROM products WHERE category_id = 0\")\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:56: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:13: in query_db\n    return json.loads(result.stdout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n/root/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/lib/python3.14/json/__init__.py:346: in loads\n    return _default_decoder.decode(s)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n/root/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/lib/python3.14/json/decoder.py:345: in decode\n    obj, end = self.raw_decode(s, idx=_w(s, 0).end())\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <json.decoder.JSONDecoder object at 0xffffb8476660>, s = '', idx = 0\n\n    def raw_decode(self, s, idx=0):\n        \"\"\"Decode a JSON document from ``s`` (a ``str`` beginning with\n        a JSON document) and return a 2-tuple of the Python\n        representation and the index in ``s`` where the document ended.\n    \n        This can be used to decode a JSON document from a string that may\n        have extraneous data at the end.\n    \n        \"\"\"\n        try:\n            obj, end = self.scan_once(s, idx)\n        except StopIteration as err:\n>           raise JSONDecodeError(\"Expecting value\", s, err.value) from None\nE           json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)\n\n/root/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/lib/python3.14/json/decoder.py:363: JSONDecodeError\n==================================== PASSES ====================================\n=========================== short test summary info ============================\nPASSED ../tests/test_outputs.py::test_schema_has_cost_price\nPASSED ../tests/test_outputs.py::test_schema_column_order\nPASSED ../tests/test_outputs.py::test_cost_price_zero\nPASSED ../tests/test_outputs.py::test_stock_values\nPASSED ../tests/test_outputs.py::test_category_ids\nPASSED ../tests/test_outputs.py::test_prices_unchanged\nFAILED ../tests/test_outputs.py::test_no_zero_category_ids - json.decoder.JSO...\n========================= 1 failed, 6 passed in 0.04s ==========================\n",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-sqlite-database-migration-script-that-20261021-122903-r0-oracle",
+          "seconds": 34.7,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-sqlite-database-migration-script-that-20261021-122903-r0-oracle/fix-sqlite-migration-corruption__4CoWp2C",
+            "exception": null
+          }
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-sqlite-database-migration-script-that-20261021-122903-r1-oracle",
+          "seconds": 21.1,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-sqlite-database-migration-script-that-20261021-122903-r1-oracle/fix-sqlite-migration-corruption__Et5X9Sv",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-sqlite-database-migration-script-that-20261021-122903-r1-nop",
+          "seconds": 23.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-sqlite-database-migration-script-that-20261021-122903-r1-nop/fix-sqlite-migration-corruption__n7rRGCE",
+            "exception": null
+          }
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 8066,
+    "completion_tokens": 17506
+  },
+  "seconds": 280.3,
+  "task_name": "afterquery/fix-sqlite-migration-corruption"
+}
