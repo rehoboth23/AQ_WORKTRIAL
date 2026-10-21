@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets / environment (any copy or backup of .env; the template is committed)
+.env*
+!.env.example
+
+# Pre-git backups (e.g. CLAUDE.md.bak, validate.sh.bak2)
+*.bak*
+
+# OS
+.DS_Store
+
+# Harbor run outputs (written by `harbor run`)
+jobs/
+trials/
+.harbor/
+dist.tar.gz
