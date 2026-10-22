@@ -1,0 +1,27 @@
+# One topic per line. Lines starting with # are ignored.
+# Spread across categories on purpose (diversity is graded). Avoid the examples/ tasks.
+
+# build systems / compiled code
+a CMake project that builds but its shared library crashes at runtime because of an ABI or symbol-visibility mismatch between two components
+# databases
+a PostgreSQL-style query workload on SQLite whose report is wrong because of NULL handling and a timezone bug across several SQL views
+# static site build
+a static-site build pipeline (templates, includes, asset hashing) that produces subtly wrong output pages: broken internal links, stale asset references and wrong page ordering
+# security
+a small web service that leaks other users' files through a path traversal in its upload/download handler and must be fixed without breaking legitimate paths
+# data processing
+a multi-stage CSV-to-Parquet ETL pipeline in Python that silently drops and duplicates rows because of encoding and join-key normalisation bugs
+# devops / process management
+a systemd-less container where a background worker and a cron-like scheduler must be configured so jobs run exactly once and survive restarts
+# version control
+a git repository whose release branch has a bad merge that reintroduced a reverted bug; the history must be repaired without rewriting published commits
+# concurrency
+a Go or Python worker pool that deadlocks or loses results under load because of a lock-ordering bug and an unbuffered channel or queue
+# packaging / dependencies
+a Python monorepo with two internal packages whose editable installs conflict, causing an import of the wrong module version at runtime
+# shell / text processing
+a Bash backup script that corrupts archives for filenames with spaces and newlines, and whose incremental mode skips changed files
+# performance
+a slow log-indexing CLI that must be made fast enough to process a large generated dataset within a time limit without changing its output
+# observability / debugging
+a Node.js or Python HTTP service that leaks memory and file descriptors after many requests; find and fix the leaks and prove it with a load script

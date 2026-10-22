@@ -1,0 +1,31 @@
+# DRAFT for review (not yet used by the pipeline; scripts/topics.txt is unchanged).
+# One topic per line. Lines starting with # are ignored.
+# Shape: a realistic in-house codebase with ONE domain-knowledge weakness whose complete fix
+# spans several places. Finding it takes knowing what correct code in that domain must do; a
+# partial fix passes the obvious checks. Deterministic, self-contained in one container, no
+# network needed. Spread across categories (diversity is graded). Avoid the examples/ tasks.
+
+# web protocol
+an in-house HTTP/1.1 request parser behind a small API gateway that accepts ambiguous requests (conflicting Content-Length and Transfer-Encoding, duplicate length headers) that a downstream server reads differently
+# data export
+a reporting service whose CSV and spreadsheet exports let user-supplied text be interpreted as formulas by spreadsheet applications, across several export paths and field types
+# archives
+an artifact-upload service that unpacks tar and zip bundles into a workspace and can be made to write outside it through crafted entry names, absolute paths and links
+# time and calendars
+a recurring-event scheduler that produces wrong occurrence times around daylight-saving transitions and across time zones for some recurrence rules
+# money
+an invoicing module that computes line items, discounts, tax and totals with mixed numeric types and rounding rules, so invoices disagree with the ledger by small amounts
+# identity
+an account service where visually identical usernames written with different Unicode forms are treated as different accounts at some entry points and the same at others
+# authentication
+a session-token verifier for internal services that can be tricked into accepting tokens it did not issue, through the signature-algorithm choice and the way signatures are compared
+# concurrency and queues
+a job queue with leases and retries that processes some jobs twice when workers are slow, crash, or acknowledge out of order
+# file formats and encodings
+a log ingestion tool that mis-parses records with mixed line endings, multi-byte characters split across read buffers and byte-order marks, silently corrupting some fields
+# numerical
+a metrics aggregator whose percentiles, averages and counters drift from the true values because of floating-point accumulation, integer overflow and resets between windows
+# configuration and precedence
+a deployment tool whose settings come from defaults, files, environment variables and command-line flags, but the precedence and type coercion differ between commands
+# databases
+a data-retention job that deletes or keeps the wrong rows because of NULL semantics, time-zone-naive timestamps and inclusive versus exclusive date boundaries in its queries
