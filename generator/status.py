@@ -57,6 +57,17 @@ def _age(ts: float) -> str:
     return f"{s}s" if s < 90 else f"{s // 60}m" if s < 5400 else f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
+def _extra(key: str) -> list[str]:
+    """Extra folders to show, from jobs/.dashboard-extra.json (re-read every render, so the
+    running dashboard picks a change up without a restart), e.g.
+    {"logs": ["/path/to/a/run/logs"], "jobs": ["/path/to/worktree/jobs"]}."""
+    try:
+        with open(os.path.join(JOBS_DIR, ".dashboard-extra.json"), encoding="utf-8") as f:
+            return [p for p in json.load(f).get(key) or [] if os.path.isdir(p)]
+    except (OSError, ValueError):
+        return []
+
+
 def processes() -> list[tuple[str, str, str]]:
     rows = []
     for line in _sh(["ps", "-ww", "-eo", "pid,etime,args"]).splitlines()[1:]:
@@ -69,6 +80,8 @@ def processes() -> list[tuple[str, str, str]]:
             what = "generate one task"
         elif "from_mutants" in args:
             what = "experiment (mutation check -> band eval)"
+        elif "adjust" in args and ".py" in args and not args.startswith(("/bin/zsh", "/bin/bash", "bash", "zsh")):
+            what = "experiment (difficulty adjustment)"
         elif "harbor run" in args or "/harbor run" in args:
             agent = args.split(" -a ")[1].split()[0] if " -a " in args else "?"
             what = f"harbor run ({agent})"
@@ -155,7 +168,8 @@ def stage_of(events: list[dict]) -> str:
 
 def runs() -> list[dict]:
     out = []
-    for d in glob.glob(os.path.join(LOGS_DIR, "*", "events.jsonl")):
+    for d in glob.glob(os.path.join(LOGS_DIR, "*", "events.jsonl")) + [
+            os.path.join(x, "events.jsonl") for x in _extra("logs") if os.path.exists(os.path.join(x, "events.jsonl"))]:
         if not _keep(d):
             continue
         mtime = os.path.getmtime(d)
@@ -163,6 +177,8 @@ def runs() -> list[dict]:
             continue
         ev = _jsonl(d)
         name = os.path.basename(os.path.dirname(d))
+        if name == "logs":  # an experiment's run folder (e.g. adjust-real/logs): name it by its parent
+            name = os.path.basename(os.path.dirname(os.path.dirname(d)))
         topic = next((e.get("topic") for e in ev if e.get("event") == "start"), "")
         out.append({"name": name, "topic": topic or "", "stage": stage_of(ev), "mtime": mtime,
                     "events": ev, "dir": os.path.dirname(d)})
@@ -312,7 +328,7 @@ def eval_activity(limit: int = 6) -> list[tuple[str, str, str]]:
     rows = []
     live = live_trials()
     # Any job with agent trajectories (band evals and ad-hoc experiments), not just "band-*".
-    for tj in glob.glob(os.path.join(JOBS_DIR, "*", "*", "agent", "trajectory.json")):
+    for tj in [t for root in [JOBS_DIR] + _extra("jobs") for t in glob.glob(os.path.join(root, "*", "*", "agent", "trajectory.json"))]:
         trial = os.path.dirname(os.path.dirname(tj))
         if not _keep(trial):
             continue
