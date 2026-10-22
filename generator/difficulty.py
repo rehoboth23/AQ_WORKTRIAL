@@ -671,11 +671,31 @@ _ORACLE_FILE = re.compile(r"(^|/)(verify|check|validate|compare|selftest|self_te
 _ORACLE_INSTR = re.compile(r"\b(run|use|until)\b[^.\n]{0,80}\b(verify|check|validate|compare|diff|self-?test)\b[^.\n]{0,60}\b(ok|pass|clean|match|no (mismatch|discrepanc|error))", re.I)
 
 
-def oracle_leaks(files: dict[str, str]) -> list[str]:
-    """Commands, files or instructions that hand the agent a pass/fail oracle for the graded result."""
+def build_stage_only(files: dict[str, str]) -> set[str]:
+    """Paths under environment/ that the Dockerfile only uses in an earlier build stage: the final
+    stage (after the last FROM) never COPYs them, so they are not in the image the agent gets.
+    That is how an executable-reference task compiles its black box."""
+    df = files.get("environment/Dockerfile", "")
+    stages = re.split(r"(?im)^\s*FROM\s", df)
+    if len(stages) < 3:  # text before the first FROM, then at least two stages
+        return set()
+    final = "\n".join(l for l in stages[-1].splitlines() if not re.search(r"--from=", l, re.I))
+    out = set()
+    for path in files:
+        if path.startswith("environment/") and path != "environment/Dockerfile":
+            rel = path[len("environment/"):]
+            copied = re.search(rf"(?im)^\s*(COPY|ADD)\s[^\n]*(?<![\w./-])(\.?/?{re.escape(rel)}|{re.escape(posixpath.dirname(rel) or '.')}/?|\.)(?=\s)", final)
+            if not copied:
+                out.add(path)
+    return out
+
+
+def oracle_leaks(files: dict[str, str], skip: set[str] = frozenset()) -> list[str]:
+    """Commands, files or instructions that hand the agent a pass/fail oracle for the graded result.
+    `skip`: build-stage-only sources of an executable-reference task (they never reach the image)."""
     hits = []
     for path, body in files.items():
-        if not path.startswith("environment/") or path == "environment/Dockerfile":
+        if not path.startswith("environment/") or path == "environment/Dockerfile" or path in skip:
             continue
         name = path[len("environment/"):]
         code = is_code_or_config(posixpath.basename(name)) and posixpath.splitext(name)[1].lower() not in _DOC_EXTS
@@ -719,6 +739,18 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
         problems.append(f"the spec document `{want}` is not among the files; ship it under environment/ "
                         "and name it in instruction.md")
     allowed = _doc_names(docs)
+    exec_ref = str((spec or {}).get("challenge_kind") or "").lower() == "executable_reference"
+    build_only = set()
+    if exec_ref:  # the reference binary and the sample are the task's interface
+        for key in ("reference_binary", "sample_file"):
+            v = str((spec or {}).get(key) or "").strip()
+            if v:
+                allowed |= {v, posixpath.basename(v)}
+        build_only = build_stage_only(files)
+        shipped_src = [p for p in files if p.startswith("environment/") and p.endswith((".c", ".h")) and p not in build_only]
+        if shipped_src:
+            problems.append("the reference source would reach the agent's image (" + ", ".join(shipped_src[:3]) + "); compile it "
+                            "in a build stage (FROM ... AS build) and COPY only the stripped binary into the final stage")
     leaks = location_leaks(instruction, files, allowed)
     if leaks:
         problems.append("instruction.md names shipped source/config files (" + ", ".join(leaks) + "); "
@@ -745,7 +777,7 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if ids:
         problems.append(f"instruction.md names code symbols where faults live ({', '.join(ids)}); "
                         "describe behaviour, not code")
-    oracle = oracle_leaks(files)
+    oracle = oracle_leaks(files, build_only)
     if oracle:
         problems.append("the environment or instruction gives the agent an oracle for the graded result; remove it "
                         "(no verify/check/diff/self-test commands, no expected output, no reference): " + "; ".join(oracle[:4]))
