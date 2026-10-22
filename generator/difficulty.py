@@ -45,11 +45,6 @@ def _similar(a: set[str], b: set[str], threshold: float = 0.8) -> bool:
     return bool(a and b) and len(a & b) / len(a | b) >= threshold
 
 
-def _file_of(where) -> str:
-    """The file part of a fault location, e.g. '/app/sql/views.sql — v_daily_revenue' -> the path."""
-    return re.split(r"\s+[—–-]\s+|\s*\(|:\s", str(where).strip().lower())[0].strip()
-
-
 def discovery_eval(spec: dict) -> dict:
     """Grade the critic's estimate of WHEN the agent finds each fault.
 
@@ -126,34 +121,22 @@ def spec_gate(spec: dict) -> list[str]:
     if len(layers) < MIN_FAULT_LAYERS:
         problems.append(f"faults must span at least {MIN_FAULT_LAYERS} layers of "
                         f"{sorted(LAYERS)}, found {sorted(layers) or 'none'}")
-    if not any(isinstance(f, dict) and f.get("depends_on") not in (None, "", "null") for f in faults):
-        problems.append("at least one fault must be hidden by another (set `depends_on`), "
-                        "so fixing one reveals the next")
     # "One fault repeated" means the same KIND of bug fixed in several places (e.g. one sed in
     # four files), not several different bugs that happen to share a file or view.
     whats = [_words(f.get("what", "")) for f in faults if isinstance(f, dict)]
     if any(_similar(a, b) for i, a in enumerate(whats) for b in whats[i + 1:]):
         problems.append("faults must be different bugs, not the same fix repeated in several places")
-    files = {_file_of(f.get("where", "")) for f in faults if isinstance(f, dict)} - {""}
-    if len(files) < 2:
-        problems.append("faults must touch at least 2 different files, so the agent has to search")
-    ev = discovery_eval(spec)
-    if ev["problem"]:  # too_hard is only flagged, never rejected
-        problems.append(ev["problem"])
-    if not spec.get("decoys"):
-        problems.append("needs at least one plausible but innocent decoy")
     if not spec.get("hidden_edge_cases"):
         problems.append("needs at least one hidden edge case the tests check")
     if len(faults) > MAX_FAULTS:
         problems.append(f"has {len(faults)} faults; at most {MAX_FAULTS} (more faults make a longer "
                         "proofreading list, not a harder task)")
     trap_keys = ("wrong_fix", "counterexample", "caught_by_test")
-    no_trap = [str(i) for i, f in enumerate(faults)
-               if isinstance(f, dict) and not all(str(f.get(k) or "").strip() for k in trap_keys)]
-    if no_trap:
-        problems.append(f"faults {', '.join(no_trap)} need `wrong_fix` (the plausible incomplete fix "
-                        "a strong agent tries first), `counterexample` (the exact input or sequence on "
-                        "which it is wrong) and `caught_by_test` (the hidden test that runs it)")
+    traps = [f for f in faults if isinstance(f, dict) and all(str(f.get(k) or "").strip() for k in trap_keys)]
+    if len(traps) < min(2, len(faults)):
+        problems.append("at least 2 central faults need `wrong_fix` (the plausible incomplete fix a strong "
+                        "agent tries first), `counterexample` (the exact input or sequence on which it is "
+                        "wrong) and `caught_by_test` (the hidden test that runs it)")
     kind = str(spec.get("challenge_kind") or "").strip().lower()
     if kind not in CHALLENGE_KINDS:
         problems.append(f"`challenge_kind` must be one of {sorted(CHALLENGE_KINDS)}; build the task around "

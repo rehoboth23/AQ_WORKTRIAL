@@ -174,6 +174,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
         append_history({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "run_id": run_id, "knobs": KNOBS,
                         "name": meta["name"], "description": meta["description"],
                         "difficulty": meta["difficulty"], "passes": band.passes, "n": N_RUNS,
+                        "challenge_kind": (spec or {}).get("challenge_kind"),
                         "verdict": band.verdict, "note": note, "features": features,
                         "median_steps": band.median_steps, "median_found_step": band.median_found_step,
                         "cost_usd": band.cost_usd})

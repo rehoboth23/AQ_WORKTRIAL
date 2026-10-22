@@ -56,7 +56,7 @@ MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
 DIFFICULTY_FILE = os.environ.get(
     "DIFFICULTY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "difficulty.toml"))
 _DIFFICULTY_DEFAULTS = {
-    "knobs": {"min_faults": 5, "max_faults": 7, "min_fault_layers": 3, "min_env_lines": 1200, "min_solve_lines": 60,
+    "knobs": {"min_faults": 2, "max_faults": 4, "min_fault_layers": 1, "min_env_lines": 400, "min_solve_lines": 30,
               "max_leaked_literals": 1, "critic_found_within": 3},
     "discovery": {"min_gap": 2, "hard_gap": 4, "very_hard_gap": 7, "too_hard_above": 9,
                   "timeout_risk_steps": 60},

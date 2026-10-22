@@ -46,10 +46,9 @@ How the task is run (Harbor / Terminal-Bench 2):
 # (see CONTROL_SYSTEMS below and pipeline.py --control).
 DIFFICULTY_RULE = f"""\
 - Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well)
-  should solve it only SOMETIMES (roughly 1-3 times in 5). Earlier tasks were far too easy:
-  the agent found every fault within its first 3 commands and finished in 4-9 steps, because
-  the instruction named the broken file, one `cat` showed the whole environment, the error
-  message named the fault, and each fix was a 1-4 line sed. Avoid all of that. Use these knobs:
+  should solve it only SOMETIMES (roughly 1-3 times in 5). Every earlier task was solved 4-5/5:
+  the agent found the faults by reading and their fixes were named techniques. Adding more
+  faults, more code or more steps did not change that; the SHAPE of the problem does:
   * Where difficulty comes from (measured on the reference agent): it solves anything whose fix
     an expert can NAME in a few words ("normalize to NFC everywhere", "parameterize the query"),
     even with no hints, and it finds every inconsistency between code paths by reading. Build the
@@ -59,6 +58,9 @@ DIFFICULTY_RULE = f"""\
     - instruction.md STATES the invariant over sequences ("a resumed run produces exactly what an
       uninterrupted run would", "after any edit, an incremental build equals a clean build").
       Tests choose which sequences to try; those may stay hidden. Hidden inputs, never hidden rules.
+      Pick them where partial fixes break, not where an agent would first look: non-round values,
+      boundaries (first and last item, exactly on a tie), the crash path, twice in a row. A test
+      that only uses the obvious values (50, 100) is no stronger than the agent's own re-test.
     - Every condition a test uses can be produced deterministically with something in the
       environment (a documented flag, a fake clock, a scripted input order, a crash-injection
       setting). No races, timing or sleeps.
@@ -75,20 +77,20 @@ DIFFICULTY_RULE = f"""\
                     in the inventory system"
       diagnosis (forbidden): "the join drops warehouses whose IDs have trailing spaces, and
                     returned items are subtracted twice"
-  * {MIN_FAULTS} to {MAX_FAULTS} DIFFERENT faults, in at least {MIN_FAULT_LAYERS} layers (build, code, config, data, runtime),
-    chained: fixing one reveals the next (builds -> runs but wrong -> edge case wrong).
-    Not one fault repeated in several files.
+  * ONE central challenge with {MIN_FAULTS} to {MAX_FAULTS} DIFFERENT faults that all serve it: interacting
+    requirements, where fixing one exposes the next. No unrelated faults to pad the count (a
+    typo in a wrapper script, a wrong interpreter path, a function that is never called, a wrong
+    config path): they add steps, not difficulty. Not one fault repeated in several files.
   * Indirect symptoms: wrong numbers, silent data issues, failures only on some inputs.
     Errors must not name the faulty file or symbol.
-  * Realistic size: a real project layout with at least ~{MIN_ENV_LINES} lines of source/config across
-    many files, so the agent must search. Include at least one plausible but innocent decoy:
-    a real module or setting that is used and correct, never one labelled "legacy", "unused" or
-    "not loaded". Generate bulky data at build time.
+  * Realistic size: a real project as big as the scenario needs (at least ~{MIN_ENV_LINES} lines of
+    source/config). No padding and no decoy modules: ordinary, correct code around the faults is
+    enough. Never label code "legacy", "unused" or "not loaded". Generate bulky data at build time.
   * Domain knowledge, not proofreading: each faulty spot must read as correct code to someone who
     does not know what correct code in this domain must do. Comments, docstrings and the README
     describe what the code DOES; they never state the rule the code breaks, never call a setting
     a workaround, never flag a line.
-  * Partial fixes fail: the complete fix spans several places. For every fault there is a
+  * Partial fixes fail: the complete fix spans several places. For each central fault (at least 2) there is a
     plausible but incomplete fix (fix it at one entry point but not the others, handle the
     common form but not the rare one) that passes the obvious checks, and a test the agent
     cannot see that catches it. The agent's own re-test must not catch the partial fix: after
@@ -107,9 +109,6 @@ DIFFICULTY_RULE = f"""\
     are wrong, the categories of faults ("currency, timezone and refund handling"), where answers
     or rules are documented, what the tests check, a command to check progress, "only change X"
     scope limits, or exact expected outputs beyond trivial ones.
-  * Spaced discovery: no fault findable before agent step {CRITIC_FOUND_WITHIN}, and faults found one
-    at a time: at least {DISCOVERY["min_gap"]} steps between consecutive finds, ideally about {DISCOVERY["hard_gap"] + 1}
-    (hard) to {DISCOVERY["too_hard_above"]} (very hard). Never let one file or error reveal several faults at once.
   * Bespoke, not textbook: no famous bugs (Pillow ANTIALIAS, nginx trailing slash, INSERT
     without column list). Use domain logic specific to this scenario.
   * Never get difficulty from ambiguity, trick wording or hidden requirements: every test must
@@ -122,13 +121,11 @@ DIFFICULTY_SPEC_FIELDS = """,
   "faults": [{"layer": "build|code|config|data|runtime", "where": "file or component",
               "what": "the defect", "symptom": "what the agent observes",
               "how_discovered": "what the agent must do to find it",
-              "depends_on": "index of the fault that hides this one, or null",
-              "discovered_at_step": "agent step at which a strong agent would find it (number)",
-              "wrong_fix": "the plausible but incomplete fix a strong agent would try first",
+              "central": "true if this fault is part of the central challenge",
+              "wrong_fix": "central faults: the plausible but incomplete fix a strong agent would try first",
               "counterexample": "the exact input or sequence of operations on which wrong_fix gives a wrong result",
               "why_normal_case_passes": "why the obvious checks do not reveal wrong_fix",
               "caught_by_test": "the hidden test that runs the counterexample and fails wrong_fix"}],
-  "decoys": ["plausible but innocent suspects in the environment"],
   "hidden_edge_cases": ["cases the tests check that the visible symptom does not show"],
   "why_not_textbook": "why this cannot be solved from memory of a well-known bug",
   "static_read": "what reading the code alone reveals, and why that is not enough to fix everything",
@@ -136,8 +133,8 @@ DIFFICULTY_SPEC_FIELDS = """,
   "challenge_kind": "incremental_state|resume_after_interruption|retry_idempotency|ordering_and_duplicates|cache_invalidation|format_migration|streaming_boundaries|other",
   "sequence_invariant": "the invariant over sequences, as instruction.md states it",
   "nameable_fix": "the shortest phrase an expert would use for the whole fix",
-  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
-  "expected_agent_steps": number"""
+  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it"
+"""
 
 QUALITY_RULES = """\
 Rules for a good task:
@@ -165,6 +162,10 @@ Rules for a good task:
   comparing their text; accept equivalent forms (trailing slash or not, 1.0 vs 1, key order,
   whitespace). A test may require an exact textual form ONLY if instruction.md states that form.
   Bad: `assert href.count('../') == 2`. Good: `assert resolve(page, href) == site_root`.
+- Tests check BEHAVIOUR, not the chosen implementation: what the program does through its public
+  interface ("a retried delivery leaves the balance unchanged", "two spellings log into one
+  account"), never how a fix is built (a schema constraint's text, a column's existence, a
+  function name, a config line). Any correct fix must pass, so tests never pin the technique.
 - instruction.md states exactly what is checked: paths, formats, commands, ports. Every test must
   correspond to a requirement written in instruction.md. Write it like a colleague asking for
   help: concrete, 80-300 words, no hints about the hidden bug's location, no mention of tests.
@@ -214,9 +215,13 @@ def calibration_block(history: list[dict]) -> str:
              "(target: 1-3 of 5 runs)."]
     for h in history:
         note = f" ({h['note']})" if h.get("note") else ""
-        lines.append(f"- {h['name']} [{h.get('difficulty', '?')}]: {h['passes']}/{h['n']} "
+        kind = f" [{h['challenge_kind']}]" if h.get("challenge_kind") else ""
+        lines.append(f"- {h['name']}{kind} [{h.get('difficulty', '?')}]: {h['passes']}/{h['n']} "
                      f"-> {h['verdict']}{note}. {h.get('description', '')}")
-    lines.append("Design this task harder than the too_easy ones and easier than the too_hard ones.")
+    lines.append("Tasks solved too often were solved because their fixes could be found by reading and "
+                 "named in a few words. Make this design harder by changing the SHAPE of the problem "
+                 "(behaviour over a sequence that the agent must reason out), not by adding faults, code "
+                 "or steps; make it easier than the too_hard ones.")
     return "\n".join(lines)
 
 
@@ -355,15 +360,16 @@ nothing before or after:
 
 CRITIC_SYSTEM = f"""\
 You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, and earlier tasks fell to it within 3 commands.
+it reads files, greps, runs builds and tests, and re-tests its own fixes; every earlier task fell
+to it 4-5 times in 5.
 
 {DIFFICULTY_RULE}
 Given a task spec (JSON), walk through how that agent would solve it, step by step, starting
-from instruction.md and the environment. For each fault, note the step at which it would be
-found and from what. The spec is too easy if any fault is found within the agent's first
-{CRITIC_FOUND_WITHIN} commands, if an error message names a faulty file or symbol, if instruction.md would name
+from instruction.md and the environment. For each fault, note what reveals it and what the
+agent must reason out to fix it completely. The spec is too easy if reading the code is enough
+to find and fix a central fault, if an error message names a faulty file or symbol, if instruction.md would name
 the faulty location, if any fault is a well-known textbook bug, if there are fewer than
-{MIN_FAULTS} or more than {MAX_FAULTS} different chained faults, if any comment, docstring or README line
+{MIN_FAULTS} or more than {MAX_FAULTS} faults, if any fault is filler unrelated to the central challenge, if any comment, docstring or README line
 states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, if the
 environment holds a reference copy of the correct code (git history, an installed original,
 backups, project tests naming the fault), if `nameable_fix` alone is enough to solve it (the fix
@@ -372,13 +378,9 @@ instruction.md describes (the agent's own re-test would catch it). It is UNFAIR 
 invariant is not stated in instruction.md, or a test's condition cannot be produced
 deterministically with something in the environment.
 
-Also estimate, for every fault, `discovered_at_step`: the agent step at which it would be found.
-Grade the spacing between consecutive finds: any gap below {DISCOVERY["min_gap"]} steps (two faults
-falling to the same look) or a first find before step {CRITIC_FOUND_WITHIN} is TOO EASY; a median gap
-of {DISCOVERY["min_gap"]}-{DISCOVERY["hard_gap"]} is moderate, about {DISCOVERY["hard_gap"] + 1} is HARD (the target),
-about {DISCOVERY["too_hard_above"]} is VERY HARD, and above {DISCOVERY["too_hard_above"]} is too hard. If it is too easy,
-rewrite the spec to fix every problem while keeping it fair, solvable, deterministic and on the same
-topic, and put your step estimates in the revised spec's faults.
+If it is too easy or unfair, rewrite the spec to fix every problem while keeping it fair,
+solvable, deterministic and on the same topic. Do not make it harder by adding faults, code or
+steps; change what the agent has to reason about.
 
 The revised spec must keep every key of the original AND include these difficulty-profile
 keys, filled in (add them if the original lacks them):

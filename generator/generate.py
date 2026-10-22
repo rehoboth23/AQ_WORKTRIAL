@@ -230,9 +230,6 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log)
             log.event("critic_error", error=str(e)[:300])
 
     problems = difficulty.spec_gate(spec)
-    # Grade of the critic's discovery-step estimates, for the dashboard and audit trail only.
-    # It lives in the run's logs, never in the task files the solving agent sees.
-    log.event("discovery_eval", **difficulty.discovery_eval(spec))
     if problems:
         raise SpecRejected("spec failed the difficulty gate: " + "; ".join(problems))
     return spec
