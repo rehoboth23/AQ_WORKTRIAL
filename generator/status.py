@@ -278,13 +278,12 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
                           f"{len(sp.get('knobs') or [])} knobs")
             except (json.JSONDecodeError, OSError):
                 pass
-        # Every model call this run has made, across all stages (each attempt logs a start;
-        # runs from before start-logging only have finished calls).
+        # Model calls re-sent after an error or a rejected reply, across all stages (each attempt
+        # logs a start; runs from before start-logging only have finished calls).
         starts = [x for x in ev if x.get("event") == "llm_start"]
         calls = starts or [x for x in ev if x.get("event") == "llm_call"]
         retries = sum(1 for x in calls if (x.get("attempt") or 0) > 0)
-        total = f"{len(calls)}" + (f" ({retries} retr{'y' if retries == 1 else 'ies'})" if retries else "")
-        rows.append((r["topic"][:55] or r["name"], stage, attempt, total, doing, _age(since), design))
+        rows.append((r["topic"][:55] or r["name"], stage, attempt, str(retries), doing, _age(since), design))
     return rows
 
 
@@ -348,7 +347,7 @@ def eval_activity(limit: int = 6) -> list[tuple[str, str, str]]:
         rows.append((f"{job[:28]} / {os.path.basename(trial)[-7:]}",
                      f"{len(steps)} turns, last {_age(os.path.getmtime(tj))} ago · {phase_of(pat)}"
                      f"<br><code>{pat[-40:]}</code>",
-                     " ".join(msg.split())[:260], " ".join(cmds.split())[:160]))
+                     " ".join(msg.split()), cmds.strip()[:4000]))
     return rows[:limit]
 
 
@@ -436,8 +435,8 @@ def render() -> str:
     def table(head, rows):
         if not rows:
             return '<p class="muted">none</p>'
-        return ("<table><tr>" + "".join(f"<th>{e(h)}</th>" for h in head) + "</tr>"
-                + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows) + "</table>")
+        return ('<div class="wrap"><table><tr>' + "".join(f"<th>{e(h)}</th>" for h in head) + "</tr>"
+                + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows) + "</table></div>")
 
     def chip(t):
         cls = "ok" if t.startswith("pass") else "bad" if t.startswith(("fail", "invalid", "stopped")) else "run"
@@ -456,13 +455,13 @@ def render() -> str:
         "<h2>GLM activity</h2>",
         "<p class=muted>glm-5.1 (task author) per run. [inferred] = run started before live call logging; "
         "stage implied by its last finished step.</p>",
-        table(["run / topic", "stage", "attempt", "total attempts", "glm-5.1 is…", "for", "current design"],
-              [(e(a), "<b>" + e(st.split(" ", 1)[-1]) + "</b>", e(at), e(tot), e(b), e(c), e(d))
-               for a, st, at, tot, b, c, d in gen_rows]),
+        table(["run / topic", "stage", "attempt", "retries", "glm-5.1 is…", "for", "current design"],
+              [(e(a), "<b>" + e(st.split(" ", 1)[-1]) + "</b>", e(at), e(rt), e(b), e(c), e(d))
+               for a, st, at, rt, b, c, d in gen_rows]),
         "<p class=muted>glm-5.3-flash (agent under test), running agent trials (band evals and experiments): latest turn</p>",
         "<p class=muted>turn letters: r = read, E = edit, B = build/run, - = no command</p>",
         table(["job / trial", "progress", "agent's latest analysis", "latest commands"],
-              [(e(a), b, e(c), "<code>" + e(d) + "</code>") for a, b, c, d in ev_rows]),
+              [(e(a), b, f'<div class="scroll">{e(c)}</div>', f'<div class="scroll"><pre>{e(d)}</pre></div>') for a, b, c, d in ev_rows]),
         "<h2>Docker containers</h2>", table(["container", "status"], [(e(n), e(s)) for n, s in conts]),
         "<h2>Runs (last 3 h)</h2>",
         table(["run", "topic", "current stage", "updated"],
@@ -484,11 +483,13 @@ def render() -> str:
 <style>
 :root{{--bg:#fafafa;--fg:#1d1d1f;--muted:#6e6e73;--line:#e3e3e8;--ok:#1a7f37;--bad:#c62828;--run:#0b62d6}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#151517;--fg:#eee;--muted:#9a9aa0;--line:#2c2c30;--ok:#3fb950;--bad:#f85149;--run:#58a6ff}}}}
-body{{background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:16px;max-width:1100px}}
+body{{background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:16px;max-width:none}}
 h1{{font-size:20px;margin:0 0 4px}} h2{{font-size:15px;margin:22px 0 6px}}
-table{{border-collapse:collapse;width:100%;display:block;overflow-x:auto}} th,td{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}}
+table{{border-collapse:collapse;width:100%;table-layout:auto}} .wrap{{overflow-x:auto;max-width:100%}}
+th,td{{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;word-break:break-word}} th{{white-space:nowrap}}
 th{{color:var(--muted);font-weight:600}} .muted{{color:var(--muted)}}
-.chip{{display:inline-block;padding:1px 7px;margin:1px;border-radius:9px;font-size:12px;border:1px solid currentColor}}
+.scroll{{max-height:9em;overflow:auto;min-width:22em}} .scroll pre{{margin:0;white-space:pre-wrap;font-size:12px}}
+.chip{{display:inline-block;padding:1px 7px;margin:1px;border-radius:9px;font-size:12px;border:1px solid currentColor;white-space:nowrap}}
 .ok{{color:var(--ok)}} .bad{{color:var(--bad)}} .run{{color:var(--run)}}
 </style></head><body>
 <h1>Pipeline status</h1><p class="muted">Updated {time.strftime("%H:%M:%S")} · page reloads every 10 s</p>
