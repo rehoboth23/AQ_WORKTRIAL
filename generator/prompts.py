@@ -12,8 +12,8 @@ never sees or edits them.
 import json
 import re
 
-from config import (MAX_FAULTS, MAX_OBSTACLES, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_OBSTACLES, MIN_RULES,
-                    MIN_SITES, MIN_THEMES)
+from config import (MAX_FAULTS, MAX_KNOWLEDGE, MAX_OBSTACLES, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_KNOWLEDGE,
+                    MIN_OBSTACLES, MIN_RULES, MIN_SITES, MIN_THEMES)
 
 # Paths the model is allowed to write. Anything else in a reply is dropped.
 MODEL_FILES = ("instruction.md", "environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py")
@@ -993,6 +993,91 @@ CRITIC_SYSTEM_LONGROAD = (CRITIC_SYSTEM_LONGROAD.replace("__RULE__", DIFFICULTY_
                           .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_LONGROAD.lstrip(",")))
 
 
+# ---------------------------------------------------------------- domain genre
+DIFFICULTY_RULE_DOMAIN = f"""\
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
+  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). It checks
+  its work well against anything it can run, so here the difficulty is KNOWLEDGE it must bring:
+  the exact details of a niche but public, standardised domain, where a generalist gets one
+  detail wrong and its own tests (built on the same misunderstanding) do not notice.
+  * Domains: legacy data (COBOL copybooks, packed decimal COMP-3, zoned decimal sign overpunch,
+    EBCDIC code pages, fixed-width mainframe records), bioinformatics (SAM/BAM flags and CIGAR,
+    VCF normalisation, 0- vs 1-based and half-open coordinates, FASTQ quality encodings, codon
+    tables), cryptography and encodings (RFC key derivation, MAC and padding schemes, ASN.1/DER,
+    base32/base58 checks), finance conventions (day-count conventions, business-day rules),
+    geodesy and time (datum transforms, GPS week/leap seconds, ISO week dates), telecom and
+    binary protocols (TLV, BCD, CRC variants with exact parameters).
+  * The task is a realistic job in that domain (convert, validate, repair or report on real-
+    shaped data) that turns on {MIN_KNOWLEDGE} to {MAX_KNOWLEDGE} KNOWLEDGE POINTS: exact details fixed by
+    the named standard that a generalist commonly gets wrong (which nibble holds the sign and
+    which sign codes exist, which CIGAR ops consume the reference, inclusive vs exclusive ends,
+    the CRC's reflection and final XOR). The data exercises every point, including the rare
+    cases (negative packed values, soft clips, the last base of a contig).
+  * instruction.md names the standard(s) precisely (name, version or RFC number, code page) and
+    fixes every option the standard leaves open; it never explains the details: knowing them is
+    the work. Everything else (interface, paths, output layout) is stated exactly.
+  * No reference in the environment: no library, tool or table that implements the standard
+    (do not install pysam, samtools, cryptography, a codec package, an EBCDIC table), no worked
+    conversion of the real data, no tests. Standard-library features that ship with the base
+    image are allowed only if knowing to use them correctly is itself a knowledge point.
+  * Ground truth must NOT come from your own understanding: you may misremember a detail too,
+    and then the solution and the tests would be wrong together. The hidden tests compute every
+    expected value with an independent REFERENCE: a well-known library installed only for the
+    verifier (list it in `verifier_packages` as name==version; it is added to the test runner,
+    never to the image) or published test vectors from the standard itself. test_outputs.py may
+    import those packages. solve.sh must not use them (the agent will not have them).
+  * Fair: an expert in the domain derives every expected value from the named standard plus
+    instruction.md. No trick data, nothing undiscoverable; a test fails only on a wrong detail.
+"""
+
+DIFFICULTY_SPEC_FIELDS_DOMAIN = """,
+  "challenge_kind": "domain_knowledge",
+  "domain": "the field, e.g. mainframe data, bioinformatics, cryptography",
+  "standards": ["each standard instruction.md names, with version / RFC / code page"],
+  "knowledge_points": [{"detail": "the exact rule the standard fixes",
+                        "standard_ref": "where the standard says it",
+                        "common_mistake": "what a generalist does instead",
+                        "hidden_test_input": "the data the test uses to catch the mistake"}],
+  "verifier_packages": ["reference library the tests use, as name==version (installed only for the verifier)"],
+  "reference_check": "how each expected value is computed independently of solve.sh (which package / test vectors)",
+  "reference_in_environment": "any library, tool, table or worked example in the environment that implements the standard; must be none"
+"""
+
+CRITIC_SYSTEM_DOMAIN = """\
+You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
+it reads files, greps, runs builds and tests, and writes its own tests. It knows mainstream
+programming well; it is weakest on exact details of niche standards, and its own tests share its
+misunderstandings.
+
+__RULE__
+Given a task spec (JSON), walk through how that agent would solve it: which details it would get
+right from general knowledge, which it would likely get wrong, and whether anything in the
+environment would correct it. The spec is TOO EASY if fewer than __MIN_KNOWLEDGE__ knowledge points, if the
+points are common knowledge (UTF-8, ISO 8601 basics, JSON), if a library, tool or worked example
+in the environment implements the standard, if the data never exercises the rare cases, or if
+the instruction explains the details. It is UNFAIR if the standard is not named precisely, if it
+leaves an option the instruction does not fix, if an expected value comes from the generator's
+own code instead of an independent reference (a verifier-only package or published vectors), or
+if a test checks anything the named standard plus instruction.md does not determine.
+
+If results of earlier designs are given, a design that repeats a shape those results show was
+too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
+keeping it fair, solvable, deterministic and on the same topic.
+
+The revised spec must keep every key of the original AND include these design keys, filled in:
+{__FIELDS__
+}
+
+Reply with ONE JSON object and nothing else:
+{"walkthrough": ["how the agent would approach the ORIGINAL spec, point by point"],
+  "too_easy_because": ["problems found, empty if none"],
+  "spec": {...the full spec, revised if needed, with every key of the original...}}
+"""
+CRITIC_SYSTEM_DOMAIN = (CRITIC_SYSTEM_DOMAIN.replace("__RULE__", DIFFICULTY_RULE_DOMAIN)
+                        .replace("__MIN_KNOWLEDGE__", str(MIN_KNOWLEDGE))
+                        .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_DOMAIN.lstrip(",")))
+
+
 GENRES = {
     "spec": {"rule": DIFFICULTY_RULE, "fields": DIFFICULTY_SPEC_FIELDS, "critic": CRITIC_SYSTEM,
              "review": INSTRUCTION_REVIEW_SYSTEM, "mutants": MUTANT_SYSTEM},
@@ -1002,6 +1087,8 @@ GENRES = {
                   "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
     "long_road": {"rule": DIFFICULTY_RULE_LONGROAD, "fields": DIFFICULTY_SPEC_FIELDS_LONGROAD, "critic": CRITIC_SYSTEM_LONGROAD,
                   "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
+    "domain": {"rule": DIFFICULTY_RULE_DOMAIN, "fields": DIFFICULTY_SPEC_FIELDS_DOMAIN, "critic": CRITIC_SYSTEM_DOMAIN,
+               "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
 }
 
 

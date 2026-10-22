@@ -151,6 +151,12 @@ class Spec(BaseModel):
     obstacles: list[dict] = Field(default_factory=list)
     shortcut_guards: list[dict] = Field(default_factory=list)
     offline: str = ""
+    # Domain genre
+    domain: str = ""
+    standards: list[str] = Field(default_factory=list)
+    knowledge_points: list[dict] = Field(default_factory=list)
+    verifier_packages: list[str] = Field(default_factory=list)
+    reference_check: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
@@ -322,6 +328,11 @@ def mutation_items(spec: dict) -> list[dict]:
                           "wrong_fix": "repair every other obstacle but leave this one unfixed (if a later step cannot run "
                                        "because of it, work around it the cheapest way that skips its real repair)",
                           "counterexample": o.get("symptom"), "caught_by_test": o.get("hidden_test")})
+    for i, k in enumerate(spec.get("knowledge_points") or []):
+        if isinstance(k, dict) and str(k.get("detail") or "").strip():
+            items.append({"where": k.get("standard_ref"), "what": f"knowledge point {i}: {k.get('detail')}",
+                          "wrong_fix": "make the common mistake instead: " + str(k.get("common_mistake") or ""),
+                          "counterexample": k.get("hidden_test_input"), "caught_by_test": f"knowledge point {i}"})
     for i, g in enumerate(spec.get("shortcut_guards") or []):
         if isinstance(g, dict) and str(g.get("shortcut") or "").strip():
             items.append({"where": f"shortcut {i}", "what": f"shortcut: {g.get('shortcut')}",
@@ -512,6 +523,15 @@ def task_toml(spec: dict, task_name: str) -> str:
     })
 
 
+def test_sh(spec: dict) -> str:
+    """TEST_SH plus the verifier-only reference packages a domain task's tests import (exact pins;
+    they are never installed in the image, so the agent cannot use them)."""
+    pkgs = [str(p).strip() for p in spec.get("verifier_packages") or []
+            if difficulty.VERIFIER_PACKAGE.fullmatch(str(p).strip())]
+    extra = "".join(f"  --with {p} \\\n" for p in pkgs)
+    return TEST_SH.replace("  --with pytest-json-ctrf==0.3.5 \\\n", "  --with pytest-json-ctrf==0.3.5 \\\n" + extra)
+
+
 def write_task(task_dir: str, spec: dict, task_name: str, files: dict[str, str]) -> None:
     """(Re)write the whole task directory from the model's files plus our boilerplate."""
     # Empty the dir but keep it: removing it would free the reserved name for a moment, and
@@ -523,7 +543,7 @@ def write_task(task_dir: str, spec: dict, task_name: str, files: dict[str, str])
     out = dict(files)
     for path in ("environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py"):
         out[path] = _with_canary(out[path])
-    out["tests/test.sh"] = TEST_SH
+    out["tests/test.sh"] = test_sh(spec)
     out["task.toml"] = task_toml(spec, task_name)
     for rel, body in out.items():
         dest = os.path.join(task_dir, *rel.split("/"))

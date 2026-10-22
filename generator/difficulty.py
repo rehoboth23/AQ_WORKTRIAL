@@ -22,8 +22,10 @@ from config import (
     DISCOVERY,
     MAX_FAULTS,
     MAX_RULES,
+    MAX_KNOWLEDGE,
     MAX_OBSTACLES,
     MAX_SITES,
+    MIN_KNOWLEDGE,
     MIN_OBSTACLES,
     MIN_PRESERVED,
     MIN_RULES,
@@ -301,9 +303,44 @@ def spec_gate_longroad(spec: dict) -> list[str]:
     return problems
 
 
+VERIFIER_PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==[A-Za-z0-9.+!-]+")
+
+
+def spec_gate_domain(spec: dict) -> list[str]:
+    """Domain genre: knowledge points of a named standard, checked against an independent
+    reference that only the verifier has."""
+    pts = spec.get("knowledge_points") or []
+    if not isinstance(pts, list) or not all(isinstance(p, dict) for p in pts):
+        return ["`knowledge_points` must be a list of objects"]
+    problems = []
+    if not (MIN_KNOWLEDGE <= len(pts) <= MAX_KNOWLEDGE):
+        problems.append(f"needs {MIN_KNOWLEDGE} to {MAX_KNOWLEDGE} knowledge points, has {len(pts)}")
+    keys = ("detail", "standard_ref", "common_mistake", "hidden_test_input")
+    incomplete = [str(i) for i, p in enumerate(pts) if not all(str(p.get(k) or "").strip() for k in keys)]
+    if incomplete:
+        problems.append("every knowledge point needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
+    if not [s for s in spec.get("standards") or [] if str(s).strip()]:
+        problems.append("needs `standards`: each standard instruction.md names, with version / RFC / code page")
+    pkgs = [str(p).strip() for p in spec.get("verifier_packages") or [] if str(p).strip()]
+    bad = [p for p in pkgs if not VERIFIER_PACKAGE.fullmatch(p)]
+    if bad:
+        problems.append(f"`verifier_packages` must be exact name==version pins: {bad[:3]}")
+    if not str(spec.get("reference_check") or "").strip():
+        problems.append("needs `reference_check`: how the tests compute expected values independently of solve.sh")
+    elif not pkgs and not re.search(r"(?i)test vector|appendix|published", str(spec.get("reference_check"))):
+        problems.append("expected values need an independent reference: a verifier-only package in `verifier_packages` "
+                        "or published test vectors from the standard")
+    v = str(spec.get("reference_in_environment") or "").strip()
+    if not v or not re.match(r"(?i)[\s*-]*none\b", v):
+        problems.append(f"`reference_in_environment` must be none ({v[:120]})")
+    if str(spec.get("challenge_kind") or "").strip().lower() != "domain_knowledge":
+        problems.append("`challenge_kind` must be domain_knowledge for this genre")
+    return problems
+
+
 def spec_gate(spec: dict, genre: str = "spec") -> list[str]:
     return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement,
-            "long_road": spec_gate_longroad}[genre](spec)
+            "long_road": spec_gate_longroad, "domain": spec_gate_domain}[genre](spec)
 
 
 _SPEC_DOC_EXTS = (".md", ".rst", ".txt", ".adoc")
