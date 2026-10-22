@@ -37,6 +37,7 @@ from config import (
     BAND_LOW,
     CALIBRATION_FILE,
     CALIBRATION_WINDOW,
+    DESIGN_VERSION,
     CRITIC_FOUND_WITHIN,
     EVAL_MODEL,
     EVAL_PRICE_IN_PER_M,
@@ -76,8 +77,10 @@ def load_history() -> list[dict]:
             rows = [json.loads(l) for l in f if l.strip()]
     except FileNotFoundError:
         return []
-    # Only evaluated tasks steer the next design; generation failures are recorded but not fed back.
-    return [r for r in rows if r.get("passes") is not None][-CALIBRATION_WINDOW:]
+    # Only evaluated tasks made under the current design rules steer the next design; generation
+    # failures and older designs stay in the file (audit) but are not fed back.
+    return [r for r in rows if r.get("passes") is not None
+            and r.get("design_version") == DESIGN_VERSION][-CALIBRATION_WINDOW:]
 
 
 def append_history(entry: dict) -> None:
@@ -172,6 +175,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
             if band.median_found_step:
                 note += f", reached the faulty files on turn {band.median_found_step:g}"
         append_history({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "run_id": run_id, "knobs": KNOBS,
+                        "design_version": DESIGN_VERSION,
                         "name": meta["name"], "description": meta["description"],
                         "difficulty": meta["difficulty"], "passes": band.passes, "n": N_RUNS,
                         "challenge_kind": (spec or {}).get("challenge_kind"),
@@ -342,7 +346,8 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
                       "logs_dir": gen["logs_dir"]}
             if not control:  # a design glm-5.1 can't build is recorded too
                 append_history({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "run_id": gen["run_id"],
-                                "knobs": KNOBS, "name": topic[:60], "verdict": "gen_failed", "passes": None})
+                                "knobs": KNOBS, "design_version": DESIGN_VERSION, "name": topic[:60],
+                                "verdict": "gen_failed", "passes": None})
             st = ledger.set(topic, "gen_failed", why=record["why"][:120], gen=gen, record=record)
             write_text_atomic(os.path.join(gen["logs_dir"], "VERDICT.md"), verdict_md(st))
             return record

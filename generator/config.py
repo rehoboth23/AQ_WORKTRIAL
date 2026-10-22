@@ -109,6 +109,10 @@ GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
 MAX_SPEC_ATTEMPTS = int(os.environ.get("MAX_SPEC_ATTEMPTS", "2"))
 # How many recent band verdicts are fed back into the spec prompt.
 CALIBRATION_WINDOW = int(os.environ.get("CALIBRATION_WINDOW", "8"))
+# Tag for the task-design rules in prompts.py. History lines record it, and the spec prompt is
+# shown only lines from the current design, so examples from older rules (e.g. 7-fault tasks
+# with step-count notes) never steer a new design. Bump it when the design rules change.
+DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-21-sequence")
 
 # --- Paths -----------------------------------------------------------------
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))
