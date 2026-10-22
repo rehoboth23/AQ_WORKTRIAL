@@ -132,7 +132,36 @@ def spec_gate(spec: dict, genre: str = "") -> list[str]:
     bad = [p for p in spec.get("verifier_apt") or [] if not _APT_NAME.fullmatch(str(p).strip())]
     if bad:
         problems.append(f"`verifier_apt` must be Debian package names: {bad[:3]}")
-    return problems + knob_gate(spec)
+    return problems + knob_gate(spec) + reference_gate(spec)
+
+
+REFERENCE_ACCESS = ("none", "frozen_examples", "runnable")
+
+
+def reference_gate(spec: dict) -> list[str]:
+    """The agent never runs code whose output answers the graded question (a mawk port with mawk
+    installed was solved every time). `runnable` needs the reason matching is not the hard part, and
+    every graded quirk names the file in the environment that shows it."""
+    access = str(spec.get("reference_access") or "").strip()
+    kind, _, reason = access.partition(":")
+    kind = kind.strip().lower().replace(" ", "_")
+    problems = []
+    if kind not in REFERENCE_ACCESS:
+        problems.append("needs `reference_access`: none, frozen_examples, or runnable: <why matching the "
+                        "reference is not the hard part>")
+    elif kind == "runnable" and len(reason.strip()) < 15:
+        problems.append("`reference_access: runnable` needs its reason (a speed, memory or load target), "
+                        "or ship frozen practice examples instead")
+    if str(spec.get("quirk_matrix") or "").strip():
+        ev = spec.get("quirk_evidence")
+        if not isinstance(ev, list) or not ev:
+            problems.append("needs `quirk_evidence`: for every graded quirk, the environment file that shows it")
+        else:
+            bare = [str(i) for i, e in enumerate(ev) if not (isinstance(e, dict) and str(e.get("evidence") or "").strip())]
+            if bare:
+                problems.append("every `quirk_evidence` entry needs `evidence` (the file that shows it); missing on "
+                                + ", ".join(bare[:5]))
+    return problems
 
 
 _SPEC_DOC_EXTS = (".md", ".rst", ".txt", ".adoc")
@@ -496,7 +525,11 @@ def _interface_names(files: dict[str, str], spec: dict | None) -> tuple[dict, se
                         "and name it in instruction.md")
     allowed = _doc_names(docs)
     build_only = set()
-    if str((spec or {}).get("reference_binary") or "").strip():  # a reference that IS the specification
+    runnable = str((spec or {}).get("reference_access") or "").strip().lower().startswith("runnable")
+    if str((spec or {}).get("reference_binary") or "").strip() and not runnable:
+        problems.append("a reference binary would reach the agent's image, but `reference_access` is not "
+                        "`runnable`; keep the reference in tests/ and ship frozen practice examples")
+    elif str((spec or {}).get("reference_binary") or "").strip():  # runnable: matching is not the hard part
         for key in ("reference_binary", "sample_file"):
             v = str((spec or {}).get(key) or "").strip()
             if v:

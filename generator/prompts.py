@@ -79,13 +79,21 @@ DIFFICULTY_RULE = f"""\
     and the tests wrong together. The oracle (solution/solve.sh) must pass every check.
   * Nothing in the environment gives the answer away: no expected outputs, no reference
     implementation, no verify command, no backup or original of the correct code, no .git with the
-    fix. The one exception is a reference program that IS the specification (a legacy binary to
-    match); the tests then compile or copy their own pristine copy and hide the environment's one.
-    Public tests are the one other exception: tests for the COMMON path only (about 30% of what the
+    fix.
+  * REFERENCE ACCESS: the agent never runs code whose output answers the graded question; an agent
+    that can run the answer key fuzzes against it until everything matches (a mawk port with mawk
+    installed was solved every time, even with a wider hidden fuzzer). When a reference program
+    defines the behaviour (a legacy interpreter, binary or library), it runs only in tests/ and the
+    verifier's packages. The agent gets the named version, its documentation or source, and a FROZEN
+    practice set of input/output pairs the reference produced, in which every graded quirk appears at
+    least once (`quirk_evidence` names the file that shows each one); the graded instances combine
+    those quirks in new ways. `reference_access` is `none`, `frozen_examples`, or `runnable: <reason>`
+    only when matching the reference is not the hard part (a speed, memory or load target).
+    Public tests are the one exception to "no verify command": tests for the COMMON path only (about 30% of what the
     hidden tests cover, e.g. in tests_public/) may ship so the agent's verify loop works; they never
     contain a hidden input or an edge case. The tool and the public tests run in under 60 s on 1 CPU,
     so failures come from the work, not from waiting.
-  * PRACTICE vs GRADED instances: whatever the agent gets (data, files, a reference it may run) is a
+  * PRACTICE vs GRADED instances: whatever the agent gets (data, files, documents, frozen examples) is a
     practice set. The hidden tests grade DIFFERENT instances, generated in tests/ from sibling seeds
     with the same plan, never present in the environment; otherwise the agent can compute the graded
     answers itself (a reference or a standard library that decodes them) and the task is solved by
@@ -111,7 +119,7 @@ DIFFICULTY_RULE = f"""\
     value), compute ground truth the way it says, include its seed checks among `checks`, use its
     knobs and must_keep, and stay inside its `out_of_bounds`. Draw the hidden instances from its
     `quirk_matrix` in the stated mix (one level per dimension per instance; never only easy cells),
-    ship its `public_tests` and nothing more, and enforce its `anti_cheese` gate with a hidden test.
+    ship its `public_tests` and nothing more, keep its `reference_access`, and enforce its `anti_cheese` gate with a hidden test.
     Its environment notes are limits.
 """
 
@@ -127,6 +135,7 @@ DIFFICULTY_SPEC_FIELDS = """,
   "ground_truth": "how the tests compute every expected value (reference in tests/, verifier-only package, seeded generator)",
   "dial": "what moves the pass rate, its fair range and the chosen value (from the seed card when given); empty if none",
   "quirk_matrix": "dimensions x levels the hidden instances are drawn from, and the mix (from the seed card)",
+  "quirk_evidence": [{"quirk": "a quirk_matrix level or graded behaviour", "evidence": "the environment file that shows it to the agent (a practice pair, a document section, a source line)"}],
   "public_tests": "what the visible common-path tests cover (about 30%), and where they ship",
   "anti_cheese": "the paired gate that stops a shortcut (performance budget, forbidden library or file, output identity), enforced at run time, and its hidden test",
   "graded_instances": "how the graded instances differ from the practice set the agent gets (sibling seeds generated in tests/), and the determinism self-check",
@@ -136,7 +145,7 @@ DIFFICULTY_SPEC_FIELDS = """,
   "adjust_rules": {"too_easy": ["fair moves if 4-5/5"], "too_hard": ["fair moves if 0/5"]},
   "verifier_packages": ["pip packages the tests need, as name==version (installed only for the verifier); may be empty"],
   "verifier_apt": ["Debian packages the tests need (e.g. gcc to compile a pristine reference); may be empty"],
-  "reference_in_environment": "none, or the reference program that IS the specification and how the tests hide it"
+  "reference_access": "none | frozen_examples | runnable: <why matching the reference is not the hard part> (from the seed card when given)"
 """
 
 QUALITY_RULES = """\
@@ -396,9 +405,11 @@ spec is TOO EASY if it has fewer than {MIN_CHECKS} checks, if the agent could re
 evaluation (all hidden inputs are guessable from the examples, a reference answers every case), if
 most checks match what a programmer does by default, if several checks are one check restated, or
 if anything in the environment or instruction gives the answer away, if the graded instances are in
-the environment (the agent can compute their answers), or if there is no invisible trap. It is UNFAIR if a check does
+the environment (the agent can compute their answers), if the agent can run code whose output
+answers the graded question (a reference, the legacy interpreter, a decoding library) and
+`reference_access` is not `runnable` with a reason, or if there is no invisible trap. It is UNFAIR if a check does
 not follow from instruction.md, a named document or the environment, if two reasonable readings
-give different results, if an expected value comes from the designer's reasoning instead of code
+give different results, if a graded quirk has no `quirk_evidence` the agent can study, if an expected value comes from the designer's reasoning instead of code
 the tests run, or if anything depends on timing, randomness or the network.
 
 If results of earlier designs are given, a design that repeats a shape those results show was
@@ -429,7 +440,8 @@ Check, against the list of checks and tests/test_outputs.py given to you:
   2. LEAKED ANSWER: expected output beyond trivial examples, a sample that covers the hidden
      inputs, or a hint of which cases the tests probe.
   3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
-     reference implementation (unless the reference IS the specification the task asks to match).
+     reference implementation, or a runnable reference program (unless the design's
+     `reference_access` is `runnable` with its reason).
      Public tests for the COMMON path (the design's `public_tests`) are allowed and should stay;
      flag them only if they contain a hidden input or an edge case the hidden tests check.
   4. UNSTATED FORMAT: a test requires an exact textual form no sentence states; report it as
