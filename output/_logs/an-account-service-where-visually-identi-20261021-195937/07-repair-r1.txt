@@ -1,0 +1,479 @@
+Looking at the check failures, I need to fix:
+1. Comments/docs that state the rule a fault breaks (in config.py, middleware.py, CONTRIBUTING.md, init_db.py)
+2. instruction.md naming code symbols where faults live
+
+Let me fix each file:
+
+<<<FILE environment/account_service/config.py>>>
+"""Configuration for the account service.
+
+Default values are defined here. Runtime overrides are loaded from
+the app_config database table when the Flask app is created.
+"""
+import os
+
+# Unicode normalization form applied to usernames at storage and lookup time.
+NORMALIZATION_FORM = 'NFD'
+
+# Database path
+DB_PATH = os.environ.get('ACCOUNT_DB_PATH', '/app/data/accounts.db')
+
+# Flask secret key
+SECRET_KEY = os.environ.get('ACCOUNT_SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Username constraints
+MAX_USERNAME_LENGTH = int(os.environ.get('MAX_USERNAME_LENGTH', '64'))
+MIN_USERNAME_LENGTH = 1
+
+# Balance constraints
+MIN_BALANCE = float(os.environ.get('MIN_BALANCE', '-1000.0'))
+MAX_BALANCE = float(os.environ.get('MAX_BALANCE', '999999999.0'))
+
+# Server settings
+HOST = os.environ.get('ACCOUNT_HOST', '0.0.0.0')
+PORT = int(os.environ.get('ACCOUNT_PORT', '5000'))
+DEBUG = os.environ.get('ACCOUNT_DEBUG', 'false').lower() in ('true', '1', 'yes')
+
+# Rate limiting (requests per minute per endpoint)
+RATE_LIMIT_REGISTER = int(os.environ.get('RATE_LIMIT_REGISTER', '5'))
+RATE_LIMIT_LOGIN = int(os.environ.get('RATE_LIMIT_LOGIN', '20'))
+RATE_LIMIT_ADMIN = int(os.environ.get('RATE_LIMIT_ADMIN', '10'))
+<<<END>>>
+
+<<<FILE environment/account_service/middleware.py>>>
+"""WSGI middleware for the account service.
+
+Provides input sanitization middleware that normalizes URL paths
+to ensure consistent routing for Unicode characters.
+"""
+import unicodedata
+
+
+class InputSanitizationMiddleware:
+    """Middleware that normalizes URL paths for consistent routing.
+
+    Ensures that Unicode characters in URL paths are in a consistent form
+    for matching and routing. This handles the case where different clients
+    may encode the same visual path differently.
+
+    Note: This middleware normalizes PATH_INFO in the WSGI environ
+    for consistent URL routing.
+    """
+
+    def __init__(self, app):
+        """Initialize the middleware with the WSGI application.
+
+        Args:
+            app: The WSGI application to wrap.
+        """
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        """Process the request through the middleware.
+
+        Normalizes PATH_INFO to a consistent form before passing the request
+        to the wrapped application.
+
+        Args:
+            environ: WSGI environment dictionary.
+            start_response: WSGI start_response callable.
+
+        Returns:
+            The response from the wrapped application.
+        """
+        path_info = environ.get('PATH_INFO', '')
+        if path_info:
+            normalized = unicodedata.normalize('NFC', path_info)
+            environ['PATH_INFO'] = normalized
+
+        # Also normalize SCRIPT_NAME if present
+        script_name = environ.get('SCRIPT_NAME', '')
+        if script_name:
+            environ['SCRIPT_NAME'] = unicodedata.normalize('NFC', script_name)
+
+        return self.app(environ, start_response)
+
+
+class RequestLoggingMiddleware:
+    """Middleware that logs basic request information.
+
+    Logs the HTTP method, path, and response status for each request.
+    Useful for debugging and monitoring.
+    """
+
+    def __init__(self, app, logger=None):
+        """Initialize with the WSGI application and optional logger.
+
+        Args:
+            app: The WSGI application to wrap.
+            logger: Optional logging.Logger instance. If None, a
+                   basic logger is created.
+        """
+        self.app = app
+        self.logger = logger
+
+    def __call__(self, environ, start_response):
+        """Process and log the request."""
+        method = environ.get('REQUEST_METHOD', 'UNKNOWN')
+        path = environ.get('PATH_INFO', '/')
+
+        def logging_start_response(status, headers, exc_info=None):
+            if self.logger:
+                self.logger.info(f"{method} {path} -> {status}")
+            return start_response(status, headers, exc_info)
+
+        return self.app(environ, logging_start_response)
+<<<END>>>
+
+<<<FILE environment/account_service/CONTRIBUTING.md>>>
+# Contributing to Account Service
+
+Thank you for your interest in contributing to the Account Service project.
+This document outlines the development guidelines and conventions that all
+contributors should follow.
+
+## Development Setup
+
+1. Clone the repository
+2. Install dependencies: `pip install -e .`
+3. The database is automatically initialized at `/app/data/accounts.db`
+4. Run the service: `flask --app account_service.app run --port 5000`
+
+## Code Style
+
+- Follow PEP 8 for Python code
+- Use descriptive variable names that convey intent
+- Add docstrings to all public functions and classes
+- Keep functions focused on a single responsibility
+- Prefer explicit imports over wildcard imports
+
+## Unicode Handling
+
+All usernames must be stored in a single, consistent Unicode normalization
+form. This ensures that visually identical usernames always resolve to the same
+account, preventing duplicate accounts that look the same on screen but differ
+in their internal Unicode representation.
+
+Guidelines:
+- Use `normalize_for_storage()` from `normalize.py` when processing usernames
+  at any entry point (web API, CLI, import)
+- Always normalize usernames *before* checking for duplicates or storing
+- Display names should use the same canonical form as storage for consistency
+- ASCII-only usernames are unaffected by Unicode normalization
+- Test with accented characters (e.g., café, naïve, Björk) to verify proper
+  normalization
+
+## Database Conventions
+
+- Use parameterized queries to prevent SQL injection
+- Always use transactions for operations that modify multiple tables
+- The `balance_history` table must be kept in sync with the `accounts` table
+- Every balance change must have a corresponding history entry
+- Foreign key constraints are enabled; handle cascade operations carefully
+
+## API Design
+
+- REST endpoints should return JSON responses
+- Use appropriate HTTP status codes:
+  - 200: Success
+  - 201: Created
+  - 400: Bad request / validation error
+  - 401: Unauthorized
+  - 404: Not found
+  - 409: Conflict (e.g., duplicate username)
+- Include meaningful error messages in the response body
+- Support both JSON and form-encoded request bodies where appropriate
+
+## Testing
+
+- Write tests for all new features
+- Test edge cases including Unicode usernames with combining characters
+- Ensure ASCII usernames are completely unaffected by normalization changes
+- Test empty and whitespace-only inputs
+- Verify that visually identical usernames in different normalization forms
+  are treated as the same account
+
+## Pull Request Process
+
+1. Create a feature branch from main
+2. Make your changes with appropriate tests
+3. Ensure all existing tests still pass
+4. Submit a pull request with a clear description of the changes
+5. Address any review feedback before merging
+<<<END>>>
+
+<<<FILE environment/init_db.py>>>
+"""Initialize the accounts database with schema and sample data.
+
+This script creates the SQLite database at /app/data/accounts.db,
+sets up the schema (accounts, balance_history, app_config tables),
+and populates it with initial data.
+
+Run once during Docker image build. Deleted after database creation.
+"""
+import sqlite3
+import unicodedata
+import os
+from datetime import datetime, timezone
+
+DB_PATH = '/app/data/accounts.db'
+
+
+def init_db():
+    """Initialize the database with schema and sample data."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    # Create schema
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            balance REAL NOT NULL DEFAULT 0.0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS balance_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            old_balance REAL NOT NULL,
+            new_balance REAL NOT NULL,
+            operation TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS app_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
+        CREATE INDEX IF NOT EXISTS idx_balance_history_account ON balance_history(account_id);
+        CREATE INDEX IF NOT EXISTS idx_balance_history_created ON balance_history(created_at);
+    """)
+
+    # Insert app_config settings
+    conn.executemany(
+        "INSERT INTO app_config (key, value) VALUES (?, ?)",
+        [
+            ('normalization_form', 'NFD'),
+            ('max_username_length', '64'),
+            ('min_balance', '-1000.0'),
+            ('max_balance', '999999999.0'),
+        ]
+    )
+
+    # ASCII accounts
+    ascii_accounts = [
+        ('alice', 1000.0, '2024-01-15T10:00:00+00:00'),
+        ('bob', 750.0, '2024-02-01T14:30:00+00:00'),
+        ('charlie', 250.0, '2024-03-10T09:15:00+00:00'),
+        ('diana', 1200.0, '2024-04-05T16:45:00+00:00'),
+        ('eve', 0.0, '2024-05-20T11:00:00+00:00'),
+        ('frank', 450.0, '2024-06-12T08:30:00+00:00'),
+        ('grace', 890.0, '2024-07-18T13:20:00+00:00'),
+        ('henry', 320.0, '2024-08-22T15:45:00+00:00'),
+    ]
+
+    # Unicode accounts with composed accented characters
+    nfc_accounts = [
+        (unicodedata.normalize('NFC', 'café'), 500.0, '2024-06-01T08:00:00+00:00'),
+        (unicodedata.normalize('NFC', 'naïve'), 200.0, '2024-06-15T12:30:00+00:00'),
+        (unicodedata.normalize('NFC', 'björk'), 150.0, '2024-07-01T10:00:00+00:00'),
+        (unicodedata.normalize('NFC', 'straße'), 350.0, '2024-07-10T15:00:00+00:00'),
+        (unicodedata.normalize('NFC', 'rené'), 100.0, '2024-08-01T09:00:00+00:00'),
+        (unicodedata.normalize('NFC', 'søren'), 75.0, '2024-08-15T11:30:00+00:00'),
+        (unicodedata.normalize('NFC', 'josé'), 220.0, '2024-09-01T14:00:00+00:00'),
+        (unicodedata.normalize('NFC', 'françois'), 180.0, '2024-09-15T16:00:00+00:00'),
+    ]
+
+    # Unicode accounts with decomposed accented characters
+    nfd_accounts = [
+        (unicodedata.normalize('NFD', 'café'), 300.0, '2024-05-15T07:00:00+00:00'),
+        (unicodedata.normalize('NFD', 'andersen'), 50.0, '2024-10-01T08:30:00+00:00'),
+        (unicodedata.normalize('NFD', 'über'), 125.0, '2024-10-15T10:00:00+00:00'),
+        (unicodedata.normalize('NFD', 'müller'), 275.0, '2024-11-01T12:30:00+00:00'),
+    ]
+
+    # café appears in both lists above with different internal representations
+
+    all_accounts = ascii_accounts + nfc_accounts + nfd_accounts
+
+    for username, balance, created_at in all_accounts:
+        cursor = conn.execute(
+            "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+            (username, balance, created_at)
+        )
+        account_id = cursor.lastrowid
+
+        # Add initial balance history entry for accounts with non-zero balance
+        if balance > 0:
+            conn.execute(
+                "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (account_id, username, 0.0, balance, 'initial', created_at)
+            )
+
+    # Add additional balance history entries for testing
+
+    # Alice had a deposit when she first signed up
+    alice_row = conn.execute("SELECT id FROM accounts WHERE username = 'alice'").fetchone()
+    if alice_row:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (alice_row['id'], 'alice', 0.0, 1000.0, 'deposit', '2024-01-15T10:00:00+00:00')
+        )
+
+    # Bob had an initial deposit then a withdrawal
+    bob_row = conn.execute("SELECT id FROM accounts WHERE username = 'bob'").fetchone()
+    if bob_row:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (bob_row['id'], 'bob', 0.0, 1000.0, 'deposit', '2024-02-01T14:30:00+00:00')
+        )
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (bob_row['id'], 'bob', 1000.0, 750.0, 'withdrawal', '2024-02-05T10:00:00+00:00')
+        )
+
+    # Get café account IDs for balance history
+    cafe_nfc_username = unicodedata.normalize('NFC', 'café')
+    cafe_nfd_username = unicodedata.normalize('NFD', 'café')
+
+    cafe_nfc = conn.execute(
+        "SELECT id FROM accounts WHERE username = ?",
+        (cafe_nfc_username,)
+    ).fetchone()
+
+    cafe_nfd = conn.execute(
+        "SELECT id FROM accounts WHERE username = ?",
+        (cafe_nfd_username,)
+    ).fetchone()
+
+    # Add balance history for both café accounts
+    if cafe_nfc:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (cafe_nfc['id'], cafe_nfc_username, 0.0, 500.0, 'deposit', '2024-06-01T08:00:00+00:00')
+        )
+
+    if cafe_nfd:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (cafe_nfd['id'], cafe_nfd_username, 0.0, 300.0, 'deposit', '2024-05-15T07:00:00+00:00')
+        )
+
+    # Add some history for NFC naïve
+    naive_nfc_username = unicodedata.normalize('NFC', 'naïve')
+    naive_nfc = conn.execute(
+        "SELECT id FROM accounts WHERE username = ?",
+        (naive_nfc_username,)
+    ).fetchone()
+    if naive_nfc:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (naive_nfc['id'], naive_nfc_username, 0.0, 200.0, 'deposit', '2024-06-15T12:30:00+00:00')
+        )
+
+    # Add history for NFC björk
+    bjork_nfc_username = unicodedata.normalize('NFC', 'björk')
+    bjork_nfc = conn.execute(
+        "SELECT id FROM accounts WHERE username = ?",
+        (bjork_nfc_username,)
+    ).fetchone()
+    if bjork_nfc:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (bjork_nfc['id'], bjork_nfc_username, 0.0, 150.0, 'deposit', '2024-07-01T10:00:00+00:00')
+        )
+
+    # Add history for NFD über
+    uber_nfd_username = unicodedata.normalize('NFD', 'über')
+    uber_nfd = conn.execute(
+        "SELECT id FROM accounts WHERE username = ?",
+        (uber_nfd_username,)
+    ).fetchone()
+    if uber_nfd:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (uber_nfd['id'], uber_nfd_username, 0.0, 125.0, 'deposit', '2024-10-15T10:00:00+00:00')
+        )
+
+    # Add history for NFD müller
+    muller_nfd_username = unicodedata.normalize('NFD', 'müller')
+    muller_nfd = conn.execute(
+        "SELECT id FROM accounts WHERE username = ?",
+        (muller_nfd_username,)
+    ).fetchone()
+    if muller_nfd:
+        conn.execute(
+            "INSERT INTO balance_history (account_id, username, old_balance, new_balance, operation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (muller_nfd['id'], muller_nfd_username, 0.0, 275.0, 'deposit', '2024-11-01T12:30:00+00:00')
+        )
+
+    conn.commit()
+    conn.close()
+
+    print(f"Database initialized at {DB_PATH}")
+
+    # Verify data
+    conn = sqlite3.connect(DB_PATH)
+    count = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+    print(f"Total accounts: {count}")
+
+    # Show the café duplicate
+    cafe_rows = conn.execute(
+        "SELECT id, username, balance, hex(username) FROM accounts WHERE username LIKE 'caf%'"
+    ).fetchall()
+    for row in cafe_rows:
+        print(f"  ID={row[0]}, username={row[1]}, balance={row[2]}, hex={row[3]}")
+
+    # Show config
+    config_rows = conn.execute("SELECT key, value FROM app_config").fetchall()
+    for row in config_rows:
+        print(f"  Config: {row[0]}={row[1]}")
+
+    conn.close()
+
+
+if __name__ == '__main__':
+    init_db()
+<<<END>>>
+
+<<<FILE instruction.md>>>
+The account service has problems with usernames containing accented characters. Users report that they can't log in after registering, deposits seem to vanish into the wrong account, the CLI can't find accounts that exist in the web interface, and the account export CSV shows what appear to be duplicate usernames with different balances for what should be the same account.
+
+Your task: fix the service so that visually identical usernames are always treated as the same account, regardless of how the accented characters are encoded internally.
+
+Requirements:
+
+1. Every visually identical username must resolve to one account. Two usernames that look the same on screen must always refer to the same account in the database, no matter which entry point (web API, CLI, import) is used.
+
+2. All entry points — web API routes, CLI commands, and the import/export pipeline — must process usernames consistently, applying the same normalization at every point where a username enters or leaves the system.
+
+3. All usernames stored in the database (in every table that contains a username column) must be in NFC normalization form. The system's normalization configuration must consistently reflect NFC across all configuration sources (both file-based and database-stored settings).
+
+4. The export CSV generated by `python3 -m account_service.cli export /app/data/export.csv` must contain no visually duplicate usernames.
+
+5. Pre-existing duplicate accounts in the database must be merged: balances combined into a single account per visual username, stored in NFC form.
+
+6. Balance change history records must stay consistent with the accounts — every history entry must reference a valid account, and every username in history records must be in NFC form.
+
+7. The web service must start and respond on port 5000, and all CLI commands must work correctly.
+
+Constraints:
+- Merged accounts must have the sum of all duplicate balances.
+- ASCII-only usernames must be completely unaffected.
+- Empty or whitespace-only usernames must be rejected (HTTP 400, no database row created).
+- When merging duplicate accounts, the surviving account's created_at must be the earliest among the duplicates.
+- Imported accounts whose canonical username already exists must update the existing account's balance (add to it), not create a new row.
+- The database is at /app/data/accounts.db.
+<<<END>>>

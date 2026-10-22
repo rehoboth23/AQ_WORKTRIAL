@@ -1,0 +1,1877 @@
+<<<MANIFEST>>>
+environment/pyproject.toml
+environment/account_service/__init__.py
+environment/account_service/__main__.py
+environment/account_service/config.py
+environment/account_service/normalize.py
+environment/account_service/validation.py
+environment/account_service/_internal.py
+environment/account_service/middleware.py
+environment/account_service/db.py
+environment/account_service/app.py
+environment/account_service/models.py
+environment/account_service/error_handlers.py
+environment/account_service/utils.py
+environment/account_service/exceptions.py
+environment/account_service/decorators.py
+environment/account_service/cli.py
+environment/account_service/cli_helpers.py
+environment/account_service/import_export.py
+environment/account_service/CONTRIBUTING.md
+environment/account_service/README.md
+environment/account_service/routes/__init__.py
+environment/account_service/routes/auth.py
+environment/account_service/routes/accounts.py
+environment/account_service/routes/admin.py
+environment/account_service/routes/reports.py
+environment/account_service/routes/health.py
+environment/init_db.py
+<<<END>>>
+<<<FILE environment/pyproject.toml>>>
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "account-service"
+version = "1.3.0"
+description = "Account management service with web API, CLI, and bulk import/export"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "flask>=3.0",
+    "click>=8.1",
+]
+
+[project.scripts]
+account-cli = "account_service.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["account_service*"]
+<<<END>>>
+<<<FILE environment/account_service/__init__.py>>>
+"""
+Account Service - A Flask-based account management platform.
+
+Provides web API, CLI administration tools, and bulk import/export
+capabilities for managing user accounts and balances.
+"""
+
+from account_service.app import create_app
+
+__version__ = "1.3.0"
+__all__ = ["create_app"]
+<<<END>>>
+<<<FILE environment/account_service/__main__.py>>>
+"""Allow running the package directly: python3 -m account_service"""
+import sys
+
+from account_service.cli import cli
+
+if __name__ == "__main__":
+    cli()
+else:
+    # When invoked as `python3 -m account_service`, __name__ is "__main__"
+    # but if imported, just expose cli
+    pass
+<<<END>>>
+<<<FILE environment/account_service/config.py>><arg_value>"""
+Application configuration for the account service.
+
+All runtime settings are defined here. Some values may be overridden
+by entries in the app_config database table when the Flask application
+factory initializes.
+"""
+
+import os
+
+# Database path — can be overridden via environment variable
+DB_PATH = os.environ.get("ACCOUNT_DB_PATH", "/app/data/accounts.db")
+
+# The normalization form used for username storage and lookup.
+# This determines how Unicode usernames are canonicalized before
+# being written to or read from the database.
+NORMALIZATION_FORM = "NFD"
+
+# Flask settings
+DEBUG = False
+SECRET_KEY = os.environ.get("ACCOUNT_SECRET_KEY", "dev-secret-change-in-prod")
+HOST = "0.0.0.0"
+PORT = 5000
+
+# Account defaults
+DEFAULT_BALANCE = 0.0
+MIN_DEPOSIT = 0.01
+MAX_BALANCE = 999999.99
+
+# Pagination
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 500
+<<<END>>>
+<<<FILE environment/account_service/normalize.py>><arg_value>"""
+Unicode normalization utilities for the account service.
+
+Provides functions for normalizing usernames before storage, display,
+and comparison. Consistent normalization is essential to ensure that
+visually identical usernames (e.g., 'café' encoded differently) are
+treated as the same account.
+"""
+
+import unicodedata
+
+import account_service.config as cfg
+
+
+def normalize_for_storage(username: str) -> str:
+    """Normalize a username for consistent storage and lookup.
+
+    Applies the configured normalization form (set in config.py or
+    overridden by the database) to ensure usernames are stored in a
+    canonical representation. All comparisons and lookups should use
+    this function to guarantee consistent results.
+    """
+    if not username:
+        return username
+    return unicodedata.normalize(cfg.NORMALIZATION_FORM, username)
+
+
+def normalize_for_display(username: str) -> str:
+    """Return a username in NFC (Normalization Form Canonical Composition).
+
+    NFC is the canonical form for username storage and display in this
+    system. Use this when presenting usernames in UI or reports.
+    """
+    if not username:
+        return username
+    return unicodedata.normalize("NFC", username)
+
+
+def is_normalized(s: str, form: str | None = None) -> bool:
+    """Check whether *s* is already in the requested normalization form.
+
+    Parameters
+    ----------
+    s : str
+        The string to check.
+    form : str, optional
+        The normalization form to test against.  Defaults to the
+        currently configured ``NORMALIZATION_FORM``.
+
+    Returns
+    -------
+    bool
+        ``True`` if *s* is in the specified form, ``False`` otherwise.
+    """
+    if form is None:
+        form = cfg.NORMALIZATION_FORM
+    return unicodedata.is_normalized(form, s)
+
+
+def compare_usernames(a: str, b: str) -> bool:
+    """Return True if two usernames should be considered identical.
+
+    Two usernames are identical when they are visually the same after
+    NFC normalization, regardless of the internal encoding of their
+    combining characters.
+    """
+    return normalize_for_display(a) == normalize_for_display(b)
+<<<END>>>
+<<<FILE environment/account_service/validation.py>><arg_value>"""
+Username validation and cleaning utilities.
+
+These functions prepare raw user input for storage by stripping
+whitespace, lowercasing, and canonicalizing Unicode representations.
+"""
+
+from account_service._internal import _canonicalize
+
+
+def sanitize_username(username: str | None) -> str:
+    """Sanitize a username by stripping surrounding whitespace and
+    converting to lowercase.
+
+    This is the first step in username processing — it handles
+    whitespace and case but does **not** apply Unicode normalization.
+    """
+    if username is None:
+        return ""
+    return username.strip().lower()
+
+
+def clean_username(username: str | None) -> str:
+    """Clean and canonicalize a username for storage.
+
+    Applies sanitization (strip + lowercase) followed by Unicode
+    canonicalization so the result is ready to be written to the
+    database.
+    """
+    sanitized = sanitize_username(username)
+    return _canonicalize(sanitized)
+
+
+def is_valid_username(username: str | None) -> bool:
+    """Return True if *username* is a non-empty, non-whitespace string
+    after sanitization."""
+    if username is None:
+        return False
+    cleaned = sanitize_username(username)
+    return bool(cleaned) and not cleaned.isspace()
+<<<END>>>
+<<<FILE environment/account_service/_internal.py>><arg_value>"""
+Internal helpers that should not be imported directly by application
+code.  These are low-level utilities used by the validation module.
+"""
+
+import unicodedata
+
+
+def _canonicalize(username: str) -> str:
+    """Canonicalize a username for consistent storage.
+
+    Applies Unicode normalization so that different byte-level
+    representations of the same visual character resolve to a single
+    canonical form.
+    """
+    return unicodedata.normalize("NFD", username)
+
+
+def _decompose_char(ch: str) -> list[str]:
+    """Return the decomposition of a single character.
+
+    Useful for debugging Unicode issues; not part of the public API.
+    """
+    return list(unicodedata.decomposition(ch).split()) if unicodedata.decomposition(ch) else [ch]
+<<<END>>>
+<<<FILE environment/account_service/middleware.py>><arg_value>"""
+WSGI middleware for the account service.
+
+InputSanitizationMiddleware ensures that URL paths received by the
+application are in a consistent Unicode form, preventing routing
+discrepancies caused by differently-encoded path segments.
+"""
+
+import unicodedata
+
+
+class InputSanitizationMiddleware:
+    """WSGI middleware that normalizes URL paths to NFC form.
+
+    This ensures that PATH_INFO is always in a single canonical
+    representation, so Flask routes are matched consistently
+    regardless of how the client encoded the path.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        path_info = environ.get("PATH_INFO", "")
+        environ["PATH_INFO"] = unicodedata.normalize("NFC", path_info)
+
+        query_string = environ.get("QUERY_STRING", "")
+        if query_string:
+            environ["QUERY_STRING"] = unicodedata.normalize("NFC", query_string)
+
+        return self.app(environ, start_response)
+
+
+class RequestLoggingMiddleware:
+    """Lightweight request logger that writes method + path to stdout."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        method = environ.get("REQUEST_METHOD", "?")
+        path = environ.get("PATH_INFO", "/")
+        print(f"[request] {method} {path}", flush=True)
+        return self.app(environ, start_response)
+<<<END>>>
+<<<FILE environment/account_service/db.py>><arg_value>"""
+Database access layer for the account service.
+
+All SQLite interactions go through this module so that connection
+handling, row factories, and query patterns are centralized.
+"""
+
+import sqlite3
+from typing import Any
+
+from account_service.config import DB_PATH
+
+
+def get_connection() -> sqlite3.Connection:
+    """Return a new SQLite connection with Row factory enabled."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Account queries
+# ---------------------------------------------------------------------------
+
+
+def get_account_by_username(username: str) -> dict[str, Any] | None:
+    """Look up an account by exact username match."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_account_by_username_ci(username: str) -> dict[str, Any] | None:
+    """Case-insensitive username lookup.
+
+    Uses SQL ``LOWER()`` to match usernames regardless of case.
+    Note: this handles ASCII case folding but does **not** resolve
+    Unicode normalization differences (e.g., NFC vs NFD).
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM accounts WHERE LOWER(username) = LOWER(?)",
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_account_by_id(account_id: int) -> dict[str, Any] | None:
+    """Look up an account by its integer primary key."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_account(username: str, balance: float = 0.0) -> int | None:
+    """Insert a new account and return its id, or None on constraint error."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, datetime('now'))",
+            (username, balance),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
+
+
+def update_balance(account_id: int, new_balance: float) -> bool:
+    """Set the balance of an existing account. Returns True on success."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE accounts SET balance = ? WHERE id = ?",
+            (new_balance, account_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def list_accounts(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    """Return a page of accounts ordered by username."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM accounts ORDER BY username LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def count_accounts() -> int:
+    """Return the total number of accounts."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM accounts").fetchone()
+        return row["cnt"] if row else 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Balance-history queries
+# ---------------------------------------------------------------------------
+
+
+def add_balance_history(
+    account_id: int,
+    username: str,
+    amount: float,
+    operation: str,
+) -> int | None:
+    """Append a row to balance_history and return its id."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO balance_history (account_id, username, amount, operation, timestamp) "
+            "VALUES (?, ?, ?, ?, datetime('now'))",
+            (account_id, username, amount, operation),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def get_balance_history(account_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    """Return recent balance history entries for an account."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM balance_history WHERE account_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (account_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# App-config queries
+# ---------------------------------------------------------------------------
+
+
+def get_app_config(key: str) -> str | None:
+    """Read a single value from the app_config table."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_config WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def set_app_config(key: str, value: str) -> None:
+    """Write a value into the app_config table (upsert)."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO app_config (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_all_config() -> dict[str, str]:
+    """Return the full app_config table as a dict."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT key, value FROM app_config").fetchall()
+        return {r["key"]: r["value"] for r in rows}
+    finally:
+        conn.close()
+<<<END>>>
+<<<FILE environment/account_service/app.py>><arg_value>"""
+Flask application factory for the account service.
+
+The factory reads runtime configuration from the ``app_config``
+database table, overriding any defaults set in ``config.py``.
+"""
+
+from flask import Flask
+
+from account_service.config import (
+    DB_PATH,
+    DEBUG,
+    NORMALIZATION_FORM,
+    SECRET_KEY,
+    HOST,
+    PORT,
+)
+from account_service.middleware import InputSanitizationMiddleware
+from account_service.db import get_connection
+
+
+def _load_db_config(app: Flask) -> None:
+    """Load key–value pairs from the app_config DB table into app.config.
+
+    Values from the database take precedence over those in config.py,
+    reflecting the operational need to adjust settings without
+    redeploying code.
+    """
+    try:
+        conn = get_connection()
+        rows = conn.execute("SELECT key, value FROM app_config").fetchall()
+        for row in rows:
+            app.config[row["key"]] = row["value"]
+        conn.close()
+    except Exception:
+        # If the DB is not yet initialised the config table may not exist.
+        pass
+
+
+def _sync_module_config(app: Flask) -> None:
+    """Synchronise the module-level config with values the app just loaded.
+
+    This allows code that reads ``config.NORMALIZATION_FORM`` directly
+    (e.g., ``normalize_for_storage``) to see the same values as the
+    Flask app.
+    """
+    import account_service.config as cfg
+
+    if "NORMALIZATION_FORM" in app.config:
+        cfg.NORMALIZATION_FORM = app.config["NORMALIZATION_FORM"]
+    if "DB_PATH" in app.config:
+        cfg.DB_PATH = app.config["DB_PATH"]
+
+
+def create_app() -> Flask:
+    """Build and return the Flask application."""
+    app = Flask(__name__)
+
+    # --- base configuration from config.py ---------------------------
+    app.config["NORMALIZATION_FORM"] = NORMALIZATION_FORM
+    app.config["SECRET_KEY"] = SECRET_KEY
+    app.config["DEBUG"] = DEBUG
+    app.config["HOST"] = HOST
+    app.config["PORT"] = PORT
+    app.config["DB_PATH"] = DB_PATH
+
+    # --- runtime overrides from the database -------------------------
+    _load_db_config(app)
+    _sync_module_config(app)
+
+    # --- WSGI middleware ---------------------------------------------
+    app.wsgi_app = InputSanitizationMiddleware(app.wsgi_app)
+
+    # --- blueprints --------------------------------------------------
+    from account_service.routes.auth import auth_bp
+    from account_service.routes.accounts import accounts_bp
+    from account_service.routes.admin import admin_bp
+    from account_service.routes.reports import reports_bp
+    from account_service.routes.health import health_bp
+
+    app.register_blueprint(auth_bp, url_prefix="/auth")
+    app.register_blueprint(accounts_bp, url_prefix="/accounts")
+    app.register_blueprint(admin_bp, url_prefix="/admin")
+    app.register_blueprint(reports_bp, url_prefix="/reports")
+    app.register_blueprint(health_bp, url_prefix="/health")
+
+    # --- error handlers ----------------------------------------------
+    from account_service.error_handlers import register_error_handlers
+
+    register_error_handlers(app)
+
+    return app
+<<<END>>>
+<<<FILE environment/account_service/models.py>><arg_value>"""
+Data models for the account service.
+
+These lightweight dataclasses mirror the database schema and provide
+convenient ``from_row`` factory methods.
+"""
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class Account:
+    """Represents a single user account.
+
+    Username is stored in NFC form for consistency across all
+    entry points and storage paths.
+    """
+
+    id: int
+    username: str
+    balance: float
+    created_at: str
+
+    @staticmethod
+    def from_row(row: dict[str, Any] | None) -> "Account | None":
+        if row is None:
+            return None
+        return Account(
+            id=row["id"],
+            username=row["username"],
+            balance=row["balance"],
+            created_at=row["created_at"],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "balance": self.balance,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
+class BalanceHistory:
+    """A single balance-change event."""
+
+    id: int
+    account_id: int
+    username: str
+    amount: float
+    operation: str
+    timestamp: str
+
+    @staticmethod
+    def from_row(row: dict[str, Any] | None) -> "BalanceHistory | None":
+        if row is None:
+            return None
+        return BalanceHistory(
+            id=row["id"],
+            account_id=row["account_id"],
+            username=row["username"],
+            amount=row["amount"],
+            operation=row["operation"],
+            timestamp=row["timestamp"],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "username": self.username,
+            "amount": self.amount,
+            "operation": self.operation,
+            "timestamp": self.timestamp,
+        }
+<<<END>>>
+<<<FILE environment/account_service/error_handlers.py>><arg_value>"""
+Centralised HTTP error handlers for the Flask application.
+"""
+
+from flask import Flask, jsonify
+
+
+def register_error_handlers(app: Flask) -> None:
+    """Attach standard JSON error handlers to *app*."""
+
+    @app.errorhandler(400)
+    def bad_request(error):
+        return jsonify({"error": "Bad request", "detail": str(error)}), 400
+
+    @app.errorhandler(401)
+    def unauthorized(error):
+        return jsonify({"error": "Unauthorized", "detail": str(error)}), 401
+
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify({"error": "Not found", "detail": str(error)}), 404
+
+    @app.errorhandler(409)
+    def conflict(error):
+        return jsonify({"error": "Conflict", "detail": str(error)}), 409
+
+    @app.errorhandler(500)
+    def internal_error(error):
+        return jsonify({"error": "Internal server error"}), 500
+<<<END>>>
+<<<FILE environment/account_service/utils.py>><arg_value>"""
+General-purpose utility functions for the account service.
+"""
+
+from datetime import datetime
+from typing import Any
+
+
+def format_currency(amount: float) -> str:
+    """Format a numeric amount as a currency string."""
+    return f"${amount:,.2f}"
+
+
+def parse_datetime(dt_string: str | None) -> datetime | None:
+    """Parse a datetime string produced by SQLite's ``datetime()``."""
+    if dt_string is None:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(dt_string, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def validate_amount(amount: Any) -> bool:
+    """Return True if *amount* is a positive number suitable for a deposit."""
+    try:
+        val = float(amount)
+        return val > 0
+    except (ValueError, TypeError):
+        return False
+
+
+def sanitize_csv_value(value: str) -> str:
+    """Strip characters that could break CSV formatting."""
+    if value is None:
+        return ""
+    return str(value).replace("\r", "").replace("\n", " ").replace('"', '""')
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """Convert *value* to float, returning *default* on failure."""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def truncate(s: str, max_len: int = 255) -> str:
+    """Truncate a string to *max_len* characters."""
+    if len(s) <= max_len:
+        return s
+    return s[:max_len]
+<<<END>>>
+<<<FILE environment/account_service/exceptions.py>><arg_value>"""
+Custom exception classes for the account service.
+"""
+
+
+class AccountServiceError(Exception):
+    """Base class for all account-service exceptions."""
+
+    pass
+
+
+class AccountNotFoundError(AccountServiceError):
+    """Raised when a requested account does not exist."""
+
+    pass
+
+
+class DuplicateUsernameError(AccountServiceError):
+    """Raised when a username that already exists is submitted for creation."""
+
+    pass
+
+
+class InvalidUsernameError(AccountServiceError):
+    """Raised when a username fails validation."""
+
+    pass
+
+
+class InvalidAmountError(AccountServiceError):
+    """Raised when a monetary amount is out of range or non-numeric."""
+
+    pass
+
+
+class DatabaseError(AccountServiceError):
+    """Raised on unexpected database failures."""
+
+    pass
+<<<END>>>
+<<<FILE environment/account_service/decorators.py>><arg_value>"""
+Flask route decorators for authentication, rate limiting, and
+request validation.
+"""
+
+import functools
+import time
+from flask import request, jsonify
+
+# Simple in-memory rate limiter (per-IP, sliding window)
+_rate_limit_store: dict[str, list[float]] = {}
+
+
+def require_json(f):
+    """Return 400 if the request body is not valid JSON."""
+
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if not request.is_json:
+            return jsonify({"error": "Request must be JSON"}), 400
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+def rate_limit(max_requests: int = 60, window_seconds: int = 60):
+    """Limit requests per IP to *max_requests* within *window_seconds*."""
+
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            ip = request.remote_addr or "0.0.0.0"
+            now = time.time()
+            timestamps = _rate_limit_store.get(ip, [])
+            # Prune old entries
+            timestamps = [t for t in timestamps if now - t < window_seconds]
+            if len(timestamps) >= max_requests:
+                return jsonify({"error": "Rate limit exceeded"}), 429
+            timestamps.append(now)
+            _rate_limit_store[ip] = timestamps
+            return f(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+<<<END>>>
+<<<FILE environment/account_service/cli.py>><arg_value>"""
+Command-line interface for the account service.
+
+Provides administrative commands for creating accounts, looking up
+balances, and performing bulk import/export operations.
+
+Usage::
+
+    python3 -m account_service.cli create <username>
+    python3 -m account_service.cli lookup <username>
+    python3 -m account_service.cli export <output_path>
+    python3 -m account_service.cli import-csv <input_path>
+    python3 -m account_service.cli list
+    python3 -m account_service.cli balance <username>
+"""
+
+import csv
+import os
+import sys
+
+import click
+
+# Ensure the package root is importable even when the CLI is invoked
+# from an unusual working directory.
+_pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)
+
+from account_service.cli_helpers import clean_username
+from account_service.normalize import normalize_for_storage
+from account_service.db import get_connection
+from account_service.import_export import import_accounts, export_accounts
+
+
+@click.group()
+def cli():
+    """Account service CLI administration tool."""
+
+
+# ---- create ---------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("username")
+def create(username: str):
+    """Create a new account with zero balance."""
+    cleaned = clean_username(username)
+
+    if not cleaned or cleaned.isspace():
+        click.echo("Error: Username cannot be empty or whitespace-only.")
+        sys.exit(1)
+
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM accounts WHERE username = ?", (cleaned,)
+        ).fetchone()
+        if existing:
+            click.echo(f"Error: Account '{cleaned}' already exists.")
+            sys.exit(1)
+
+        conn.execute(
+            "INSERT INTO accounts (username, balance, created_at) "
+            "VALUES (?, 0.0, datetime('now'))",
+            (cleaned,),
+        )
+        conn.commit()
+        click.echo(f"Account '{cleaned}' created successfully.")
+    finally:
+        conn.close()
+
+
+# ---- lookup ----------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("username")
+def lookup(username: str):
+    """Look up an account by username and display its details."""
+    normalized = normalize_for_storage(username.strip().lower())
+
+    conn = get_connection()
+    try:
+        account = conn.execute(
+            "SELECT * FROM accounts WHERE username = ?", (normalized,)
+        ).fetchone()
+        if not account:
+            click.echo(f"Account '{username}' not found.")
+            sys.exit(1)
+
+        click.echo(f"Account: {account['username']}")
+        click.echo(f"Balance: {account['balance']}")
+        click.echo(f"Created: {account['created_at']}")
+    finally:
+        conn.close()
+
+
+# ---- balance ---------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("username")
+def balance(username: str):
+    """Show the balance of an existing account."""
+    normalized = normalize_for_storage(username.strip().lower())
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT balance FROM accounts WHERE username = ?", (normalized,)
+        ).fetchone()
+        if not row:
+            click.echo(f"Account '{username}' not found.")
+            sys.exit(1)
+        click.echo(f"{row['balance']}")
+    finally:
+        conn.close()
+
+
+# ---- list ------------------------------------------------------------------
+
+
+@cli.command("list")
+@click.option("--limit", default=50, help="Maximum accounts to show.")
+def list_accounts(limit: int):
+    """List all accounts ordered by username."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT username, balance, created_at FROM accounts ORDER BY username LIMIT ?",
+            (limit,),
+        ).fetchall()
+        if not rows:
+            click.echo("No accounts found.")
+            return
+        for r in rows:
+            click.echo(f"  {r['username']:30s}  {r['balance']:>12.2f}  {r['created_at']}")
+    finally:
+        conn.close()
+
+
+# ---- export ----------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("output_path")
+def export(output_path: str):
+    """Export all accounts to a CSV file."""
+    try:
+        export_accounts(output_path)
+        click.echo(f"Exported accounts to {output_path}")
+    except Exception as exc:
+        click.echo(f"Export failed: {exc}")
+        sys.exit(1)
+
+
+# ---- import ----------------------------------------------------------------
+
+
+@cli.command("import-csv")
+@click.argument("input_path")
+def import_cmd(input_path: str):
+    """Import accounts from a CSV file (username,balance)."""
+    try:
+        import_accounts(input_path)
+        click.echo(f"Imported accounts from {input_path}")
+    except Exception as exc:
+        click.echo(f"Import failed: {exc}")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    cli()
+<<<END>>>
+<<<FILE environment/account_service/cli_helpers.py>><arg_value>"""
+Helper functions specific to the CLI layer.
+
+These are intentionally separate from the web-layer validation helpers
+so that the CLI can evolve its own sanitisation rules without
+affecting the API.
+"""
+
+
+def clean_username(username: str | None) -> str:
+    """Clean a username for CLI operations.
+
+    Strips surrounding whitespace and converts to lowercase.
+    """
+    if username is None:
+        return ""
+    return username.strip().lower()
+
+
+def format_account_line(account: dict) -> str:
+    """Format a single account row for terminal display."""
+    uname = account.get("username", "?")
+    bal = account.get("balance", 0.0)
+    created = account.get("created_at", "?")
+    return f"  {uname:30s}  {bal:>12.2f}  {created}"
+<<<END>>>
+<<<FILE environment/account_service/import_export.py>><arg_value>"""
+Bulk import and export of accounts via CSV files.
+
+CSV format (no header required but accepted)::
+
+    username,balance
+    alice,1000.0
+"""
+
+import csv
+
+from account_service.normalize import normalize_for_storage
+from account_service.validation import sanitize_username
+from account_service.db import get_connection
+
+
+def import_accounts(input_path: str) -> None:
+    """Import accounts from a CSV file.
+
+    For each row the username is sanitised and then normalised before
+    storage.  If an account with the same username already exists its
+    balance is **increased** by the imported amount rather than
+    replaced.
+
+    Parameters
+    ----------
+    input_path : str
+        Path to the CSV file to read.
+    """
+    conn = get_connection()
+    try:
+        with open(input_path, "r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                raw_username = sanitize_username(row.get("username", ""))
+                balance = float(row.get("balance", 0))
+
+                if not raw_username or raw_username.isspace():
+                    continue
+
+                normalized = normalize_for_storage(raw_username)
+
+                # Check for an existing account using the raw (unnormalised)
+                # username.  This allows us to detect exact-match duplicates
+                # while still storing the normalised form.
+                existing = conn.execute(
+                    "SELECT id, balance FROM accounts WHERE username = ?",
+                    (raw_username,),
+                ).fetchone()
+
+                if existing:
+                    new_balance = existing["balance"] + balance
+                    conn.execute(
+                        "UPDATE accounts SET balance = ? WHERE id = ?",
+                        (new_balance, existing["id"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO balance_history "
+                        "(account_id, username, amount, operation, timestamp) "
+                        "VALUES (?, ?, ?, 'import', datetime('now'))",
+                        (existing["id"], normalized, balance),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO accounts (username, balance, created_at) "
+                        "VALUES (?, ?, datetime('now'))",
+                        (normalized, balance),
+                    )
+                    acct = conn.execute(
+                        "SELECT id FROM accounts WHERE username = ?",
+                        (normalized,),
+                    ).fetchone()
+                    if acct:
+                        conn.execute(
+                            "INSERT INTO balance_history "
+                            "(account_id, username, amount, operation, timestamp) "
+                            "VALUES (?, ?, ?, 'import', datetime('now'))",
+                            (acct["id"], normalized, balance),
+                        )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def export_accounts(output_path: str) -> None:
+    """Export all accounts to a CSV file.
+
+    The output contains columns ``username``, ``balance``, and
+    ``created_at`` ordered by username.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT username, balance, created_at FROM accounts ORDER BY username"
+        ).fetchall()
+
+        with open(output_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["username", "balance", "created_at"])
+            for row in rows:
+                writer.writerow([row["username"], row["balance"], row["created_at"]])
+    finally:
+        conn.close()
+<<<END>>>
+<<<FILE environment/account_service/CONTRIBUTING.md>><arg_value># Contributing to Account Service
+
+Thank you for your interest in improving the account service! This
+document describes the conventions that all contributors must follow.
+
+## Code Style
+
+- Follow **PEP 8** for all Python source files.
+- Use **type hints** for function signatures.
+- Write docstrings (Google style) for every public function and class.
+- Maximum line length: **99 characters**.
+
+## Username Handling
+
+Usernames are the primary identifier in the system and must be handled
+consistently across every entry point (web API, CLI, import/export).
+
+1. **Canonical form** — All usernames stored in the database **must** be
+   in **NFC** (Normalization Form Canonical Composition).  This is the
+   form produced by Python's `unicodedata.normalize('NFC', ...)`.
+
+2. **Input normalisation** — Every code path that accepts a username
+   from external input (HTTP request body, CLI argument, CSV file)
+   must call `normalize_for_storage(sanitize_username(...))` before
+   performing any database operation.
+
+3. **Case folding** — Usernames are always lowercased via `str.lower()`
+   before normalisation.
+
+4. **Whitespace** — Leading and trailing whitespace is stripped before
+   any further processing.
+
+## Database
+
+- The database file lives at `/app/data/accounts.db` (configurable via
+  the `ACCOUNT_DB_PATH` environment variable).
+- Always use **parameterised queries** — never interpolate user input
+  into SQL strings.
+- The `app_config` table holds runtime-configurable settings.  Values
+  there override defaults in `config.py` when the Flask app starts.
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/auth/register` | Create a new account |
+| POST | `/auth/login` | Authenticate and retrieve balance |
+| GET | `/accounts/<username>/balance` | Retrieve current balance |
+| POST | `/accounts/<username>/deposit` | Add funds |
+| POST | `/admin/adjust` | Admin balance adjustment (JSON or form) |
+| GET | `/reports/monthly` | Monthly balance-change summary |
+| GET | `/health/` | Service health check |
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `python3 -m account_service.cli create <username>` | Create account |
+| `python3 -m account_service.cli lookup <username>` | Look up account |
+| `python3 -m account_service.cli balance <username>` | Show balance only |
+| `python3 -m account_service.cli list` | List all accounts |
+| `python3 -m account_service.cli export <path>` | Export CSV |
+| `python3 -m account_service.cli import-csv <path>` | Import CSV |
+
+## Pull Request Checklist
+
+- [ ] All new username-handling code calls `normalize_for_storage`.
+- [ ] No raw username comparisons without normalisation.
+- [ ] Unit tests cover both ASCII and non-ASCII usernames.
+- [ ] `python3 -m account_service.cli export /tmp/check.csv` produces
+      no visually duplicate usernames.
+<<<END>>>
+<<<FILE environment/account_service/README.md>><arg_value># Account Service
+
+A Flask-based account management platform providing a REST API, a CLI
+administration tool, and a bulk import/export pipeline.
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install -e .
+
+# Initialise the database (done automatically at deploy time)
+python3 init_db.py
+
+# Start the web service
+flask --app account_service run --port 5000
+
+# Or use the factory directly
+python3 -c "from account_service import create_app; create_app().run(port=5000)"
+```
+
+## CLI Usage
+
+```bash
+python3 -m account_service.cli create alice
+python3 -m account_service.cli lookup alice
+python3 -m account_service.cli balance alice
+python3 -m account_service.cli list
+python3 -m account_service.cli export /tmp/accounts.csv
+python3 -m account_service.cli import-csv /tmp/accounts.csv
+```
+
+## Project Layout
+
+```
+account_service/
+├── __init__.py          # Package init; exports create_app
+├── __main__.py          # python3 -m account_service entry
+├── app.py               # Flask application factory
+├── config.py            # Default configuration
+├── normalize.py         # Unicode normalisation helpers
+├── validation.py        # Username sanitisation + cleaning
+├── _internal.py         # Low-level canonicalisation helpers
+├── middleware.py         # WSGI middleware (path normalisation)
+├── db.py                # Database access layer
+├── models.py            # Data models (Account, BalanceHistory)
+├── cli.py               # Click-based CLI
+├── cli_helpers.py       # CLI-specific helper functions
+├── import_export.py     # Bulk CSV import/export
+├── error_handlers.py    # Centralised HTTP error handlers
+├── exceptions.py        # Custom exception classes
+├── decorators.py        # Route decorators (rate-limit, etc.)
+├── utils.py             # General-purpose utilities
+├── CONTRIBUTING.md      # Developer guidelines
+└── routes/
+    ├── auth.py          # Registration and login
+    ├── accounts.py      # Balance queries and deposits
+    ├── admin.py         # Admin adjustments
+    ├── reports.py       # Monthly reports
+    └── health.py        # Health check
+```
+
+## Configuration
+
+Default values are in `config.py`.  The `app_config` SQLite table can
+override any setting at runtime without redeploying code.  When the
+Flask app starts it reads every key–value pair from that table and
+applies them on top of the defaults.
+
+## Licence
+
+MIT
+<<<END>>>
+<<<FILE environment/account_service/routes/__init__.py>><arg_value>"""Route blueprints for the account service."""
+<<<END>>>
+<<<FILE environment/account_service/routes/auth.py>><arg_value>"""
+Authentication routes — registration and login.
+"""
+
+from flask import Blueprint, request, jsonify
+
+from account_service.validation import clean_username, sanitize_username
+from account_service.normalize import normalize_for_storage
+from account_service.db import get_connection
+
+auth_bp = Blueprint("auth", __name__)
+
+
+@auth_bp.route("/register", methods=["POST"])
+def register():
+    """Create a new account.
+
+    Accepts JSON: ``{"username": "..."}``
+
+    Returns 201 on success, 400 if the username is empty, or 409 if
+    the username already exists.
+    """
+    data = request.get_json(silent=True)
+    if not data or "username" not in data:
+        return jsonify({"error": "Username is required"}), 400
+
+    username = clean_username(data["username"])
+
+    if not username or username.isspace():
+        return jsonify({"error": "Username cannot be empty or whitespace"}), 400
+
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
+        if existing:
+            return jsonify({"error": "Username already exists"}), 409
+
+        conn.execute(
+            "INSERT INTO accounts (username, balance, created_at) "
+            "VALUES (?, 0.0, datetime('now'))",
+            (username,),
+        )
+        conn.commit()
+        return jsonify({"message": "Account created", "username": username}), 201
+    finally:
+        conn.close()
+
+
+@auth_bp.route("/login", methods=["POST"])
+def login():
+    """Authenticate an existing account.
+
+    Accepts JSON: ``{"username": "..."}``
+
+    Returns 200 with username and balance on success, 401 otherwise.
+    """
+    data = request.get_json(silent=True)
+    if not data or "username" not in data:
+        return jsonify({"error": "Username is required"}), 400
+
+    username = normalize_for_storage(data["username"].strip().lower())
+
+    conn = get_connection()
+    try:
+        account = conn.execute(
+            "SELECT * FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
+        if not account:
+            return jsonify({"error": "Invalid credentials"}), 401
+
+        return jsonify(
+            {
+                "message": "Login successful",
+                "username": account["username"],
+                "balance": account["balance"],
+            }
+        ), 200
+    finally:
+        conn.close()
+<<<END>>>
+<<<FILE environment/account_service/routes/accounts.py>><arg_value>"""
+Account-balance routes — queries and deposits.
+"""
+
+from flask import Blueprint, request, jsonify
+
+from account_service.normalize import normalize_for_storage
+from account_service.validation import sanitize_username
+from account_service.db import get_connection
+from account_service.utils import validate_amount
+
+accounts_bp = Blueprint("accounts", __name__)
+
+
+@accounts_bp.route("/<username>/balance", methods=["GET"])
+def get_balance(username: str):
+    """Return the current balance of *username*."""
+    normalized = normalize_for_storage(sanitize_username(username))
+
+    conn = get_connection()
+    try:
+        account = conn.execute(
+            "SELECT balance FROM accounts WHERE username = ?", (normalized,)
+        ).fetchone()
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+        return jsonify({"balance": account["balance"]}), 200
+    finally:
+        conn.close()
+
+
+@accounts_bp.route("/<username>/deposit", methods=["POST"])
+def deposit(username: str):
+    """Add funds to *username*'s account.
+
+    Accepts JSON: ``{"amount": 100.0}``
+    """
+    data = request.get_json(silent=True)
+    if not data or "amount" not in data:
+        return jsonify({"error": "Amount is required"}), 400
+
+    normalized = normalize_for_storage(sanitize_username(username))
+    amount = float(data["amount"])
+
+    if not validate_amount(amount):
+        return jsonify({"error": "Amount must be a positive number"}), 400
+
+    conn = get_connection()
+    try:
+        account = conn.execute(
+            "SELECT id, balance FROM accounts WHERE username = ?", (normalized,)
+        ).fetchone()
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+
+        new_balance = account["balance"] + amount
+        conn.execute(
+            "UPDATE accounts SET balance = ? WHERE id = ?",
+            (new_balance, account["id"]),
+        )
+        conn.execute(
+            "INSERT INTO balance_history "
+            "(account_id, username, amount, operation, timestamp) "
+            "VALUES (?, ?, ?, 'deposit', datetime('now'))",
+            (account["id"], normalized, amount),
+        )
+        conn.commit()
+        return jsonify({"balance": new_balance}), 200
+    finally:
+        conn.close()
+
+
+@accounts_bp.route("/<username>/history", methods=["GET"])
+def get_history(username: str):
+    """Return the balance-change history for *username*."""
+    normalized = normalize_for_storage(sanitize_username(username))
+
+    conn = get_connection()
+    try:
+        account = conn.execute(
+            "SELECT id FROM accounts WHERE username = ?", (normalized,)
+        ).fetchone()
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+
+        rows = conn.execute(
+            "SELECT amount, operation, timestamp FROM balance_history "
+            "WHERE account_id = ? ORDER BY timestamp DESC LIMIT 50",
+            (account["id"],),
+        ).fetchall()
+        result = [dict(r) for r in rows]
+        return jsonify(result), 200
+    finally:
+        conn.close()
+<<<END>>>
+<<<FILE environment/account_service/routes/admin.py>><arg_value>"""
+Administrative routes — balance adjustments.
+"""
+
+from flask import Blueprint, request, jsonify
+
+from account_service.normalize import normalize_for_storage
+from account_service.validation import sanitize_username
+from account_service.db import get_connection
+
+admin_bp = Blueprint("admin", __name__)
+
+
+@admin_bp.route("/adjust", methods=["POST"])
+def adjust_balance():
+    """Adjust an account's balance by a given amount.
+
+    Accepts two content types:
+
+    * **JSON** — ``{"username": "...", "amount": 50.0}``
+    * **Form-encoded** — ``username=...&amount=50.0``
+
+    Returns the new balance on success, 404 if the account does not
+    exist, or 400 if the username is empty.
+    """
+    if request.is_json:
+        data = request.get_json()
+        username = normalize_for_storage(sanitize_username(data.get("username", "")))
+        amount = float(data.get("amount", 0))
+    else:
+        # Form-encoded path
+        username = request.form.get("username", "").strip().lower()
+        amount = float(request.form.get("amount", 0))
+
+    if not username or username.isspace():
+        return jsonify({"error": "Username is required"}), 400
+
+    conn = get_connection()
+    try:
+        account = conn.execute(
+            "SELECT id, balance FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+
+        new_balance = account["balance"] + amount
+        conn.execute(
+            "UPDATE accounts SET balance = ? WHERE id = ?",
+            (new_balance, account["id"]),
+        )
+        conn.execute(
+            "INSERT INTO balance_history "
+            "(account_id, username, amount, operation, timestamp) "
+            "VALUES (?, ?, ?, 'adjustment', datetime('now'))",
+            (account["id"], username, amount),
+        )
+        conn.commit()
+        return jsonify({"balance": new_balance}), 200
+    finally:
+        conn.close()
+<<<END>>>
+<<<FILE environment/account_service/routes/reports.py>><arg_value>"""
+Reporting routes — monthly summaries and account statistics.
+"""
+
+from flask import Blueprint, jsonify
+
+from account_service.db import get_connection
+
+reports_bp = Blueprint("reports", __name__)
+
+
+@reports_bp.route("/monthly", methods=["GET"])
+def monthly_report():
+    """Return a monthly summary of balance changes per username."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                username,
+                SUM(CASE WHEN operation = 'deposit' THEN amount ELSE 0 END)
+                    AS total_deposits,
+                SUM(CASE WHEN operation = 'adjustment' THEN amount ELSE 0 END)
+                    AS total_adjustments,
+                SUM(CASE WHEN operation = 'import' THEN amount ELSE 0 END)
+                    AS total_imports,
+                COUNT(*) AS transaction_count
+            FROM balance_history
+            GROUP BY username
+            ORDER BY username
+            """
+        ).fetchall()
+        result = [dict(r) for r in rows]
+        return jsonify(result), 200
+    finally:
+        conn.close()
+
+
+@reports_bp.route("/stats", methods=["GET"])
+def stats():
+    """Return aggregate account statistics."""
+    conn = get_connection()
+    try:
+        total_accounts = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM accounts"
+        ).fetchone()["cnt"]
+
+        total_balance = conn.execute(
+            "SELECT COALESCE(SUM(balance), 0) AS total FROM accounts"
+        ).fetchone()["total"]
+
+        avg_balance = conn.execute(
+            "SELECT COALESCE(AVG(balance), 0) AS avg FROM accounts"
+        ).fetchone()["avg"]
+
+        return jsonify(
+            {
+                "total_accounts": total_accounts,
+                "total_balance": total_balance,
+                "average_balance": round(avg_balance, 2),
+            }
+        ), 200
+    finally:
+        conn.close()
+<<<END>>>
+<<<FILE environment/account_service/routes/health.py>><arg_value>"""
+Health-check routes.
+"""
+
+from flask import Blueprint, jsonify
+
+from account_service.db import get_connection
+
+health_bp = Blueprint("health", __name__)
+
+
+@health_bp.route("/", methods=["GET"])
+def health_check():
+    """Return the service health status.
+
+    Probes the database connection; returns 200 if reachable,
+    500 otherwise.
+    """
+    try:
+        conn = get_connection()
+        conn.execute("SELECT 1")
+        conn.close()
+        return jsonify({"status": "healthy"}), 200
+    except Exception as exc:
+        return jsonify({"status": "unhealthy", "error": str(exc)}), 500
+
+
+@health_bp.route("/db", methods=["GET"])
+def db_check():
+    """Return database-specific health information."""
+    try:
+        conn = get_connection()
+        account_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM accounts"
+        ).fetchone()["cnt"]
+        history_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM balance_history"
+        ).fetchone()["cnt"]
+        conn.close()
+        return jsonify(
+            {
+                "status": "healthy",
+                "accounts": account_count,
+                "history_entries": history_count,
+            }
+        ), 200
+    except Exception as exc:
+        return jsonify({"status": "unhealthy", "error": str(exc)}), 500
+<<<END>>>
+<<<FILE environment/init_db.py>><arg_value>#!/usr/bin/env python3
+"""
+Build-time database initialisation script.
+
+Populates /app/data/accounts.db with a realistic mix of accounts
+stored in both NFC and NFD Unicode normalisation forms, simulating
+a service that has been running with inconsistent normalisation
+across its entry points.
+
+This script is deleted from the image after the build completes.
+"""
+
+import os
+import sqlite3
+import unicodedata
+
+DB_PATH = os.environ.get("ACCOUNT_DB_PATH", "/app/data/accounts.db")
+
+
+def create_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS app_config (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS accounts (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT    UNIQUE NOT NULL,
+            balance    REAL    NOT NULL DEFAULT 0.0,
+            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS balance_history (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            username   TEXT    NOT NULL,
+            amount     REAL    NOT NULL,
+            operation  TEXT    NOT NULL,
+            timestamp  TEXT    NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_accounts_username
+            ON accounts(username);
+
+        CREATE INDEX IF NOT EXISTS idx_balance_history_account_id
+            ON balance_history(account_id);
+        """
+    )
+
+
+def seed_app_config(conn: sqlite3.Connection) -> None:
+    """Insert runtime configuration values."""
+    config_rows = [
+        ("NORMALIZATION_FORM", "NFD"),
+        ("VERSION", "1.3.0"),
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)",
+        config_rows,
+    )
+
+
+def seed_accounts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Insert accounts in mixed NFC/NFD forms and return {username: id}."""
+    id_map: dict[str, int] = {}
+
+    # --- ASCII accounts (unaffected by normalisation) ----------------
+    ascii_accounts = [
+        ("alice", 1000.0, "2024-01-15 10:00:00"),
+        ("bob", 750.0, "2024-01-16 11:00:00"),
+        ("charlie", 200.0, "2024-02-01 09:00:00"),
+        ("diana", 450.0, "2024-04-05 13:00:00"),
+        ("francois", 600.0, "2024-04-01 10:00:00"),
+    ]
+    for uname, bal, cat in ascii_accounts:
+        cur = conn.execute(
+            "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+            (uname, bal, cat),
+        )
+        id_map[uname] = cur.lastrowid
+
+    # --- Accented accounts in mixed forms ---------------------------
+
+    # café — deliberately stored as TWO visual duplicates:
+    #   NFC (é = U+00E9) with balance 500
+    #   NFD (e + U+0301)  with balance 300, earlier created_at
+    cafe_nfc = unicodedata.normalize("NFC", "café")
+    cafe_nfd = unicodedata.normalize("NFD", "café")
+
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (cafe_nfc, 500.0, "2024-02-10 08:00:00"),
+    )
+    id_map["cafe_nfc"] = cur.lastrowid
+
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (cafe_nfd, 300.0, "2024-02-09 14:00:00"),
+    )
+    id_map["cafe_nfd"] = cur.lastrowid
+
+    # naïve — stored in NFD (as if registered via the API)
+    naive_nfd = unicodedata.normalize("NFD", "naïve")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (naive_nfd, 150.0, "2024-03-01 12:00:00"),
+    )
+    id_map["naive_nfd"] = cur.lastrowid
+
+    # björk — stored in NFD
+    bjork_nfd = unicodedata.normalize("NFD", "björk")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (bjork_nfd, 250.0, "2024-03-05 15:00:00"),
+    )
+    id_map["bjork_nfd"] = cur.lastrowid
+
+    # renée — stored in NFD
+    renee_nfd = unicodedata.normalize("NFD", "renée")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (renee_nfd, 400.0, "2024-03-10 09:30:00"),
+    )
+    id_map["renee_nfd"] = cur.lastrowid
+
+    # straße — stored in NFC (ß is not decomposable by NFD)
+    strasse_nfc = unicodedata.normalize("NFC", "straße")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (strasse_nfc, 100.0, "2024-03-15 11:00:00"),
+    )
+    id_map["strasse_nfc"] = cur.lastrowid
+
+    # élodie — stored in NFC (as if imported)
+    elodie_nfc = unicodedata.normalize("NFC", "élodie")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (elodie_nfc, 350.0, "2024-03-20 16:00:00"),
+    )
+    id_map["elodie_nfc"] = cur.lastrowid
+
+    # müller — stored in NFD
+    muller_nfd = unicodedata.normalize("NFD", "müller")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (muller_nfd, 175.0, "2024-04-10 14:00:00"),
+    )
+    id_map["muller_nfd"] = cur.lastrowid
+
+    # josé — stored in NFD
+    jose_nfd = unicodedata.normalize("NFD", "josé")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (jose_nfd, 220.0, "2024-04-12 10:30:00"),
+    )
+    id_map["jose_nfd"] = cur.lastrowid
+
+    # chloë — stored in NFD (ë = e + combining diaeresis)
+    chloe_nfd = unicodedata.normalize("NFD", "chloë")
+    cur = conn.execute(
+        "INSERT INTO accounts (username, balance, created_at) VALUES (?, ?, ?)",
+        (chloe_nfd, 310.0, "2024-04-18 09:00:00"),
+    )
+    id_map["chloe_nfd"] = cur.lastrowid
+
+    return id_map
+
+
+def seed_balance_history(conn: sqlite3.Connection, id_map: dict[str, int]) -> None:
+    """Populate balance_history for every account."""
+    history = [
+        # café NFC
+        (id_map["cafe_nfc"], unicodedata.normalize("NFC", "café"), 500.0, "initial", "2024-02-10 08:00:00"),
+        # café NFD
+        (id_map["cafe_nfd"], unicodedata.normalize("NFD", "café"), 300.0, "initial", "2024-02-09 14:00:00"),
+        # alice
+        (id_map["alice"], "alice", 1000.0, "initial", "2024-01-15 10:00:00"),
+        (id_map["alice"], "alice", 200.0, "deposit", "2024-02-20 11:30:00"),
+        # bob
+        (id_map["bob"], "bob", 750.0, "initial", "2024-01-16 11:00:00"),
+        (id_map["bob"], "bob", -50.0, "adjustment", "2024-03-01 08:15:00"),
+        # charlie
+        (id_map["charlie"], "charlie", 200.0, "initial", "2024-02-01 09:00:00"),
+        # naïve
+        (id_map["naive_nfd"], unicodedata.normalize("NFD", "naïve"), 150.0, "initial", "2024-03-01 12:00:00"),
+        # björk
+        (id_map["bjork_nfd"], unicodedata.normalize("NFD", "björk"), 250.0, "initial", "2024-03-05 15:00:00"),
+        # renée
+        (id_map["renee_nfd"], unicodedata.normalize("NFD", "renée"), 400.0, "initial", "2024-03-10 09:30:00"),
+        (id_map["renee_nfd"], unicodedata.normalize("NFD", "renée"), 50.0, "deposit", "2024-03-15 10:00:00"),
+        # straße
+        (id_map["strasse_nfc"], unicodedata.normalize("NFC", "straße"), 100.0, "initial", "2024-03-15 11:00:00"),
+        # élodie
+        (id_map["elodie_nfc"], unicodedata.normalize("NFC", "élodie"), 350.0, "initial", "2024-03-20 16:00:00"),
+        # diana
+        (id_map["diana"], "diana", 450.0, "initial", "2024-04-05 13:00:00"),
+        # francois
+        (id_map["francois"], "francois", 600.0, "initial", "2024-04-01 10:00:00"),
+        # müller
+        (id_map["muller_nfd"], unicodedata.normalize("NFD", "müller"), 175.0, "initial", "2024-04-10 14:00:00"),
+        # josé
+        (id_map["jose_nfd"], unicodedata.normalize("NFD", "josé"), 220.0, "initial", "2024-04-12 10:30:00"),
+        # chloë
+        (id_map["chloe_nfd"], unicodedata.normalize("NFD", "chloë"), 310.0, "initial", "2024-04-18 09:00:00"),
+    ]
+
+    conn.executemany(
+        "INSERT INTO balance_history (account_id, username, amount, operation, timestamp) "
+        "VALUES (?, ?, ?, ?, ?)",
+        history,
+    )
+
+
+def main() -> None:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    create_schema(conn)
+    seed_app_config(conn)
+    id_map = seed_accounts(conn)
+    seed_balance_history(conn, id_map)
+
+    conn.commit()
+    conn.close()
+    print(f"Database initialised at {DB_PATH}")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>

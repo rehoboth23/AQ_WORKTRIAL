@@ -1,0 +1,4 @@
+{"time": "2026-10-21T21:04:29", "event": "band_start", "task": "unicode-account-normalization-drift", "run_id": "unicode-account-normalization-drift-20261021-210429-c07c"}
+{"time": "2026-10-21T21:20:23", "event": "band_start", "task": "unicode-account-normalization-drift", "run_id": "unicode-account-normalization-drift-20261021-210429-c07c"}
+{"time": "2026-10-21T21:20:23", "event": "band_resume", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0", "reused": ["pass", "pass", "pass", "invalid", "pass"], "dropped": 0}
+{"time": "2026-10-21T21:20:23", "event": "band_done", "task": "unicode-account-normalization-drift", "verdict": "too_easy", "passes": 4, "decision": "rejected"}

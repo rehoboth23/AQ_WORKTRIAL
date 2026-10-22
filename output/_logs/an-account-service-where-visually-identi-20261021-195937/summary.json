@@ -1,0 +1,105 @@
+{
+  "topic": "an account service where visually identical usernames written with different Unicode forms are treated as different accounts at some entry points and the same at others",
+  "run_id": "an-account-service-where-visually-identi-20261021-195937",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-account-service-where-visually-identi-20261021-195937",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/unicode-account-normalization-drift",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/account_service/config.py:9: states the rule a fault breaks: This should match the canonical form documented in CONTRIBUTING.md.; environment/account_service/middleware.py:17: states the rule a fault breaks: Request body data (JSON, form-encoded) is not affected and must be; environment/account_service/CONTRIBUTING.md:24: states the rule a fault breaks: All usernames must be stored in **NFC (Normalization Form Canonical Composition)**; environment/init_db.py:91: states the rule a fault breaks: # Unicode accounts stored in NFC form (as if imported correctly)",
+        "instruction.md names code symbols where faults live (account_service, balance_history); describe behaviour, not code"
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md names code symbols where faults live (account_service); describe behaviour, not code"
+      ]
+    },
+    {
+      "round": 2,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": false,
+          "reward": 0.0,
+          "error": "Oracle check failed: running solution/solve.sh then the tests gave reward 0.0 (expected 1).\n\nsolve.sh output (tail):\nDatabase migration complete.\nAll fixes applied successfully.\n\n\nVerifier / pytest output:\n============================= test session starts ==============================\nplatform linux -- Python 3.12.15, pytest-8.4.1, pluggy-1.7.0\nrootdir: /tests\nplugins: json-ctrf-0.3.5\ncollected 16 items\n\n../tests/test_outputs.py .........F......                                [100%]\n\n=================================== FAILURES ===================================\n_____________________ TestFlaskAPI.test_deposit_cross_form _____________________\n\nself = <test_outputs.TestFlaskAPI object at 0xffffacf66c60>\n\n    def test_deposit_cross_form(self):\n        \"\"\"Depositing via NFD form must update the balance visible via NFC form.\"\"\"\n        nfc = unicodedata.normalize('NFC', 'ch\u00e2telaine')\n        nfd = unicodedata.normalize('NFD', 'ch\u00e2telaine')\n    \n        api_post('/api/auth/register', {'username': nfc, 'balance': 100})\n    \n>       s, _ = api_post(f'/api/accounts/{nfd}/deposit', {'amount': 50})\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:217: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:48: in api_post\n    resp = urllib.request.urlopen(req)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/usr/local/lib/python3.12/urllib/request.py:215: in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/usr/local/lib/python3.12/urllib/request.py:515: in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n/usr/local/lib/python3.12/urllib/request.py:532: in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n/usr/local/lib/python3.12/urllib/request.py:492: in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n/usr/local/lib/python3.12/urllib/request.py:1386: in http_open\n    return self.do_open(http.client.HTTPConnection, req)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/usr/local/lib/python3.12/urllib/request.py:1357: in do_open\n    h.request(req.get_method(), req.selector, req.data, headers,\n/usr/local/lib/python3.12/http/client.py:1386: in request\n    self._send_request(method, url, body, headers, encode_chunked)\n/usr/local/lib/python3.12/http/client.py:1397: in _send_request\n    self.putrequest(method, url, **skips)\n/usr/local/lib/python3.12/http/client.py:1235: in putrequest\n    self._output(self._encode_request(request))\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <http.client.HTTPConnection object at 0xffffad593560>\nrequest = 'POST /api/accounts/cha\u0302telaine/deposit HTTP/1.1'\n\n    def _encode_request(self, request):\n        # ASCII also helps prevent CVE-2019-9740.\n>       return request.encode('ascii')\n               ^^^^^^^^^^^^^^^^^^^^^^^\nE       UnicodeEncodeError: 'ascii' codec can't encode character '\\u0302' in position 22: ordinal not in range(128)\n\n/usr/local/lib/python3.12/http/client.py:1315: UnicodeEncodeError\n==================================== PASSES ====================================\n=========================== short test summary info ============================\nPASSED ../tests/test_outputs.py::test_existing_cafe_merged\nPASSED ../tests/test_outputs.py::test_all_usernames_nfc\nPASSED ../tests/test_outputs.py::test_ascii_unaffected\nPASSED ../tests/test_outputs.py::test_balance_history_no_orphans\nPASSED ../tests/test_outputs.py::test_merged_account_earliest_created_at\nPASSED ../tests/test_outputs.py::test_balance_history_usernames_nfc\nPASSED ../tests/test_outputs.py::test_config_form_is_nfc\nPASSED ../tests/test_outputs.py::TestFlaskAPI::test_register_prevents_visual_duplicates\nPASSED ../tests/test_outputs.py::TestFlaskAPI::test_login_both_forms\nPASSED ../tests/test_outputs.py::TestFlaskAPI::test_admin_adjust_works_both_formats\nPASSED ../tests/test_outputs.py::TestFlaskAPI::test_empty_username_rejected\nPASSED ../tests/test_outputs.py::TestCLI::test_cli_create_no_duplicate\nPASSED ../tests/test_outputs.py::TestCLI::test_cli_lookup_finds_api_account\nPASSED ../tests/test_outputs.py::TestCLI::test_export_no_visual_duplicates\nPASSED ../tests/test_outputs.py::TestImport::test_import_uses_normalize\nFAILED ../tests/test_outputs.py::TestFlaskAPI::test_deposit_cross_form - Unic...\n========================= 1 failed, 15 passed in 0.90s =========================\n",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-account-service-where-visually-identi-20261021-195937-r2-210205-oracle",
+          "seconds": 30.1,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-account-service-where-visually-identi-20261021-195937-r2-210205-oracle/unicode-account-normalization-dr__wSotQEp",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": []
+    },
+    {
+      "round": 3,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-account-service-where-visually-identi-20261021-195937-r3-210339-oracle",
+          "seconds": 28.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-account-service-where-visually-identi-20261021-195937-r3-210339-oracle/unicode-account-normalization-dr__UnAF2s6",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-account-service-where-visually-identi-20261021-195937-r3-210339-nop",
+          "seconds": 22.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-account-service-where-visually-identi-20261021-195937-r3-210339-nop/unicode-account-normalization-dr__erJXb6H",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": []
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 160593,
+    "completion_tokens": 131440,
+    "cost_usd": 0.0
+  },
+  "seconds": 2006.0,
+  "task_name": "afterquery/unicode-account-normalization-drift"
+}

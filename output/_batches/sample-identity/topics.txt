@@ -1,0 +1,1 @@
+an account service where visually identical usernames written with different Unicode forms are treated as different accounts at some entry points and the same at others

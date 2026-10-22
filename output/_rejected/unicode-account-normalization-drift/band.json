@@ -1,0 +1,104 @@
+{
+  "name": "unicode-account-normalization-drift",
+  "description": "Fix an account service where visually identical usernames in different Unicode normalization forms are treated as different accounts by some entry points and the same by others.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "run_id": "unicode-account-normalization-drift-20261021-210429-c07c",
+  "features": {
+    "env_lines": 2437,
+    "solve_lines": 162,
+    "faults": 7,
+    "fault_layers": 4
+  },
+  "verdict": "too_easy",
+  "passes": 4,
+  "n_valid": 4,
+  "n_invalid": 1,
+  "decision": "rejected",
+  "why": "too_easy",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/unicode-account-normalization-drift",
+    "verdict": "too_easy",
+    "passes": 4,
+    "n_valid": 4,
+    "n_invalid": 1,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0/unicode-account-normalization-dr__6oB5A9t",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 3222314,
+        "output_tokens": 92842,
+        "cost_usd": 0.213033764,
+        "episodes": 88,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0/unicode-account-normalization-dr__BBxnVSP",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 1992512,
+        "output_tokens": 62288,
+        "cost_usd": 0.13283650160000002,
+        "episodes": 69,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0/unicode-account-normalization-dr__E2qa3JS",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 2636772,
+        "output_tokens": 76938,
+        "cost_usd": 0.17470094200000003,
+        "episodes": 75,
+        "failed_tests": [],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0/unicode-account-normalization-dr__VtpAtWA",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 3029443,
+        "output_tokens": 93829,
+        "cost_usd": 0.19802832199999998,
+        "episodes": 81,
+        "failed_tests": [],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0/unicode-account-normalization-dr__s4gtE68",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 1860727,
+        "output_tokens": 27229,
+        "cost_usd": 0.11777756199999999,
+        "episodes": 71,
+        "failed_tests": [],
+        "found_step": 2
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-unicode-account-normalization-drift-20261021-210429-c07c-0"
+    ],
+    "tokens": {
+      "input": 12741768,
+      "output": 353126
+    },
+    "cost_usd": 0.8364,
+    "median_steps": 73.0,
+    "median_found_step": 2.5,
+    "early_stop": false,
+    "seconds": 0.0,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}
