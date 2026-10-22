@@ -155,7 +155,18 @@ def harbor_run(task_dir: str, job_name: str, args: list[str],
         CHILDREN.discard(proc.pid)
         out.seek(0)
         cli_out = out.read() + note
+    cleanup_job(job_dir)
     return cli_out, job_dir
+
+
+def cleanup_job(job_dir: str) -> list[str]:
+    """Harbor can leave a trial's egress sidecar (and its network) running after grading; a
+    batch of these exhausts Docker's address pool. Remove whatever is left of this job's trials
+    and prune networks nothing is attached to."""
+    trials = [os.path.basename(os.path.dirname(c)) for c in glob.glob(os.path.join(job_dir, "*", "config.json"))]
+    names = remove_containers(trials)
+    subprocess.run(["docker", "network", "prune", "-f"], capture_output=True, env=_docker_env())
+    return names
 
 
 def run_harbor(task_dir: str, agent: str, job_name: str) -> CheckResult:
