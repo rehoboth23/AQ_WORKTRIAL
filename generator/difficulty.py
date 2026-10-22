@@ -332,8 +332,21 @@ def _test_literals(tests_py: str) -> set[str]:
     return out
 
 
+def _looks_computed(literal: str) -> bool:
+    """A test constant that looks like a computed result rather than a stated rule constant or
+    output label: a spec task must state "overtime after 40.0 hours" and "print FLAGGED ENTRIES:",
+    but must not paste 1806.25. Strings count only if they contain a digit; floats only with at
+    least 5 characters once trailing zeros are dropped (1806.25, 12.75; not 40.0, 0.25, 7.5)."""
+    if re.fullmatch(r"-?\d+\.\d+(e[+-]?\d+)?", literal):
+        return len(literal.rstrip("0").rstrip(".")) >= 5
+    return bool(re.search(r"\d", literal))
+
+
 def leaked_literals(instruction: str, tests_py: str) -> list[str]:
-    return sorted(l for l in _test_literals(tests_py) if l in instruction)
+    """Computed-looking test constants that instruction.md repeats as a whole token (so 0.0 does
+    not match inside 40.0)."""
+    return sorted(l for l in _test_literals(tests_py) if _looks_computed(l)
+                  and re.search(r"(?<![\w.])" + re.escape(l) + r"(?![\w])", instruction))
 
 
 def env_lines(files: dict[str, str]) -> int:
