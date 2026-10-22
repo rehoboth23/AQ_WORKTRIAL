@@ -190,10 +190,18 @@ def location_leaks(instruction: str, files: dict[str, str]) -> list[str]:
     for name in shipped_names(files):
         if not name.startswith("/") and not is_code_or_config(name):
             continue
+        if _run_as_command(posixpath.basename(name), instruction):
+            continue  # the tool's entry point (how you run it) is interface, not a hint
         pattern = re.escape(name) if name.startswith("/") else rf"(?<![\w.-]){re.escape(name)}(?![\w-])"
         if re.search(pattern, instruction):
             leaks.add(name)
     return sorted(leaks)
+
+
+def _run_as_command(basename: str, instruction: str) -> bool:
+    """True if instruction.md runs this file (`python3 /app/ledger.py verify`, `./build.sh`)."""
+    return bool(re.search(rf"(?:\b(?:python3?|bash|sh|node|ruby|perl|php)\s+|\./)[\w./-]*"
+                          rf"(?<![\w-]){re.escape(basename)}(?![\w-])", instruction))
 
 
 def _test_literals(tests_py: str) -> set[str]:
@@ -205,8 +213,10 @@ def _test_literals(tests_py: str) -> set[str]:
     out = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant):
-            if isinstance(node.value, str) and len(node.value.strip()) >= 12 and "\n" not in node.value \
-                    and not node.value.startswith("/"):
+            v = node.value.strip() if isinstance(node.value, str) else ""
+            path_like = bool(v) and not re.search(r"\s", v) and ("/" in v or re.search(r"\.\w{1,5}$", v))
+            if isinstance(node.value, str) and len(v) >= 12 and "\n" not in node.value \
+                    and not node.value.startswith("/") and not path_like:
                 out.add(node.value.strip())
             elif isinstance(node.value, float):
                 out.add(repr(node.value))
@@ -289,7 +299,7 @@ def comment_lines(path: str, body: str):
 
 # A comment that states a rule ("must be normalised before comparing") next to code that breaks
 # it is an answer key; one that labels a module "unused" or "legacy" announces a decoy.
-_INTENT = re.compile(r"\b(should|must|always|never|required?|expected|correct(ly)?|intended|so that|"
+_INTENT = re.compile(r"\b(should|must|always|never|required?|expected|intended|so that|"
                      r"supposed to|needs? to|ensure)\b", re.I)
 _LABEL = re.compile(r"\b(not (used|loaded|imported|called|enabled)|unused|deprecated|legacy|"
                     r"workaround|hack|fixme|todo|xxx|known (bug|issue))\b", re.I)
