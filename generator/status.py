@@ -22,6 +22,14 @@ OUT = os.path.join(JOBS_DIR, "dashboard.html")
 ONLY = os.environ.get("DASHBOARD_ONLY", "")
 
 
+def _pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _keep(text: str) -> bool:
     return not ONLY or ONLY.lower() in str(text).lower()
 RECENT_SEC = 3 * 3600   # runs touched in the last 3 hours count as "recent"
@@ -211,9 +219,13 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
         # A resumed run (pipeline --resume) appends to an older logs dir: its latest start or
         # resume event is when the current process picked it up, not its first event.
         began = next((e for e in reversed(ev) if e.get("event") in ("start", "resume")), ev[0])
-        started = time.mktime(time.strptime(began["time"], "%Y-%m-%dT%H:%M:%S"))
-        if started < alive_since:  # began before any live pipeline process: a dead run
-            continue
+        if began.get("pid"):  # runs that record their process: live only while it is
+            if not _pid_alive(began["pid"]):
+                continue
+        else:  # older runs: began before any live pipeline process means dead
+            started = time.mktime(time.strptime(began["time"], "%Y-%m-%dT%H:%M:%S"))
+            if started < alive_since:
+                continue
         done = {(e.get("label"), e.get("attempt")) for e in ev if e.get("event") == "llm_call"}
         flight = [e for e in ev if e.get("event") == "llm_start" and (e.get("label"), e.get("attempt")) not in done]
         last = ev[-1]

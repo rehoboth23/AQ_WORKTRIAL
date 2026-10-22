@@ -194,6 +194,7 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
         budget = n_runs + MAX_INVALID_RERUNS - len(res.trials)
         valid = [t for t in res.trials if t["outcome"] != "invalid"]
         too_easy = sum(t["outcome"] == "pass" for t in res.trials) > BAND_HIGH
+        res.early_stop = too_easy and len(valid) < n_runs  # stopped before n_runs valid trials
         to_run = 0 if too_easy else max(0, min(n_runs - len(valid), budget))
         extra_left = max(0, budget - to_run)
     while to_run > 0:

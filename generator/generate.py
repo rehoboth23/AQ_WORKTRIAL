@@ -538,7 +538,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         on_start(log.dir)
     systems = prompts.CONTROL_SYSTEMS if control else prompts.SYSTEMS
     log.event("resume" if resume_dir else "start", topic=topic, model=MODEL, calibration=calibration,
-              control=control)
+              control=control, pid=os.getpid())
     summary = {"topic": topic, "run_id": run_id, "logs_dir": log.dir, "task_dir": None,
                "status": "failed", "rounds": []}
 

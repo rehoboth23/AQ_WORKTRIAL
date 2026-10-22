@@ -259,7 +259,13 @@ _FORMAT_ASSERTS = [
 def format_assertions(tests_py: str, instruction: str) -> list[str]:
     """Format-pinning assertions in the tests whose form instruction.md never mentions."""
     hits = []
-    for n, line in enumerate(tests_py.splitlines(), 1):
+    lines = tests_py.splitlines()
+    for n, line in enumerate(lines, 1):
+        if "assert" not in line:  # a helper line counts only if its result is asserted later
+            m = re.match(r"\s*(\w+)\s*=", line)
+            if not m or not any(re.search(rf"\bassert\b.*\b{re.escape(m.group(1))}\b", later)
+                                for later in lines[n:n + 15]):
+                continue
         for pat, why in _FORMAT_ASSERTS:
             if pat.search(line):
                 token = "../" if "../" in line else "/" if "'/'" in line or '"/"' in line else None
@@ -309,7 +315,7 @@ def comment_lines(path: str, body: str):
 
 # A comment that states a rule ("must be normalised before comparing") next to code that breaks
 # it is an answer key; one that labels a module "unused" or "legacy" announces a decoy.
-_INTENT = re.compile(r"\b(should|must|always|never|required?|expected|intended|so that|"
+_INTENT = re.compile(r"\b(should|must|always|never|required?|expected|correctly|intended|so that|"
                      r"supposed to|needs? to|ensure)\b", re.I)
 _LABEL = re.compile(r"\b(not (used|loaded|imported|called|enabled)|unused|deprecated|legacy|"
                     r"workaround|hack|fixme|todo|xxx|known (bug|issue))\b", re.I)
