@@ -1,0 +1,27 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/petrify-stale-build"
+description = "Repair a static site generator whose incremental builds, theme assets, link normalisation, date handling and redirects interact incorrectly."
+keywords = ["debugging", "build-systems", "python", "static-site"]
+
+[metadata]
+difficulty = "hard"
+category = "software-engineering"
+tags = ["debugging", "build-systems", "python", "caching"]
+expert_time_estimate_min = 90.0
+junior_time_estimate_min = 300.0
+source = "manual"
+note = "Hand-built reference task: faults are interactions between correct-looking components, one needs a constructed condition (second build after an edit); no comment states intended behaviour."
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

@@ -1,0 +1,30 @@
+/* Print stylesheet — hides navigation and footer */
+@media print {
+    .site-nav,
+    .site-footer,
+    .sidebar {
+        display: none;
+    }
+
+    body {
+        max-width: 100%;
+        padding: 0;
+        font-size: 12pt;
+        color: #000;
+        background: #fff;
+    }
+
+    a {
+        color: #000;
+        text-decoration: underline;
+    }
+
+    article.post {
+        border-bottom: 1px solid #ccc;
+        page-break-inside: avoid;
+    }
+
+    .hero h1 {
+        font-size: 18pt;
+    }
+}

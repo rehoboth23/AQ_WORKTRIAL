@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ site_name }}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ asset_prefix }}{{ asset_url('css/main.css') }}">
+    <link rel="stylesheet" href="{{ asset_prefix }}{{ asset_url('css/theme.css') }}">
+    <link rel="stylesheet" href="{{ asset_prefix }}{{ asset_url('css/syntax.css') }}">
+    <link rel="stylesheet" href="{{ asset_prefix }}{{ asset_url('css/print.css') }}" media="print">
+    <link rel="alternate" type="application/rss+xml" title="{{ site_name }}" href="{{ asset_prefix }}feed.xml">
+</head>
+<body>
+    {% include 'nav.html' %}
+    {% if breadcrumbs %}
+    <ol class="breadcrumbs">
+        {% for crumb in breadcrumbs %}<li><a href="{{ crumb.href }}">{{ crumb.title }}</a></li>{% endfor %}
+    </ol>
+    {% endif %}
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    {% include 'footer.html' %}
+    <script src="{{ asset_prefix }}{{ asset_url('js/app.js') }}"></script>
+    <script src="{{ asset_prefix }}{{ asset_url('js/search.js') }}" defer></script>
+</body>
+</html>

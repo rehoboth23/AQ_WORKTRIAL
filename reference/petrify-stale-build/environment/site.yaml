@@ -1,0 +1,29 @@
+site_name: Petrify Docs
+site_url: https://petrify.dev/
+output_dir: dist
+assets_dir: assets
+content_dir: content
+templates_dir: templates
+themes_dir: themes
+theme: slate
+redirects_file: redirects.yaml
+
+nav_items:
+  - title: Home
+    url: /
+  - title: About
+    url: /about/
+  - title: Blog
+    url: /blog/
+  - title: Docs
+    url: /docs/
+  - title: Projects
+    url: /projects/
+
+section_titles:
+  /: Home
+  /docs/: Docs
+  /docs/api/: API
+  /docs/tutorials/: Tutorials
+  /blog/: Blog
+  /projects/: Projects

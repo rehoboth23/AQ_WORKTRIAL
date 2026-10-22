@@ -1,0 +1,36 @@
+/* Syntax highlighting styles for code blocks */
+.codehilite {
+    background: #f8f8f8;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+}
+
+.codehilite pre {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    font-family: 'Menlo', 'Consolas', 'Monaco', monospace;
+}
+
+.codehilite .k  { color: #008000; font-weight: bold; }
+.codehilite .kn { color: #008000; font-weight: bold; }
+.codehilite .kc { color: #008000; font-weight: bold; }
+.codehilite .s  { color: #ba2121; }
+.codehilite .s2 { color: #ba2121; }
+.codehilite .se { color: #bb6622; }
+.codehilite .c  { color: #408080; font-style: italic; }
+.codehilite .c1 { color: #408080; font-style: italic; }
+.codehilite .cm { color: #408080; font-style: italic; }
+.codehilite .nf { color: #0000ff; }
+.codehilite .fm { color: #0000ff; }
+.codehilite .nb { color: #008000; }
+.codehilite .nn { color: #008000; }
+.codehilite .nc { color: #008000; font-weight: bold; }
+.codehilite .nd { color: #aa22ff; }
+.codehilite .nv { color: #19177c; }
+.codehilite .o  { color: #666666; }
+.codehilite .mi { color: #666666; }
+.codehilite .mf { color: #666666; }

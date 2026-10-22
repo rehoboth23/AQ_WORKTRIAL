@@ -1,0 +1,7 @@
+# old URL: new URL
+/guide/: /docs/getting-started/
+/docs/install/: /docs/deployment/
+/blog/2023/: /blog/
+/docs/api/: /docs/api/reference/
+/projects/old-pipeline/: /projects/data-pipeline/
+/tutorial/: /docs/tutorials/first-site/

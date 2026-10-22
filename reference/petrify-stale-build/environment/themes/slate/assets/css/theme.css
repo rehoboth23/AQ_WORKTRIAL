@@ -1,0 +1,8 @@
+/* Slate theme */
+:root { --slate-bg: #f6f7f9; --slate-fg: #1f2933; --slate-accent: #3e6bd6; }
+body { background: var(--slate-bg); color: var(--slate-fg); }
+.site-nav a { color: var(--slate-accent); text-decoration: none; }
+.site-nav li.active a { font-weight: 600; }
+.breadcrumbs { list-style: none; display: flex; gap: .5rem; padding: 0; font-size: .9rem; }
+.breadcrumbs li + li::before { content: "/"; margin-right: .5rem; color: #9aa5b1; }
+.post time, .post .author { color: #616e7c; font-size: .9rem; }
