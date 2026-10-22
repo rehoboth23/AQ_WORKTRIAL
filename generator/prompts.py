@@ -277,13 +277,21 @@ model's fault (it missed a consequence of the goal), not an unstated requirement
   Do not guess "model" to fill a gap: an unexplained failure blocks the task from being kept.
 
 Be strict about "task": only choose it when you can point to the specific flaw. Be equally
-strict about "model": cite the requirement the agent missed and what it did instead.
+strict about "model": trace the FAILING ASSERTION to instruction.md. Quote the sentence of
+instruction.md (or the fact visible in the environment, such as the program's existing output
+words) that requires what the assertion checks. Test names, docstrings and comments are NOT
+requirements: the agent never sees them. If no sentence or derivable consequence of the stated
+goal requires what the failing assertion checks, it is "task" (a test checking an unstated
+choice), even if every other test passed. Example: the goal is "each event affects the balance
+exactly once"; the failing assertion requires the receiver to print "duplicate" for a retry; the
+balance was correct; nothing asks for that output -> "task".
 Reply with ONE JSON object and nothing else:
 {"fault": "model" or "task" or "unknown", "category": "short label, e.g. wrong-diagnosis,
  incomplete-fix, gave-up, broke-something, ambiguous-spec, untested-requirement, broken-env",
  "reason": "one sentence, concrete",
  "evidence": ["specific observations from the verifier output or trajectory"],
- "failed_requirements": ["the requirement(s) from instruction.md the run did not meet"]}
+ "failed_requirements": ["the requirement(s) from instruction.md the run did not meet"],
+ "requirement_quote": "for 'model': the exact instruction.md sentence (or environment fact) the failing assertion enforces; empty otherwise"}
 """
 
 

@@ -277,9 +277,13 @@ def _parse_triage(text: str) -> dict:
     if obj.get("fault") not in ("model", "task", "unknown"):
         raise ValueError("fault must be 'model', 'task' or 'unknown'")
     as_list = lambda v: [str(x) for x in v] if isinstance(v, list) else ([str(v)] if v else [])
-    return {"fault": obj["fault"], "category": str(obj.get("category", "")),
-            "reason": str(obj.get("reason", "")), "evidence": as_list(obj.get("evidence")),
-            "failed_requirements": as_list(obj.get("failed_requirements"))}
+    fault, quote = obj["fault"], str(obj.get("requirement_quote") or "").strip()
+    reason = str(obj.get("reason", ""))
+    if fault == "model" and not quote:  # a model fault must trace to a stated requirement
+        fault, reason = "unknown", "no instruction requirement quoted for the failing assertion: " + reason
+    return {"fault": fault, "category": str(obj.get("category", "")), "reason": reason,
+            "evidence": as_list(obj.get("evidence")), "failed_requirements": as_list(obj.get("failed_requirements")),
+            "requirement_quote": quote}
 
 
 def triage(task_dir: str, failed_trials: list[dict], log=None) -> list[dict]:
