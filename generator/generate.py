@@ -512,11 +512,17 @@ def task_toml(spec: dict, task_name: str) -> str:
     })
 
 
+RUNNER_PACKAGES = {"pytest", "pytest-json-ctrf"}
+
+
 def test_sh(spec: dict) -> str:
     """TEST_SH plus what the tests need that the agent's image must not have: pinned pip packages
     (a reference library) and Debian packages (e.g. gcc to compile a pristine reference)."""
+    # The runner pins pytest and pytest-json-ctrf itself; a design that pins them again (pytest==8.3.4)
+    # made uvx unsatisfiable, so every test errored and no repair could fix it (Python writes test.sh).
     pkgs = [str(p).strip() for p in spec.get("verifier_packages") or []
-            if difficulty.VERIFIER_PACKAGE.fullmatch(str(p).strip())]
+            if difficulty.VERIFIER_PACKAGE.fullmatch(str(p).strip())
+            and re.split(r"[=<>!~\[ ]", str(p).strip())[0].lower().replace("_", "-") not in RUNNER_PACKAGES]
     extra = "".join(f"  --with {p} \\\n" for p in pkgs)
     sh = TEST_SH.replace("  --with pytest-json-ctrf==0.3.5 \\\n", "  --with pytest-json-ctrf==0.3.5 \\\n" + extra)
     apt = [str(p).strip() for p in spec.get("verifier_apt") or [] if difficulty._APT_NAME.fullmatch(str(p).strip())]
