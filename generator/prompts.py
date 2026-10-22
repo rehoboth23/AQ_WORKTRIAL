@@ -83,7 +83,8 @@ DIFFICULTY_RULE = f"""\
     match); the tests then compile or copy their own pristine copy and hide the environment's one.
     Public tests are the one other exception: tests for the COMMON path only (about 30% of what the
     hidden tests cover, e.g. in tests_public/) may ship so the agent's verify loop works; they never
-    contain a hidden input or an edge case.
+    contain a hidden input or an edge case. The tool and the public tests run in under 60 s on 1 CPU,
+    so failures come from the work, not from waiting.
   * Fair: an expert reading instruction.md and the environment can derive every check. Every
     exception to a general rule is named in instruction.md; where two behaviours are both
     reasonable (reject vs sanitise, round before vs after) instruction.md states which is required.
@@ -407,6 +408,8 @@ Check, against the list of checks and tests/test_outputs.py given to you:
      inputs, or a hint of which cases the tests probe.
   3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
      reference implementation (unless the reference IS the specification the task asks to match).
+     Public tests for the COMMON path (the design's `public_tests`) are allowed and should stay;
+     flag them only if they contain a hidden input or an edge case the hidden tests check.
   4. UNSTATED FORMAT: a test requires an exact textual form no sentence states; report it as
      "UNSTATED FORMAT: <test> requires <form>".
 Also make sure the interface is stated: the command or entry point, inputs, outputs, exit codes.

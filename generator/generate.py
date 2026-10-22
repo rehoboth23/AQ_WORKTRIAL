@@ -139,6 +139,7 @@ class Spec(BaseModel):
     quirk_matrix: str = ""              # dimensions x levels the hidden instances are drawn from
     public_tests: str = ""
     anti_cheese: str = ""
+    seed_card: str = ""                 # the binding seed card (attached after design; read by every later stage)
     crux: str = ""
     expected_agent_steps: float | None = None
 
@@ -212,7 +213,7 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
         spec, _, _ = chat(systems["spec"], user, parse_spec, log.llm, "spec" if attempt == 0 else f"spec-a{attempt}")
         if control:
             return spec
-        problems = difficulty.spec_gate(spec, genre)
+        problems = difficulty.spec_gate(spec, genre) + difficulty.seed_gate(spec, prompts.seed_of(topic))
         log.event("spec_gate", attempt=attempt, problems=problems)
         if not problems:
             break
@@ -223,16 +224,19 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
             critic, _, _ = chat(systems["critic"], prompts.critic_user(spec, calibration, prompts.seed_of(topic)),
                                 parse_critic, log.llm, "critic")
             log.write_json("critic.json", critic)
-            revised_problems = difficulty.spec_gate(critic["spec"], genre)
+            revised_problems = difficulty.spec_gate(critic["spec"], genre) + difficulty.seed_gate(critic["spec"], prompts.seed_of(topic))
             log.event("critic", too_easy_because=critic["too_easy_because"], revised_gate=revised_problems)
             if not revised_problems:
                 spec = critic["spec"]
         except LLMError as e:  # the critic is an improvement step; keep the gated spec without it
             log.event("critic_error", error=str(e)[:300])
 
-    problems = difficulty.spec_gate(spec, genre)
+    seed = prompts.seed_of(topic)
+    problems = difficulty.spec_gate(spec, genre) + difficulty.seed_gate(spec, seed)
     if problems:
         raise SpecRejected("spec failed the difficulty gate: " + "; ".join(problems))
+    if seed:
+        spec = {**spec, "seed_card": seed}  # project, files, repair and review stages read it from the design
     return spec
 
 

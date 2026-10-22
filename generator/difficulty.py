@@ -79,6 +79,19 @@ def knob_gate(spec: dict) -> list[str]:
 _APT_NAME = re.compile(r"[a-z0-9][a-z0-9.+-]+")
 
 
+def seed_gate(spec: dict, seed: str) -> list[str]:
+    """With a seed card, the design must carry the card's difficulty machinery: the dial, the
+    quirk matrix, the public common-path tests and the anti-cheese gate."""
+    if not seed:
+        return []
+    return [f"the seed card requires `{key}`: {why}" for key, why in (
+        ("dial", "what moves the pass rate, its fair range and chosen value"),
+        ("quirk_matrix", "the dimensions x levels hidden instances are drawn from, and the mix"),
+        ("public_tests", "what the visible common-path tests cover"),
+        ("anti_cheese", "the paired gate that stops a shortcut, and its hidden test"))
+        if not str(spec.get(key) or "").strip()]
+
+
 def spec_gate(spec: dict, genre: str = "") -> list[str]:
     """The design gate (one recipe for every topic): enough independent checks, each tied to a
     sentence the agent can see and evaluated on inputs it never sees; ground truth computed by code;
@@ -432,6 +445,8 @@ def oracle_leaks(files: dict[str, str], skip: set[str] = frozenset()) -> list[st
         if not path.startswith("environment/") or path == "environment/Dockerfile" or path in skip:
             continue
         name = path[len("environment/"):]
+        if re.search(r"(^|/)tests?_public/|(^|/)public_tests?/", name):
+            continue  # common-path public tests the design ships on purpose (seed card `public_tests`)
         code = is_code_or_config(posixpath.basename(name)) and posixpath.splitext(name)[1].lower() not in _DOC_EXTS
         if (code and _ORACLE_FILE.search(name)) or re.search(r"expected[_-]?output", name, re.I):
             hits.append(f"{path}: file name suggests a reference or self-check")
@@ -443,6 +458,8 @@ def oracle_leaks(files: dict[str, str], skip: set[str] = frozenset()) -> list[st
                     hits.append(f"{path}:{n}: exposes a '{m.group(1)}' command: {line.strip()[:80]}")
                     break
     m = _ORACLE_INSTR.search(files.get("instruction.md", ""))
+    if m and re.search(r"public|tests?_public", m.group(0), re.I):
+        m = None  # telling the agent how to run its public common-path tests is allowed
     if m:
         hits.append(f"instruction.md tells the agent how to confirm completion: '{m.group(0)[:90]}'")
     return hits
