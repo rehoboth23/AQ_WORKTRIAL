@@ -39,6 +39,11 @@ LLM_MAX_RETRIES = _retry_limit("LLM_MAX_RETRIES", 2)
 # Repair rounds: a failed check (gate, validator, oracle, nop, mutants) goes back to the
 # authoring model for a fix, at most this many times per topic.
 MAX_REPAIR_ROUNDS = _retry_limit("MAX_REPAIR_ROUNDS", 3)
+# Difficulty adjustment (stretch goal A): after the band eval, a task that is too easy, too hard
+# or in band only through task faults gets up to ADJUST_ROUNDS small, fair edits, each re-checked
+# (validator, oracle, nop, mutants) and re-evaluated. 0 = off (default).
+ADJUST_ROUNDS = int(os.environ.get("ADJUST_ROUNDS", "0"))
+ADJUST_MODES = set(os.environ.get("ADJUST_MODES", "harden,ease,fairness").split(","))
 # One extra repair round when only the mutation check failed (the task is otherwise correct).
 BONUS_REPAIR_ROUND = os.environ.get("BONUS_REPAIR_ROUND", "1") == "1"
 

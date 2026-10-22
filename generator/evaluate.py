@@ -128,6 +128,36 @@ def _failed_tests(trial_dir: str) -> list[str]:
     return [t.get("name", "?").rsplit("::", 1)[-1] for t in tests if t.get("status") not in ("passed", "skipped")]
 
 
+def _test_results(trial_dir: str) -> dict[str, str]:
+    """Every test's status in one trial ({name: passed|failed|...}), from the verifier's CTRF
+    report. Kept per trial so a per-test table across runs survives deleting jobs/."""
+    try:
+        tests = json.loads(_read(os.path.join(trial_dir, "verifier", "ctrf.json")) or "{}")["results"]["tests"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return {}
+    return {t.get("name", "?").rsplit("::", 1)[-1]: str(t.get("status") or "?") for t in tests}
+
+
+def test_table(trials: list[dict]) -> list[dict]:
+    """Per-test results across the valid runs: [{"test", "results": ["pass"|"fail"|"-", ...],
+    "passes", "runs"}], hardest tests first."""
+    valid = [t for t in trials if t.get("outcome") in ("pass", "fail")]
+    names = sorted({n for t in valid for n in (t.get("tests") or {})})
+    rows = []
+    for n in names:
+        res = [{"passed": "pass", "skipped": "-"}.get((t.get("tests") or {}).get(n, "-"), "fail")
+               if n in (t.get("tests") or {}) else "-" for t in valid]
+        rows.append({"test": n, "results": res, "passes": res.count("pass"), "runs": sum(r != "-" for r in res)})
+    return sorted(rows, key=lambda r: (r["passes"] - r["runs"], r["test"]))
+
+
+def common_failure(trials: list[dict]) -> list[str]:
+    """Tests that EVERY failing run failed, when at least two runs failed: the usual sign of a
+    task fault (an unstated choice or a contradiction), not of difficulty."""
+    failing = [set(t.get("failed_tests") or []) for t in trials if t.get("outcome") == "fail"]
+    return sorted(set.intersection(*failing)) if len(failing) >= 2 else []
+
+
 def _collect(job_dir: str) -> list[dict]:
     """Summarise every trial of one harbor job."""
     out = []
@@ -145,6 +175,7 @@ def _collect(job_dir: str) -> list[dict]:
             "cost_usd": agent.get("cost_usd"),
             "episodes": (agent.get("metadata") or {}).get("n_episodes"),
             "failed_tests": _failed_tests(os.path.dirname(path)),
+            "tests": _test_results(os.path.dirname(path)),
         })
     return out
 

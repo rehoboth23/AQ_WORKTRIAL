@@ -38,6 +38,7 @@ from config import (
     BAND_SLOTS,
     CALIBRATION_FILE,
     CALIBRATION_WINDOW,
+    ADJUST_ROUNDS,
     CONFIRM_EVALS,
     DESIGN_VERSION,
     EVAL_MODEL,
@@ -58,7 +59,9 @@ from config import (
     WAVE_POLL_SEC,
 )
 from difficulty import env_lines, solve_lines
-from evaluate import TRIAL_WALL_SEC, _collect, early_stop_reached, prior_band_jobs, review_band, run_band
+from evaluate import (TRIAL_WALL_SEC, _collect, common_failure, early_stop_reached, prior_band_jobs, review_band,
+                      run_band, test_table)
+from adjust import adjust_task
 from generate import RunLog, chat, generate_task
 from llm import LLMError, parse_json_object
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
@@ -143,6 +146,12 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     reviewed = (review_band(task_dir, valid, spec, mutation, log.llm) if band.verdict != "error" and spec
                 else {"triage": [], "postmortem": {}})
     failures = reviewed["triage"] if band.verdict in ("learnable", "too_hard") else []
+    first = {"verdict": band.verdict, "passes": band.passes, "n_valid": band.n_valid}
+    adjustments = []
+    if ADJUST_ROUNDS and spec and arm == "treatment":  # stretch A: move the task into the band with fair edits
+        band, reviewed, spec, adjustments = adjust_task(task_dir, spec, band, reviewed, run_id, log, on_start)
+        valid = [t for t in band.trials if t["outcome"] != "invalid"][:N_RUNS]
+        failures = reviewed["triage"] if band.verdict in ("learnable", "too_hard") else []
     task_faults = [f for f in failures if f["fault"] == "task"]
     unknown = [f for f in failures if f["fault"] not in ("model", "task")]
 
@@ -176,6 +185,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
               "confirmations": confirmations, "confirmed": confirmed, "lesson": pm.get("lesson", ""), "postmortem": pm,
               "passes": band.passes, "n_valid": band.n_valid, "n_invalid": band.n_invalid,
               "decision": decision, "why": why, "triage": failures, "band": band.to_dict(),
+              "first_eval": first, "adjustments": adjustments,
               "eval_model": EVAL_MODEL, "reasoning_effort": EVAL_REASONING_EFFORT}
     with open(os.path.join(task_dir, "band.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
@@ -303,6 +313,25 @@ def verdict_md(state: dict) -> str:
                          f"{t.get('episodes') or '-'} | {t.get('cost_usd') or '-'} | "
                          f"{', '.join(t.get('failed_tests') or []) or '-'} | "
                          f"{(tri['fault'] + ': ' + tri['reason']).replace('|', '/')[:200] if tri else '-'} |")
+        table = test_table(band["trials"])
+        if table:
+            lines += ["", "### Per test (valid runs in order)", "", "| test | runs | passed |", "|---|---|---|"]
+            lines += [f"| {r['test']} | {' '.join(r['results'])} | {r['passes']}/{r['runs']} |" for r in table]
+        same = common_failure(band["trials"])
+        if same:
+            lines += ["", f"**Every failing run failed {', '.join(same)}.** That usually means a task fault "
+                          "(an unstated choice or a contradiction), not difficulty; check it is derivable."]
+    if rec.get("adjustments"):
+        fe = rec.get("first_eval") or {}
+        lines += ["", "## Difficulty adjustment", "",
+                  f"First eval: {fe.get('passes')}/{fe.get('n_valid')} -> {fe.get('verdict')}", "",
+                  "| round | mode | edits | removed instruction sentences | checks | before | after |",
+                  "|---|---|---|---|---|---|---|"]
+        for a in rec["adjustments"]:
+            edits = "; ".join(f"{e.get('kind')}: {e.get('what')}" for e in a.get("edits") or [])[:200].replace("|", "/")
+            lines.append(f"| {a['round']} | {a['mode']} | {edits or '-'} | {len(a.get('removed_sentences') or [])} | "
+                         f"{a.get('checks') or '-'} | {a['passes_before']}/5 {a['verdict_before']} | "
+                         f"{(str(a.get('passes_after')) + '/5 ' + str(a.get('verdict_after'))) if a.get('result') == 'evaluated' else a.get('result')} |")
     for i, c in enumerate(rec.get("confirmations") or [], 1):
         lines.append(f"- confirmation eval {i}: {c['passes']}/{c['n_valid']} -> {c['verdict']}")
     if rec.get("confirmations"):
