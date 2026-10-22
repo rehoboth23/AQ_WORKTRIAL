@@ -513,6 +513,50 @@ def band_review_user(instruction: str, tests: str, spec: dict, mutation: list, t
             + "\n\nAll runs:\n" + json.dumps(runs, indent=1) + detail + "\n")
 
 
+ADJUST_SYSTEM = f"""\
+You adjust the difficulty of ONE Terminal-Bench 2 task that has already been evaluated. You get the
+task's files, its design (checks, knobs), the band result (how many of 5 runs passed), a per-test
+table across the runs, the triage of each failed run, and the last steps of passing and failing
+runs. Make the SMALLEST fair change likely to move the pass count into 1-3 of 5 (aim for 2).
+
+{HARBOR_CONTRACT}
+{DIFFICULTY_RULE}
+Modes:
+- harden (4-5/5 passed). Allowed, in order of preference: tighten a stated threshold or tolerance
+  toward the strict end of a fair range (the new number goes in instruction.md; the oracle must
+  still pass with margin); add a hidden check on a kind of input the passing runs never tested
+  themselves (cite what they tested), following from an existing instruction sentence or one new
+  requirement sentence; widen the hidden draws (more seeds, more held-out cases); remove a
+  self-check crutch (a visible example that answers a hidden case, an error message naming the fix).
+- ease (0/5, failures fair). Loosen a stated threshold; name an exception; fix a vague or vacuous
+  rule; add a visible example of the common path for the check every run failed (never a hidden input).
+- fairness (in band or too hard only through task faults). Fix ONLY what triage quoted (the
+  contradiction, the unstated choice, the vacuous rule). Nothing else.
+Never: delete a requirement sentence a check depends on, create contradictions, require an unstated
+format, add clocks/randomness/network, weaken a test only to pass, put expected values in the
+environment, or pad for size. At most two edits. If no fair edit can move the result, give up.
+
+Reply with a block <<<FILE adjust.json>>> containing ONE JSON object
+{{"diagnosis": "why the task landed where it did", "give_up": "" or "reason",
+  "edits": [{{"kind": "threshold|new_check|wider_draws|remove_crutch|name_exception|fix_rule|example|other",
+             "file": "path", "what": "the change", "why_effect": "why it moves the pass count",
+             "fairness": "the sentence or file that makes it derivable"}}],
+  "spec_patch": {{"checks": [...only when checks were added or changed: the full new list...]}}}}
+<<<END>>>
+then one block per changed file with its FULL new content, e.g.
+<<<FILE tests/test_outputs.py>>>
+...
+<<<END>>>
+"""
+
+
+def adjust_user(mode: str, spec: dict, files: dict[str, str], evidence: dict) -> str:
+    design = {k: spec.get(k) for k in ("name", "shape", "hidden_evaluation", "checks", "knobs", "ground_truth")}
+    shown = "".join(f"\n<<<FILE {p}>>>\n{b[:20000]}\n<<<END>>>" for p, b in sorted(files.items()))
+    return (f"Mode: {mode}\n\nDesign:\n{json.dumps(design, indent=1)[:12000]}\n\nBand evidence:\n"
+            + json.dumps(evidence, indent=1)[:30000] + "\n\nTask files:" + shown + "\n")
+
+
 def spec_retry_user(topic: str, calibration: str, problems: list[str]) -> str:
     return (spec_user(topic, calibration) + "\nYour previous design was rejected by automatic "
             "checks:\n- " + "\n- ".join(problems) + "\nDesign it again, fixing all of these.\n")
