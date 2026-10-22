@@ -245,7 +245,8 @@ def parse_review(text: str) -> dict:
             "docs": {p: b for p, b in blocks.items() if p.startswith("environment/")}}
 
 
-def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | None = None, genre: str = "spec") -> dict[str, str]:
+def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | None = None, genre: str = "spec",
+                       hints: list[str] | None = None) -> dict[str, str]:
     """Rewrite instruction.md if it diagnoses a hidden fault (keeps requirements). Best effort:
     on a model error the instruction is kept and the gates and band eval still apply."""
     docs = difficulty.spec_docs(files, spec)
@@ -253,7 +254,7 @@ def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | N
         review, _, _ = chat((systems or {}).get("review") or prompts.INSTRUCTION_REVIEW_SYSTEM,
                             prompts.instruction_review_user(files["instruction.md"], mutation_items(spec),
                                                             files.get("tests/test_outputs.py", ""),
-                                                            spec.get("crux", ""), genre, docs),
+                                                            spec.get("crux", ""), genre, docs, hints),
                             parse_review, log.llm, "review")
     except LLMError as e:
         log.event("review_error", error=str(e)[:300])
@@ -610,7 +611,9 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         record = {"round": rnd, "dropped_paths": dropped, "checks": []}
         if (INSTRUCTION_REVIEW and not control and files.get("instruction.md", "").strip()
                 and files["instruction.md"] != reviewed):
-            files = review_instruction(spec, files, log, systems, genre)
+            hints = difficulty.files_warnings(files, spec)
+            record["warnings"] = hints
+            files = review_instruction(spec, files, log, systems, genre, hints)
             reviewed = files["instruction.md"]
         missing = missing_files(files) + [f"environment/{p} (the Dockerfile COPYs it, but it was never written)"
                                           for p in missing_copy_sources(files)]

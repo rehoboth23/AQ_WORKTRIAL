@@ -396,6 +396,9 @@ Check, against the list of checks and tests/test_outputs.py given to you:
      vaguely that two reasonable readings give different results, or that two passages contradict
      (a general rule and an exception instruction.md does not name).
   2. LEAKED ANSWER: expected output beyond trivial examples, a sample that covers the hidden
+Pattern-scan hints may be given below; they are often false alarms (a rule constant is not a
+pasted answer, a file the task must name is not a leak). Act on a hint only if it is a real
+problem by the four checks above.
      inputs, or a hint of which cases the tests probe.
   3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
      reference implementation (unless the reference IS the specification the task asks to match).
@@ -422,13 +425,15 @@ genuine part of the requirement; otherwise the test is the problem and must be r
 
 
 def instruction_review_user(instruction: str, checks: list, tests: str, crux: str = "", genre: str = "",
-                            docs: dict[str, str] | None = None) -> str:
+                            docs: dict[str, str] | None = None, hints: list[str] | None = None) -> str:
     doc_text = "".join(f"\n\nDocument {path} (shipped in the environment):\n{body[:12000]}"
                        for path, body in (docs or {}).items())
     return ("Checks the hidden tests make (each must follow from what the agent can see; never reveal their inputs):\n"
             + json.dumps(checks, indent=2)
             + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
-            + doc_text + "\n\ninstruction.md to review:\n" + instruction)
+            + doc_text
+            + ("\n\nPattern-scan hints (act only on real problems):\n- " + "\n- ".join(hints) if hints else "")
+            + "\n\ninstruction.md to review:\n" + instruction)
 
 
 MUTANT_SYSTEM = """\

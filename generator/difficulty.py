@@ -457,10 +457,9 @@ def rule_coverage(instruction: str, spec: dict | None) -> list[str]:
     return missing
 
 
-def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
-    instruction = files.get("instruction.md", "")
-    solve_sh = files.get("solution/solve.sh", "")
-    tests_py = files.get("tests/test_outputs.py", "")
+def _interface_names(files: dict[str, str], spec: dict | None) -> tuple[dict, set[str], set[str], list[str]]:
+    """The spec documents, the names instruction.md may use (documents, a reference binary, its
+    sample), the build-stage-only sources, and any blocking problem with them."""
     problems = []
     docs = spec_docs(files, spec)
     want = str((spec or {}).get("spec_document") or "").strip()
@@ -468,9 +467,8 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
         problems.append(f"the spec document `{want}` is not among the files; ship it under environment/ "
                         "and name it in instruction.md")
     allowed = _doc_names(docs)
-    exec_ref = bool(str((spec or {}).get("reference_binary") or "").strip())  # a reference that IS the spec
     build_only = set()
-    if exec_ref:  # the reference binary and the sample are the task's interface
+    if str((spec or {}).get("reference_binary") or "").strip():  # a reference that IS the specification
         for key in ("reference_binary", "sample_file"):
             v = str((spec or {}).get(key) or "").strip()
             if v:
@@ -480,42 +478,49 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
         if shipped_src:
             problems.append("the reference source would reach the agent's image (" + ", ".join(shipped_src[:3]) + "); compile it "
                             "in a build stage (FROM ... AS build) and COPY only the stripped binary into the final stage")
-    leaks = location_leaks(instruction, files, allowed)
-    if leaks:
-        problems.append("instruction.md names shipped source/config files (" + ", ".join(leaks) + "); "
-                        "which points the agent at the fault; describe the symptom and goal "
-                        "instead and let the agent find the location")
-    fa = format_assertions(tests_py, instruction)
-    if fa:
-        problems.append("tests pin an exact textual form the instruction never states, so a correct "
-                        "solution can fail on spelling; test the meaning (resolve paths, parse values, "
-                        "accept equivalent forms) or state the form in instruction.md: " + "; ".join(fa[:4]))
-    lits = leaked_literals(instruction, tests_py)
-    if len(lits) > MAX_LEAKED_LITERALS:
-        problems.append(f"instruction.md pastes {len(lits)} expected values from the tests "
-                        f"(e.g. {lits[:3]}); state the rule that produces them instead")
-    keys = answer_key_leaks(files, spec, set(docs))
-    if keys:
-        problems.append("comments or docs in environment/ give the answer away; describe what the code "
-                        "does, never the rule it breaks, and never label code unused/legacy/a "
-                        "workaround: " + "; ".join(keys[:5]))
-    ptr = pointer_leaks(instruction, allowed)
-    if ptr:
-        problems.append(f"instruction.md points at where the answer is written ({', '.join(ptr)}); remove it")
-    ids = fault_identifier_leaks(instruction, spec)
-    if ids:
-        problems.append(f"instruction.md names code symbols where faults live ({', '.join(ids)}); "
-                        "describe behaviour, not code")
+    return docs, allowed, build_only, problems
+
+
+def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
+    """Blocking checks: cheap, reliable, and each one protects the task (a missing document, a
+    reference that would reach the agent, an oracle or a copy of the answer in the environment).
+    Judgement calls about the text are in files_warnings() and go to the instruction review."""
+    _, _, build_only, problems = _interface_names(files, spec)
     oracle = oracle_leaks(files, build_only)
     if oracle:
         problems.append("the environment or instruction gives the agent an oracle for the graded result; remove it "
                         "(no verify/check/diff/self-test commands, no expected output, no reference): " + "; ".join(oracle[:4]))
-    uncovered = rule_coverage(instruction + "\n" + "\n".join(docs.values()), spec)
-    if uncovered:
-        problems.append("these requirements are not stated in instruction.md or the spec document (the tests would "
-                        "check a rule the agent was never told); state each one precisely: " + "; ".join(uncovered[:5]))
     refs = reference_copies(files)
     if refs:
         problems.append("the environment keeps a reference copy of the correct code (git history, "
                         "backups, originals); remove it: " + "; ".join(refs[:4]))
     return problems
+
+
+def files_warnings(files: dict[str, str], spec: dict | None = None) -> list[str]:
+    """Pattern-scan hints for the instruction review, not blockers: as blockers they caused most
+    false-alarm repair rounds (rule constants taken for pasted answers, a reference binary taken
+    for a leaked file name). The review decides whether each one is real."""
+    instruction = files.get("instruction.md", "")
+    tests_py = files.get("tests/test_outputs.py", "")
+    docs, allowed, _, _ = _interface_names(files, spec)
+    hints = []
+    leaks = location_leaks(instruction, files, allowed)
+    if leaks:
+        hints.append("instruction.md names shipped source/config files: " + ", ".join(leaks))
+    fa = format_assertions(tests_py, instruction)
+    if fa:
+        hints.append("tests may pin a textual form the instruction never states: " + "; ".join(fa[:4]))
+    lits = leaked_literals(instruction, tests_py)
+    if len(lits) > MAX_LEAKED_LITERALS:
+        hints.append(f"instruction.md may paste expected values from the tests: {lits[:3]}")
+    keys = answer_key_leaks(files, spec, set(docs))
+    if keys:
+        hints.append("comments in environment/ may state a rule or label code: " + "; ".join(keys[:5]))
+    ptr = pointer_leaks(instruction, allowed)
+    if ptr:
+        hints.append(f"instruction.md may point at where an answer is written: {', '.join(ptr)}")
+    uncovered = rule_coverage(instruction + "\n" + "\n".join(docs.values()), spec)
+    if uncovered:
+        hints.append("these checks may not be stated anywhere the agent can see: " + "; ".join(uncovered[:5]))
+    return hints
