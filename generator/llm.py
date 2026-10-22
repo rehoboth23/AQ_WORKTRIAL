@@ -121,6 +121,10 @@ def _relax_json(text: str) -> str:
     while i < n:
         c = text[i]
         if in_str:
+            if c == "\\" and i + 1 < n and text[i + 1] not in '"\\/bfnrtu':
+                out.append("\\\\")  # a backslash before e.g. a space or a regex letter: a literal backslash was meant
+                i += 1
+                continue
             out.append(c)
             if c == "\\" and i + 1 < n:
                 out.append(text[i + 1])
@@ -166,7 +170,11 @@ def _missing_comma(text: str, j: int) -> bool:
     k = j
     while k < len(text) and text[k] in " \t\r\n":
         k += 1
-    return "\n" in text[j:k] and k < len(text) and text[k] in '"{['
+    if k >= len(text):
+        return False
+    # a string right after a string is never valid JSON (a key is followed by ':'), so the comma is the
+    # only repair on one line too; objects and arrays need the newline so `}{` inside prose is left alone
+    return text[k] == '"' or ("\n" in text[j:k] and text[k] in "{[")
 
 
 def parse_json_object(text: str) -> dict:
