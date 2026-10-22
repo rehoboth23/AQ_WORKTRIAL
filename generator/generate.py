@@ -652,7 +652,8 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         summary["rounds"].append(record)
         log.event("checks", round=rnd, passed=not error,
                   results={c["name"]: c["reward"] if c["name"] != "validator" else c["passed"]
-                           for c in record["checks"]})
+                           for c in record["checks"]},
+                  gate=[g[:200] for g in gate], missing=[m[:120] for m in missing])
         if not error:
             summary["task_dir"] = task_dir
             return finish("ok", task_name=f"{TASK_ORG}/{task_name}")

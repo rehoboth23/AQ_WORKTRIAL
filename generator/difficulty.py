@@ -323,8 +323,9 @@ def _test_literals(tests_py: str) -> set[str]:
         if isinstance(node, ast.Constant):
             v = node.value.strip() if isinstance(node.value, str) else ""
             path_like = bool(v) and not re.search(r"\s", v) and ("/" in v or re.search(r"\.\w{1,5}$", v))
+            name_like = bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", v))  # a field, key, option or column name: interface, not a value
             if isinstance(node.value, str) and len(v) >= 12 and "\n" not in node.value \
-                    and not node.value.startswith("/") and not path_like:
+                    and not node.value.startswith("/") and not path_like and not name_like:
                 out.add(node.value.strip())
             elif isinstance(node.value, float):
                 out.add(repr(node.value))
