@@ -355,7 +355,7 @@ def eval_activity(limit: int = 6) -> list[tuple[str, str, str]]:
 def band_jobs() -> list[dict]:
     out = []
     live = live_trials()
-    for jd in glob.glob(os.path.join(JOBS_DIR, "*")):
+    for jd in [j for root in [JOBS_DIR] + _extra("jobs") for j in glob.glob(os.path.join(root, "*"))]:
         if not _keep(jd):
             continue
         if not os.path.isdir(jd) or not (os.path.basename(jd).startswith("band-")
