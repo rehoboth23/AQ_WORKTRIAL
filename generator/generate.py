@@ -47,6 +47,7 @@ from config import (
     MAX_SPEC_ATTEMPTS,
     MODEL,
     MUTATION_CHECK,
+    NEED_TO_KNOW,
     MUTANT_TOLERANCE,
     OUTPUT_DIR,
     SPEC_CRITIC,
@@ -233,6 +234,7 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
         spec, _, _ = chat(systems["spec"], user, parse_spec, log.llm, "spec" if attempt == 0 else f"spec-a{attempt}")
         if control:
             return spec
+        spec = seed_fill(spec, prompts.seed_of(topic))
         problems = difficulty.spec_gate(spec, genre) + difficulty.seed_gate(spec, prompts.seed_of(topic))
         log.event("spec_gate", attempt=attempt, problems=problems)
         if not problems:
@@ -244,6 +246,7 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
             critic, _, _ = chat(systems["critic"], prompts.critic_user(spec, calibration, prompts.seed_of(topic)),
                                 parse_critic, log.llm, "critic")
             log.write_json("critic.json", critic)
+            critic["spec"] = seed_fill(critic["spec"], prompts.seed_of(topic))
             revised_problems = difficulty.spec_gate(critic["spec"], genre) + difficulty.seed_gate(critic["spec"], prompts.seed_of(topic))
             log.event("critic", too_easy_because=critic["too_easy_because"], revised_gate=revised_problems)
             if not revised_problems:
@@ -496,13 +499,91 @@ def parse_project(text: str) -> dict:
             "files": files}
 
 
+# Card fields the pipeline copies into the design verbatim (the model is told not to restate them).
+SEED_VERBATIM = ("dial", "quirk_matrix", "quirk_evidence", "public_tests", "anti_cheese", "reference_access",
+                 "answer_source", "self_check_gap", "knobs", "ground_truth", "stated_facts", "shape")
+# Fields the document writer may see; everything else in the design is hidden from it.
+PUBLIC_FIELDS = ("name", "description", "scenario", "shape", "environment_setup", "contract", "stated_facts",
+                 "public_tests", "verifier_packages", "verifier_apt")
+TAMPER_SENTENCE = ("Do not modify the Python interpreter, its standard library or import hooks, or anything "
+                   "under /tests; such changes fail the task.")
+_DOC_EXT = (".md", ".txt", ".rst", ".adoc")
+
+
+def _card(seed: str) -> dict:
+    try:
+        import yaml
+        c = yaml.safe_load(seed) if seed else None
+        return c if isinstance(c, dict) else {}
+    except Exception:
+        return {}
+
+
+def _as_text(v) -> str:
+    if isinstance(v, str):
+        return v
+    import yaml
+    return yaml.safe_dump(v, sort_keys=False, allow_unicode=True, width=100).strip()
+
+
+def seed_fill(spec: dict, seed: str) -> dict:
+    """Copy the card's own fields into any the design left empty, verbatim: shorter spec replies, no
+    paraphrase drift, and the card's words reach every later stage."""
+    card = _card(seed)
+    if not card:
+        return spec
+    out = dict(spec)
+    for key in SEED_VERBATIM:
+        if key not in card or card[key] in (None, "", [], {}):
+            continue
+        cur = out.get(key)
+        if cur in (None, "", [], {}):
+            v = card[key]
+            if key in ("knobs", "quirk_evidence", "stated_facts"):
+                out[key] = v if isinstance(v, list) else [v]
+            else:
+                out[key] = _as_text(v)
+    return out
+
+
+def public_design(spec: dict) -> dict:
+    """What the document writer may know: the public side only. No checks, hidden inputs, quirks,
+    inferred rules, traps, self-check gap, graded instances or seed card."""
+    pub = {k: spec.get(k) for k in PUBLIC_FIELDS if spec.get(k) not in (None, "", [], {})}
+    dial = str(spec.get("dial") or "")
+    if dial:  # the acceptance bar must be stated; the card's baseline figures must not
+        pub["acceptance_criterion"] = re.split(r"[.;]\s", dial)[0]
+    card = _card(spec.get("seed_card", ""))
+    if card.get("must_keep"):
+        pub["must_keep"] = card["must_keep"]
+    if card.get("environment"):
+        pub["environment"] = card["environment"]
+    pub["tamper_sentence"] = TAMPER_SENTENCE
+    return pub
+
+
+def _is_doc(path: str) -> bool:
+    return path.startswith("environment/") and path.lower().endswith(_DOC_EXT)
+
+
+def write_docs(spec: dict, project: dict[str, str], doc_paths: list[str], systems: dict, log) -> dict[str, str]:
+    """Need-to-know writing: instruction.md and every shipped document from the public design only."""
+    paths = ["instruction.md"] + [p for p in doc_paths if p != "instruction.md"]
+    docs, _, _ = chat(systems["docs"], prompts.docs_user(public_design(spec), paths, sorted(project)),
+                      parse_file_blocks, log.llm, "docs")
+    return {p: b for p, b in docs.items() if p == "instruction.md" or _is_doc(p)}
+
+
 def write_project(spec: dict, systems: dict, log, max_continuations: int = 2) -> dict[str, str]:
     """Write the environment project first (manifest + files), asking for any manifest files a
     cut-off reply left out, so no single reply has to hold the whole task."""
     project, _, _ = chat(systems["project"], prompts.project_user(spec), parse_project, log.llm, "project")
     files, manifest = dict(project["files"]), project["manifest"]
+    if NEED_TO_KNOW:  # documents come from the docs writer; drop any the project writer produced anyway
+        files = {p: b for p, b in files.items() if not _is_doc(p)}
+        files["__docs__"] = "\n".join(p for p in manifest if _is_doc(p))
     for k in range(max_continuations):
-        missing = [p for p in manifest if p not in files]
+        missing = [p for p in manifest if p not in files and not (NEED_TO_KNOW and _is_doc(p))]
         if not missing:
             break
         log.event("project_missing", missing=missing)
@@ -673,8 +754,12 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         spec = design_spec(topic, calibration, control, systems, log, genre)
         log.write_json("spec.json", spec)
         project = write_project(spec, systems, log)
+        doc_paths = [p for p in project.pop("__docs__", "").split("\n") if p]
+        docs = write_docs(spec, project, doc_paths, systems, log) if NEED_TO_KNOW else {}
         core, _, _ = chat(systems["files"], prompts.files_user(spec, project), parse_file_blocks, log.llm, "files")
-        raw = {**project, **core}
+        if NEED_TO_KNOW:  # the docs writer's versions win: the core writer saw the hidden checks
+            core = {p: b for p, b in core.items() if p != "instruction.md" and not _is_doc(p)}
+        raw = {**project, **docs, **core}
     except (LLMError, SpecRejected) as e:
         return finish("failed", error=str(e))
 

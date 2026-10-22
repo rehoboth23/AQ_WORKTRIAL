@@ -119,6 +119,10 @@ SPEC_CRITIC = os.environ.get("SPEC_CRITIC", "1") == "1"
 INSTRUCTION_REVIEW = os.environ.get("INSTRUCTION_REVIEW", "1") == "1"
 # After oracle/nop pass: run each fault's `wrong_fix` as a mutant solution; the tests must fail
 # every mutant, or the trap is not real and the task goes back for repair ("0" to disable).
+# Need-to-know writing: instruction.md and every shipped document are written by a call that sees only
+# the job, interface, contract, stated facts and environment, never the hidden checks, quirks or inferred
+# rules (the writer that saw them kept turning them into READMEs and "Tips"). 0 = the old single call.
+NEED_TO_KNOW = os.environ.get("NEED_TO_KNOW", "1") == "1"
 MUTATION_CHECK = os.environ.get("MUTATION_CHECK", "1") == "1"
 # Surviving mutants that do not block the build: those caught only by a test another check claims
 # (caught_elsewhere) never block; up to MUTANT_TOLERANCE truly surviving mutants are recorded in the

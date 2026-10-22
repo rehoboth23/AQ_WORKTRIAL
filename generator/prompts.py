@@ -174,7 +174,12 @@ DIFFICULTY_RULE = f"""\
     knobs and must_keep, and stay inside its `out_of_bounds`. Draw the hidden instances from its
     `quirk_matrix` in the stated mix (one level per dimension per instance; never only easy cells),
     ship its `public_tests` and nothing more, keep its `reference_access` and `answer_source`, and enforce its `anti_cheese` gate with a hidden test.
-    Its environment notes are limits.
+    Its environment notes are limits. The card's `dial`, `quirk_matrix`, `quirk_evidence`,
+    `public_tests`, `anti_cheese`, `reference_access`, `answer_source`, `self_check_gap`, `knobs`,
+    `ground_truth` and `stated_facts` are copied into your design verbatim by the pipeline: leave them
+    out (or empty) rather than restating them, and spend the reply on what the card cannot say: the
+    checks, the hidden evaluation, the contract, the invisible traps, the instance plan, the inferred
+    rules, the margins, the graded instances and the verifier packages.
 """
 
 DIFFICULTY_SPEC_FIELDS = """,
@@ -352,8 +357,12 @@ You write the project inside a Terminal-Bench 2 task's environment, from a task 
 {HARBOR_CONTRACT}
 {QUALITY_RULES}
 Write every file of the project under environment/ EXCEPT environment/Dockerfile: source code,
-build files, configs, docs, and build-time data generators. Do NOT write environment/Dockerfile, instruction.md, solve.sh or
-tests; they are written next, against your files. Generate bulky data with a script (run at
+build files, configs, and build-time data generators. Do NOT write environment/Dockerfile, instruction.md, solve.sh or
+tests; they are written next, against your files.
+DOCUMENTS: list every document the agent will read (README.md, notes, runbooks, manuals: .md, .txt,
+.rst, .adoc) in the manifest with its path, but do NOT write them; a separate writer who never sees
+the hidden checks writes them from the stated facts alone. Code comments must not describe the
+hidden checks either. Generate bulky data with a script (run at
 build time) instead of pasting it.
 
 Reply in exactly this format, nothing before or after. First a manifest of EVERY path you will
@@ -391,11 +400,12 @@ environment/ is already written (given below); write the files that wrap it.
 {QUALITY_RULES}
 Write exactly these files (you may also add or replace files under environment/ if the project
 needs a fix to match the spec):
-- instruction.md
 - environment/Dockerfile (COPY the project files it needs; every COPY source must exist)
 - solution/solve.sh
 - tests/test_outputs.py
 
+instruction.md and the shipped documents are written separately from the stated facts: do NOT
+write or rewrite them here.
 Do NOT write task.toml or tests/test.sh, and do not add canary comments; those are added for you.
 Keep files reasonably small: generate large data with a script at build time instead of
 pasting it, and remove that script in the same RUN step.
@@ -409,6 +419,45 @@ Reply with file blocks only, in exactly this format, nothing before or after:
 ...content...
 <<<END>>>
 """
+
+
+DOCS_SYSTEM = f"""\
+You write what the solving agent READS in a Terminal-Bench 2 task: instruction.md and the documents
+shipped in the environment (README, notes, runbook, manual). You are given only the public side of
+the design: the job, the scenario, the interface and its contract, the acceptance criterion, the
+facts the data cannot show, what must keep working, the environment and the names of the project
+files. You do not know, and must not guess at, which cases the hidden tests probe, which rules the
+agent is meant to infer from the data, or how to solve the task: do not write tips, hints about
+rare cases, rule lists, thresholds, orderings, or modelling advice. Describe mechanisms and
+conventions the way a colleague's handover note would, and leave the figuring out to the reader.
+
+{HARBOR_CONTRACT}
+instruction.md states: the job and its setting (2-4 sentences), the files and services available
+(names and what they are for, one line each), the exact interface and contract (entry point,
+inputs, outputs, exit codes, precedence), the acceptance criterion, what must keep working, how to
+run the public checks (one line; never what they do not cover), and ends with this sentence,
+verbatim: "Do not modify the Python interpreter, its standard library or import hooks, or anything
+under /tests; such changes fail the task."
+Each document states only what its name promises (a README describes the files and their formats;
+notes describe mechanisms qualitatively; a runbook gives the procedure), plus the stated facts
+that belong there. Never a number the data can show. Never a sentence about what the agent should
+pay attention to.
+
+Reply with file blocks only, in exactly this format, nothing before or after:
+
+<<<FILE instruction.md>>>
+...content...
+<<<END>>>
+<<<FILE environment/docs/README.md>>>
+...content...
+<<<END>>>
+"""
+
+
+def docs_user(public: dict, doc_paths: list[str], project_files: list[str]) -> str:
+    return ("Public side of the design (everything you may know):\n\n" + json.dumps(public, indent=2)
+            + "\n\nProject files already written (names only):\n" + "\n".join(project_files)
+            + "\n\nWrite instruction.md and these documents, each complete:\n" + "\n".join(doc_paths) + "\n")
 
 
 def files_user(spec: dict, project: dict[str, str] | None = None, max_chars: int = 150_000) -> str:
@@ -713,6 +762,7 @@ SYSTEMS = {"spec": SPEC_SYSTEM, "project": PROJECT_SYSTEM, "files": FILES_SYSTEM
 CONTROL_SYSTEMS = {k: v.replace(DIFFICULTY_RULE, "").replace(DIFFICULTY_SPEC_FIELDS, "")
                    for k, v in SYSTEMS.items()}
 assert all(DIFFICULTY_RULE not in v and DIFFICULTY_SPEC_FIELDS not in v for v in CONTROL_SYSTEMS.values())
+CONTROL_SYSTEMS["docs"] = DOCS_SYSTEM
 
 
 FUZZ_RULE = """
@@ -805,7 +855,7 @@ def systems_for(genre: str = "", control: bool = False) -> dict:
     out = {k: v.replace(DIFFICULTY_RULE, "" if control else rule).replace(DIFFICULTY_SPEC_FIELDS, "" if control else fields)
            for k, v in SYSTEMS.items()}
     critic = CRITIC_SYSTEM.replace(DIFFICULTY_RULE, rule).replace(DIFFICULTY_SPEC_FIELDS.lstrip(","), fields.lstrip(","))
-    out.update(critic=critic, review=INSTRUCTION_REVIEW_SYSTEM, mutants=MUTANT_SYSTEM)
+    out.update(critic=critic, review=INSTRUCTION_REVIEW_SYSTEM, mutants=MUTANT_SYSTEM, docs=DOCS_SYSTEM)
     if FUZZ_TESTS and not control:
         out.update(files=out["files"] + FUZZ_RULE, repair=out["repair"] + FUZZ_RULE)
     return out
