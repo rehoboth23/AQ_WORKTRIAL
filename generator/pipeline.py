@@ -37,6 +37,7 @@ from config import (
     BAND_LOW,
     CALIBRATION_FILE,
     CALIBRATION_WINDOW,
+    CONFIRM_EVALS,
     DESIGN_VERSION,
     CRITIC_FOUND_WITHIN,
     EVAL_MODEL,
@@ -133,7 +134,10 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
 
     valid = [t for t in band.trials if t["outcome"] != "invalid"][:N_RUNS]
     failures = []
-    if band.verdict == "learnable":
+    # Learnable tasks: every failure must be the model's fault to keep the task. Too-hard tasks are
+    # triaged too, so an unfair test (e.g. an unstated output format) is recorded, not mistaken for
+    # real difficulty.
+    if band.verdict in ("learnable", "too_hard"):
         failures = triage(task_dir, [t for t in valid if t["outcome"] == "fail"], log.llm)
     task_faults = [f for f in failures if f["fault"] == "task"]
     unknown = [f for f in failures if f["fault"] not in ("model", "task")]
@@ -141,6 +145,8 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     if band.verdict != "learnable":
         decision, why = "rejected", band.verdict + (
             f" (stopped early after {band.passes} passes)" if band.early_stop else "")
+        if task_faults:  # too hard, but because of the task: say so in the record
+            why += "; unfair: " + "; ".join(f["reason"] for f in task_faults)[:250]
     elif task_faults:
         decision, why = "rejected", "unfair: " + "; ".join(f["reason"] for f in task_faults)[:300]
     elif unknown:  # README: know why every shipped task fails; an unexplained failure isn't shipped
@@ -150,7 +156,17 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
         decision, why = "kept", "learnable; failures: " + "; ".join(dict.fromkeys(
             f"{f['category']}: {f['reason']}" for f in failures))[:500]
 
+    confirmations = []
+    if decision == "kept":  # repeat the band eval; resumable like the first (its own run_id)
+        for i in range(CONFIRM_EVALS):
+            c = run_band(task_dir, f"{run_id}-confirm{i + 1}", log=log.event, on_start=on_start)
+            confirmations.append({"verdict": c.verdict, "passes": c.passes, "n_valid": c.n_valid,
+                                  "cost_usd": c.cost_usd, "seconds": c.seconds, "jobs": c.jobs})
+        log.event("confirmation", task=meta["name"], results=[(c["verdict"], c["passes"]) for c in confirmations])
+    confirmed = bool(confirmations) and all(c["verdict"] == "learnable" for c in confirmations)
+
     record = {**meta, "arm": arm, "run_id": run_id, "features": features, "verdict": band.verdict,
+              "confirmations": confirmations, "confirmed": confirmed,
               "passes": band.passes, "n_valid": band.n_valid, "n_invalid": band.n_invalid,
               "decision": decision, "why": why, "triage": failures, "band": band.to_dict(),
               "eval_model": EVAL_MODEL, "reasoning_effort": EVAL_REASONING_EFFORT}
@@ -240,6 +256,7 @@ def funnel_flags(state: dict) -> dict:
         "evaluated": rec.get("verdict") in ("too_hard", "learnable", "too_easy"),
         "learnable": rec.get("verdict") == "learnable",
         "kept": rec.get("decision") == "kept",
+        "confirmed": bool(rec.get("confirmed")),
         "review": rec.get("decision") == "review",
     }
 
@@ -279,6 +296,10 @@ def verdict_md(state: dict) -> str:
                          f"{t.get('episodes') or '-'} | {t.get('cost_usd') or '-'} | "
                          f"{', '.join(t.get('failed_tests') or []) or '-'} | "
                          f"{(tri['fault'] + ': ' + tri['reason']).replace('|', '/')[:200] if tri else '-'} |")
+    for i, c in enumerate(rec.get("confirmations") or [], 1):
+        lines.append(f"- confirmation eval {i}: {c['passes']}/{c['n_valid']} -> {c['verdict']}")
+    if rec.get("confirmations"):
+        lines.append(f"- **confirmed: {'yes' if rec.get('confirmed') else 'no'}** (every repeat eval must land 1-3/5)")
     lines += ["", "## Evidence", "", f"- generation log: `{logs}` (events.jsonl, raw model replies, spec.json)"]
     for j in band.get("jobs") or []:
         lines.append(f"- harbor job: `{j}`")
@@ -394,7 +415,8 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
         gcost = llm_spend(gen.get("logs_dir") or s.get("logs_dir"))
         band = rec.get("band") or {}
         rows.append({"state": s, "rec": rec, "flags": funnel_flags(s), "gen_cost": gcost,
-                     "eval_cost": eval_cost(band) if band else 0.0,
+                     "eval_cost": (eval_cost(band) if band else 0.0)
+                                  + sum(c.get("cost_usd") or 0.0 for c in rec.get("confirmations") or []),
                      "gen_sec": _span_seconds(_events(gen.get("logs_dir") or s.get("logs_dir"))),
                      "eval_sec": band.get("seconds") or 0.0})
     triage_cost = llm_spend(os.path.join(os.path.abspath(LOGS_DIR), batch_id), "triage")["cost_usd"]
@@ -422,6 +444,7 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
                        ("functionally correct (oracle 1, nop 0)", "correct"),
                        ("band-evaluated", "evaluated"), (f"learnable ({BAND_LOW}-{BAND_HIGH}/{N_RUNS})", "learnable"),
                        ("kept (learnable, every failure the model's fault)", "kept"),
+                       ("confirmed (a repeat band eval also landed 1-3/5)", "confirmed"),
                        ("needs review (triage could not explain a failure)", "review")):
         lines.append(f"| {label} | {count(key)} | {pct(count(key), n)} |")
     lines += ["", f"**Yield: {kept} / {n} topics kept ({pct(kept, n)}); "
