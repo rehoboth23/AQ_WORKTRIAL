@@ -57,12 +57,14 @@ from config import (
     REPORTS_DIR,
 )
 from difficulty import env_lines, solve_lines
-from evaluate import run_band, triage
+from evaluate import TRIAL_WALL_SEC, _collect, prior_band_jobs, run_band, triage
 from generate import RunLog, generate_task
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
 
 # The knob values a task was generated under, recorded with its verdict: the values in
 # difficulty.toml can change between runs.
+ORPHAN_POLL_SEC = float(os.environ.get("ORPHAN_POLL_SEC", "15"))  # resume: check an adopted harbor job
+
 KNOBS = {"min_faults": MIN_FAULTS, "max_faults": MAX_FAULTS, "min_fault_layers": MIN_FAULT_LAYERS,
          "min_env_lines": MIN_ENV_LINES, "min_solve_lines": MIN_SOLVE_LINES,
          "max_leaked_literals": MAX_LEAKED_LITERALS, "critic_found_within": CRITIC_FOUND_WITHIN}
@@ -278,13 +280,28 @@ def verdict_md(state: dict) -> str:
 
 # --- one topic, resumable -------------------------------------------------------------------
 
-def _kill_stale_harbor(pid: int | None) -> None:
-    """A SIGKILLed pipeline leaves its harbor child running; stop it before relaunching."""
+def _adopt_orphan_harbor(pid: int | None, run_id: str, ledger: Ledger, topic: str) -> None:
+    """A `kill -9` of the pipeline kills only Python: its harbor child keeps running the agent
+    trials (their conversations live in harbor's memory). Instead of killing that job and
+    re-paying for its trials, wait for it to finish; run_band then collects its results as
+    finished trials. Early stop still applies while waiting. Checked by command line, so a
+    reused pid is never mistaken for our job."""
     if not pid:
         return
-    cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-    if "harbor" in cmd:
-        kill_tree(pid)
+    def ours() -> bool:
+        cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        return "harbor" in cmd and f"band-{run_id}-" in cmd
+    if not ours():
+        return
+    ledger.audit("adopt_orphan_harbor", topic=topic, pid=pid, run_id=run_id)
+    deadline = time.time() + TRIAL_WALL_SEC + 600
+    while ours():
+        passes = sum(t["outcome"] == "pass" for j in prior_band_jobs(run_id) for t in _collect(j))
+        if passes > BAND_HIGH or time.time() > deadline:  # verdict certain, or the job hung
+            kill_tree(pid)
+            break
+        time.sleep(ORPHAN_POLL_SEC)
+    ledger.audit("orphan_harbor_done", topic=topic, pid=pid)
 
 
 def _recover_moved_record(state: dict) -> dict | None:
@@ -329,8 +346,8 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
     if st["stage"] == "generated":
         run_id = f"{os.path.basename(gen['task_dir'])}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(2).hex()}"
         st = ledger.set(topic, "evaluating", why=run_id, run_id=run_id)
-    else:  # evaluating: resume the same run_id, after stopping a harbor job a killed run left
-        _kill_stale_harbor(st.get("harbor_pid"))
+    else:  # evaluating: resume the same run_id, first letting a killed run's harbor job finish
+        _adopt_orphan_harbor(st.get("harbor_pid"), st["run_id"], ledger, topic)
         ledger.audit("resume", topic=topic, key=st["key"], stage="evaluating", run_id=st["run_id"])
         if not os.path.isdir(gen["task_dir"]):
             rec = _recover_moved_record(st)
