@@ -10,6 +10,7 @@ never sees or edits them.
 """
 
 import json
+import os
 import re
 
 from config import FUZZ_TESTS
@@ -1189,12 +1190,21 @@ GENRES = {
 }
 
 
+# One recipe for every topic (2026-10-22): the specification is a runnable reference program.
+# The other recipes stay in GENRES for comparison runs; set TOPIC_TAGS=1 to honour [tags] again.
+DEFAULT_GENRE = "exec_ref"
+
+
 def split_topic(line: str) -> tuple[str, str]:
-    """'[judgement] a payment service ...' -> ('judgement', 'a payment service ...'); untagged -> 'spec'."""
+    """'a fee calculator ...' -> ('exec_ref', 'a fee calculator ...'). A leading [tag] is stripped;
+    it only selects that recipe when TOPIC_TAGS=1."""
     m = re.match(r"\s*\[(\w+)\]\s*(.*)", line, re.S)
-    if m and m.group(1).lower() in GENRES:
-        return m.group(1).lower(), m.group(2).strip()
-    return "spec", line.strip()
+    if m:
+        tag, text = m.group(1).lower(), m.group(2).strip()
+        if os.environ.get("TOPIC_TAGS") == "1" and tag in GENRES:
+            return tag, text
+        return DEFAULT_GENRE, text
+    return DEFAULT_GENRE, line.strip()
 
 
 FUZZ_RULE = """
