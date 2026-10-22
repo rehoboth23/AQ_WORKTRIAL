@@ -12,6 +12,7 @@ never sees or edits them.
 import json
 import re
 
+from config import FUZZ_TESTS
 from config import (MAX_FAULTS, MAX_KNOWLEDGE, MAX_OBSTACLES, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_KNOWLEDGE,
                     MIN_OBSTACLES, MIN_RULES, MIN_SITES, MIN_THEMES)
 
@@ -1106,6 +1107,18 @@ def split_topic(line: str) -> tuple[str, str]:
     return "spec", line.strip()
 
 
+FUZZ_RULE = """
+Generated-input test (required): besides the fixed tests, tests/ holds a copy of the reference
+solution (e.g. tests/reference_tool.py, never shipped in the environment) and a seeded,
+deterministic input generator (tests/gen_cases.py, stdlib random with a fixed seed, about 1,000
+cases). One test runs the agent's program and the reference on every generated input and fails
+on the first differences, printing the input, both outputs and the rule involved. The generator
+only produces inputs whose output the stated rules fully determine: leave out combinations the
+instruction does not settle (ordering of two steps it does not order, edge cases it does not
+name), or settle them in instruction.md first.
+"""
+
+
 def systems_for(genre: str = "spec", control: bool = False) -> dict:
     """The stage prompts for a genre: the spec-genre texts with the design rule and spec fields
     swapped (they are embedded verbatim), plus that genre's critic, reviewer and mutant prompts.
@@ -1114,6 +1127,8 @@ def systems_for(genre: str = "spec", control: bool = False) -> dict:
     out = {k: v.replace(DIFFICULTY_RULE, "" if control else g["rule"]).replace(DIFFICULTY_SPEC_FIELDS, "" if control else g["fields"])
            for k, v in SYSTEMS.items()}
     out.update(critic=g["critic"], review=g["review"], mutants=g["mutants"])
+    if FUZZ_TESTS and not control:
+        out.update(files=out["files"] + FUZZ_RULE, repair=out["repair"] + FUZZ_RULE)
     return out
 
 

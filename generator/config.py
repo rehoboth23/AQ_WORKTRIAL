@@ -142,6 +142,10 @@ MAX_SPEC_ATTEMPTS = int(os.environ.get("MAX_SPEC_ATTEMPTS", "2"))
 # per-point success rates predicts the pass rate; outside [DIAL_LOW, DIAL_HIGH] the spec goes
 # back to the author with the measured rates, at most PROBE_ROUNDS times.
 PROBE = os.environ.get("PROBE", "1") == "1"
+# Generated-input tests: tests also compare the solution with a hidden reference on seeded
+# generated inputs. Off by default: on the Markdown task it found three ambiguities the fixed
+# tests missed but added no difficulty (correct agent tools matched on all 1,500 inputs).
+FUZZ_TESTS = os.environ.get("FUZZ_TESTS", "0") == "1"
 PROBE_RUNS = int(os.environ.get("PROBE_RUNS", "5"))
 PROBE_ROUNDS = int(os.environ.get("PROBE_ROUNDS", "2"))
 DIAL_LOW = float(os.environ.get("DIAL_LOW", "0.2"))
