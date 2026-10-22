@@ -126,7 +126,7 @@ EARLY_STOP_PASSES = int(os.environ.get("EARLY_STOP_PASSES", "3"))
 #   EARLY_STOP_TOO_EASY:     stop as too_easy once passes exceed BAND_HIGH (certain).
 #   EARLY_STOP_LEARNABLE:    stop as learnable at BAND_LOW+ passes and N_RUNS-BAND_HIGH failures
 #                            (certain; e.g. 1 pass + 2 failures). Off gives triage every failure.
-EARLY_STOP_FIRST_PASSES = os.environ.get("EARLY_STOP_FIRST_PASSES", "1") == "1"
+EARLY_STOP_FIRST_PASSES = os.environ.get("EARLY_STOP_FIRST_PASSES", "0") == "1"
 EARLY_STOP_TOO_EASY = os.environ.get("EARLY_STOP_TOO_EASY", "1") == "1"
 EARLY_STOP_LEARNABLE = os.environ.get("EARLY_STOP_LEARNABLE", "1") == "1"
 # Batch waves: at most BAND_SLOTS band evals run at once across all copies of a batch (each is
