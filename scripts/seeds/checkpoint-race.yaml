@@ -18,6 +18,7 @@ quirk_matrix:
   - medium
   - many chunks
   mix: about 30% easy cells
+answer_source: stated
 reference_access: none
 quirk_evidence:
 - quirk: crash point

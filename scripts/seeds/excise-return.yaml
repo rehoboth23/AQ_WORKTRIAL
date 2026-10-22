@@ -19,6 +19,7 @@ quirk_matrix:
   - one 503
   - 503 then a duplicate risk
   mix: about 30% easy cells
+answer_source: stated
 reference_access: none
 quirk_evidence:
 - quirk: loss tolerance

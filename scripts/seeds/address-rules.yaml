@@ -20,6 +20,7 @@ quirk_matrix:
   - 1 decoy pattern
   - decoy plus casing variant
   mix: about 30% easy cells, the rest medium or hard
+answer_source: inferred
 reference_access: none
 quirk_evidence:
 - quirk: rule overlap (order matters)

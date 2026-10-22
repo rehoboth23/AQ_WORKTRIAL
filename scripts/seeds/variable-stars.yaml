@@ -43,6 +43,10 @@ quirk_matrix:
   - one variable
   - one saturated
   mix: about 30% easy cells
+answer_source: inferred
+stated_facts:
+- fact: the observatory's reduction conventions (comparison stars, zero point, period search range)
+  why: conventions are chosen by the observatory; the light curves cannot show them
 reference_access: none
 quirk_evidence:
 - quirk: period vs alias

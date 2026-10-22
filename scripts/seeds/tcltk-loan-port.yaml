@@ -19,6 +19,7 @@ quirk_matrix:
   - save then edit
   - delete with dependents
   mix: about 30% easy cells
+answer_source: stated
 reference_access: frozen_examples
 quirk_evidence:
 - quirk: errors at once

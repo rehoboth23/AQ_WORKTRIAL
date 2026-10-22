@@ -21,6 +21,10 @@ quirk_matrix:
   - ferry day
   - ferry day on a holiday
   mix: about 30% easy cells
+answer_source: inferred
+stated_facts:
+- fact: the heating response to temperatures below the training range
+  why: the held-out cold snap is colder than any training day, so the data cannot show it
 reference_access: none
 quirk_evidence:
 - quirk: calendar

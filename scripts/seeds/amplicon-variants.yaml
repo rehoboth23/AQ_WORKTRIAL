@@ -19,6 +19,7 @@ quirk_matrix:
   - minus
   - minus with a frameshift
   mix: about 30% easy cells
+answer_source: stated
 reference_access: none
 quirk_evidence:
 - quirk: variant type

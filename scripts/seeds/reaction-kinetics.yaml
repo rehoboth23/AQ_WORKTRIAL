@@ -20,6 +20,7 @@ quirk_matrix:
   - longer
   - much longer
   mix: about 30% easy cells
+answer_source: inferred
 reference_access: none
 quirk_evidence:
 - quirk: reverse-step excitation

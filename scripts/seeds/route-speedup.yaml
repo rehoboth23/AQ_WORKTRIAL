@@ -49,6 +49,7 @@ quirk_matrix:
   - some unreachable
   - disconnected components
   mix: about 30% easy cells
+answer_source: stated
 reference_access: 'runnable: the original library is the baseline to speed up; the hard part is the 10x
   target, and matching it is the guard'
 quirk_evidence:

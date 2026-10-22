@@ -19,6 +19,7 @@ quirk_matrix:
   - several
   - several with cached keysets
   mix: about 30% easy cells
+answer_source: stated
 reference_access: none
 quirk_evidence:
 - quirk: token age at rotation

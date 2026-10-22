@@ -21,6 +21,7 @@ quirk_matrix:
   - near midnight local
   - across a DST change
   mix: about 30% easy cells
+answer_source: inferred
 reference_access: none
 quirk_evidence:
 - quirk: window boundary

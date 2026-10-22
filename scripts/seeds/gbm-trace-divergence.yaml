@@ -44,6 +44,7 @@ quirk_matrix:
   - clipping
   - clipping with shrinkage
   mix: about 30% easy cells
+answer_source: stated
 reference_access: frozen_examples
 quirk_evidence:
 - quirk: binning ties
