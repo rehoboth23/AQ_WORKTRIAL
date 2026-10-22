@@ -338,6 +338,7 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
         log.event("mutation_error", error=str(e)[:300])
         return {"survived": [], "results": [], "error": str(e)[:300]}
     results = []
+    claimed = {n for f in faults for n in (f.get("caught_by_tests") or [])}
     for path in sorted(blocks):
         m = re.fullmatch(r"mutants/(\d+)\.sh", path.strip())
         if not m or int(m.group(1)) >= len(faults):
@@ -355,7 +356,10 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
         result = {"fault": idx, "wrong_fix": faults[idx].get("wrong_fix"), "verdict": verdict,
                   "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir, "failed_names": failed_names}
         named = faults[idx].get("caught_by_tests") or []
-        if verdict == "killed" and named and not set(named) & set(failed_names):
+        base = {re.sub(r"\[.*\]$", "", n) for n in failed_names}
+        # A test no check claims was added for a case after the design (a repair cannot edit the
+        # check's list): it is dedicated, so it counts. A test another check claims does not.
+        if verdict == "killed" and named and not set(named) & base and not base - claimed:
             # Caught, but not by the tests that are meant to check this behaviour: the named tests miss it.
             verdict = result["verdict"] = "caught_elsewhere"
             result["named_tests"] = named
