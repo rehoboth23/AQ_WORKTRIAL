@@ -29,6 +29,11 @@ from config import (
 )
 
 LAYERS = {"build", "code", "config", "data", "runtime"}
+# Problem shapes where the reference agent failed fairly (behaviour over a sequence); "other" is
+# allowed but must still name a sequence invariant.
+CHALLENGE_KINDS = {"incremental_state", "resume_after_interruption", "retry_idempotency",
+                   "ordering_and_duplicates", "cache_invalidation", "format_migration",
+                   "streaming_boundaries", "other"}
 
 
 def _words(text) -> set[str]:
@@ -142,14 +147,22 @@ def spec_gate(spec: dict) -> list[str]:
     if len(faults) > MAX_FAULTS:
         problems.append(f"has {len(faults)} faults; at most {MAX_FAULTS} (more faults make a longer "
                         "proofreading list, not a harder task)")
+    trap_keys = ("wrong_fix", "counterexample", "caught_by_test")
     no_trap = [str(i) for i, f in enumerate(faults)
-               if isinstance(f, dict) and not (str(f.get("wrong_fix") or "").strip()
-                                               and str(f.get("caught_by_test") or "").strip())]
+               if isinstance(f, dict) and not all(str(f.get(k) or "").strip() for k in trap_keys)]
     if no_trap:
         problems.append(f"faults {', '.join(no_trap)} need `wrong_fix` (the plausible incomplete fix "
-                        "a strong agent tries first) and `caught_by_test` (the hidden test that fails it)")
+                        "a strong agent tries first), `counterexample` (the exact input or sequence on "
+                        "which it is wrong) and `caught_by_test` (the hidden test that runs it)")
+    kind = str(spec.get("challenge_kind") or "").strip().lower()
+    if kind not in CHALLENGE_KINDS:
+        problems.append(f"`challenge_kind` must be one of {sorted(CHALLENGE_KINDS)}; build the task around "
+                        "a defect that shows only over a sequence of runs or events, not a named technique")
     for key, why in (("static_read", "what reading the code alone reveals, and why it is not enough"),
-                     ("crux", "the domain insight the complete fix depends on")):
+                     ("crux", "the domain insight the complete fix depends on"),
+                     ("sequence_invariant", "the invariant over sequences that instruction.md states"),
+                     ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
+                     ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it")):
         if not str(spec.get(key) or "").strip():
             problems.append(f"needs `{key}`: {why}")
     return problems

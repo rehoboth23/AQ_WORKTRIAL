@@ -47,7 +47,7 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def chat(system: str, user: str, parse, log=None, label: str = "call"):
+def chat(system: str, user: str, parse, log=None, label: str = "call", reasoning: str | None = None):
     """Call the model and return (parsed, raw_text, usage).
 
     `parse` turns the reply text into a value or raises ValueError; a parse
@@ -61,14 +61,17 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
         started = time.time()
         text, usage = "", {}
         if log:
-            log(label, {"phase": "start", "attempt": attempt, "model": MODEL})
+            log(label, {"phase": "start", "attempt": attempt, "model": MODEL, "reasoning": reasoning})
         try:
+            # OpenRouter-style reasoning control; omitted entirely unless a stage sets it.
+            extra = {"extra_body": {"reasoning": {"effort": reasoning}}} if reasoning else {}
             resp = _get_client().chat.completions.create(
                 model=MODEL,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
+                **extra,
             )
             text = resp.choices[0].message.content or ""
             if resp.usage is not None:
@@ -76,6 +79,9 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
                     "prompt_tokens": resp.usage.prompt_tokens,
                     "completion_tokens": resp.usage.completion_tokens,
                 }
+                details = getattr(resp.usage, "completion_tokens_details", None)
+                if getattr(details, "reasoning_tokens", None):
+                    usage["reasoning_tokens"] = details.reasoning_tokens
                 cost = (getattr(resp.usage, "model_extra", None) or {}).get("cost")
                 if isinstance(cost, (int, float)):  # OpenRouter-style gateways report it
                     usage["cost_usd"] = float(cost)

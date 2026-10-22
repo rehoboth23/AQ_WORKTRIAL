@@ -50,6 +50,20 @@ DIFFICULTY_RULE = f"""\
   the agent found every fault within its first 3 commands and finished in 4-9 steps, because
   the instruction named the broken file, one `cat` showed the whole environment, the error
   message named the fault, and each fix was a 1-4 line sed. Avoid all of that. Use these knobs:
+  * Where difficulty comes from (measured on the reference agent): it solves anything whose fix
+    an expert can NAME in a few words ("normalize to NFC everywhere", "parameterize the query"),
+    even with no hints, and it finds every inconsistency between code paths by reading. Build the
+    task around a defect that shows only in BEHAVIOUR OVER A SEQUENCE (a second run after an edit,
+    a resume after interruption, a retry after a partial write, late or duplicate events), where
+    each function is locally correct. To stay fair:
+    - instruction.md STATES the invariant over sequences ("a resumed run produces exactly what an
+      uninterrupted run would", "after any edit, an incremental build equals a clean build").
+      Tests choose which sequences to try; those may stay hidden. Hidden inputs, never hidden rules.
+    - Every condition a test uses can be produced deterministically with something in the
+      environment (a documented flag, a fake clock, a scripted input order, a crash-injection
+      setting). No races, timing or sleeps.
+    - The required end result is unambiguous. The difficulty is in reasoning out every sequence
+      that breaks it, not in guessing what the result should be.
   * Symptom, not location: instruction.md describes what the user sees and the exact goal and
     success criteria, never which file, component or mechanism is at fault. Bad: "inspect
     /app/migrate_v2.sh", "the libraries disagree on the Vec3 type". Good: "the monthly totals in
@@ -77,7 +91,10 @@ DIFFICULTY_RULE = f"""\
   * Partial fixes fail: the complete fix spans several places. For every fault there is a
     plausible but incomplete fix (fix it at one entry point but not the others, handle the
     common form but not the rare one) that passes the obvious checks, and a test the agent
-    cannot see that catches it.
+    cannot see that catches it. The agent's own re-test must not catch the partial fix: after
+    the obvious fix, re-running the scenario instruction.md describes works. The counterexample
+    uses a different sequence, timing or input (run it twice, interrupt it midway, apply the
+    change after the first pass) that the agent only tries if it reasons about the whole lifecycle.
   * No reference copies: the environment must not contain the answer elsewhere. No .git
     history, no pristine installed copy or vendored original of the faulty code, no backup or
     .orig files, no project tests that name or pin the fault. The agent has no network access.
@@ -108,12 +125,18 @@ DIFFICULTY_SPEC_FIELDS = """,
               "depends_on": "index of the fault that hides this one, or null",
               "discovered_at_step": "agent step at which a strong agent would find it (number)",
               "wrong_fix": "the plausible but incomplete fix a strong agent would try first",
-              "caught_by_test": "the hidden test that fails that wrong fix"}],
+              "counterexample": "the exact input or sequence of operations on which wrong_fix gives a wrong result",
+              "why_normal_case_passes": "why the obvious checks do not reveal wrong_fix",
+              "caught_by_test": "the hidden test that runs the counterexample and fails wrong_fix"}],
   "decoys": ["plausible but innocent suspects in the environment"],
   "hidden_edge_cases": ["cases the tests check that the visible symptom does not show"],
   "why_not_textbook": "why this cannot be solved from memory of a well-known bug",
   "static_read": "what reading the code alone reveals, and why that is not enough to fix everything",
   "crux": "the domain insight the complete fix depends on",
+  "challenge_kind": "incremental_state|resume_after_interruption|retry_idempotency|ordering_and_duplicates|cache_invalidation|format_migration|streaming_boundaries|other",
+  "sequence_invariant": "the invariant over sequences, as instruction.md states it",
+  "nameable_fix": "the shortest phrase an expert would use for the whole fix",
+  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
   "expected_agent_steps": number"""
 
 QUALITY_RULES = """\
@@ -132,6 +155,11 @@ Rules for a good task:
 - Tests check real end state (program output, file contents, service behaviour), not superficial
   strings an agent could fake. Prefer several focused tests over one big one. Recompute expected
   values from first principles or compare to hard-coded known-good values.
+- Tests exercise the REPAIRED PROGRAM, not only the shipped data: give each test fresh, isolated
+  state where it can, run at least one input that is not in the shipped data, work out expected
+  values independently (by hand or a small separate computation; never by copying the code being
+  fixed), and make sure a solution that outputs nothing, deletes everything or hard-codes the
+  shipped fixtures cannot pass.
 - Tests check MEANING, not spelling. Any correct solution must pass: resolve a link and compare
   the destination instead of counting "../"; parse numbers, dates, JSON and paths instead of
   comparing their text; accept equivalent forms (trailing slash or not, 1.0 vs 1, key order,
@@ -202,10 +230,18 @@ the failure is.
   the tests, a test checks something never asked for, the environment is broken or
   nondeterministic, the expected answer is wrong).
 
-Be strict about "task": only choose it when you can point to the specific flaw.
+- "unknown": the evidence given cannot tell these apart (the trajectory tail does not show what
+  the agent changed, the verifier output is missing or cut off, infrastructure may have failed).
+  Do not guess "model" to fill a gap: an unexplained failure blocks the task from being kept.
+
+Be strict about "task": only choose it when you can point to the specific flaw. Be equally
+strict about "model": cite the requirement the agent missed and what it did instead.
 Reply with ONE JSON object and nothing else:
-{"fault": "model" or "task", "category": "short label, e.g. wrong-diagnosis, incomplete-fix,
- gave-up, ambiguous-spec, untested-requirement, broken-env", "reason": "one sentence, concrete"}
+{"fault": "model" or "task" or "unknown", "category": "short label, e.g. wrong-diagnosis,
+ incomplete-fix, gave-up, broke-something, ambiguous-spec, untested-requirement, broken-env",
+ "reason": "one sentence, concrete",
+ "evidence": ["specific observations from the verifier output or trajectory"],
+ "failed_requirements": ["the requirement(s) from instruction.md the run did not meet"]}
 """
 
 
@@ -328,9 +364,13 @@ found and from what. The spec is too easy if any fault is found within the agent
 {CRITIC_FOUND_WITHIN} commands, if an error message names a faulty file or symbol, if instruction.md would name
 the faulty location, if any fault is a well-known textbook bug, if there are fewer than
 {MIN_FAULTS} or more than {MAX_FAULTS} different chained faults, if any comment, docstring or README line
-states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, or if the
+states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, if the
 environment holds a reference copy of the correct code (git history, an installed original,
-backups, project tests naming the fault).
+backups, project tests naming the fault), if `nameable_fix` alone is enough to solve it (the fix
+is a named technique applied mechanically), or if a fault's counterexample is the same scenario
+instruction.md describes (the agent's own re-test would catch it). It is UNFAIR if the sequence
+invariant is not stated in instruction.md, or a test's condition cannot be produced
+deterministically with something in the environment.
 
 Also estimate, for every fault, `discovered_at_step`: the agent step at which it would be found.
 Grade the spacing between consecutive finds: any gap below {DISCOVERY["min_gap"]} steps (two faults
@@ -399,6 +439,30 @@ def instruction_review_user(instruction: str, faults: list, tests: str) -> str:
     return ("Hidden faults (never reveal these):\n" + json.dumps(faults, indent=2)
             + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
             + "\n\ninstruction.md to review:\n" + instruction)
+
+
+MUTANT_SYSTEM = """\
+You write deliberately INCOMPLETE solutions for a Terminal-Bench 2 task, to check that its
+tests catch plausible partial fixes. You get the task's faults (each with `wrong_fix`, the
+plausible incomplete fix, and its `counterexample`) and the correct solution/solve.sh.
+
+For each fault, write a complete alternative solve script that does everything the correct
+solve.sh does, EXCEPT that for this one fault it applies `wrong_fix` instead of the correct fix.
+Keep every other step identical, so the only difference is that one fault's partial fix. The
+script must run without errors (bash, `set -euo pipefail`); it must not break unrelated things.
+
+Reply with one block per fault, nothing before or after, named by the fault's index:
+<<<FILE mutants/0.sh>>>
+...complete script...
+<<<END>>>
+"""
+
+
+def mutants_user(faults: list, solve_sh: str) -> str:
+    keep = ("where", "what", "wrong_fix", "counterexample")
+    return ("Faults:\n" + json.dumps([{"index": i, **{k: f.get(k) for k in keep}}
+                                      for i, f in enumerate(faults) if isinstance(f, dict)], indent=2)
+            + "\n\nCorrect solution/solve.sh:\n" + solve_sh + "\n\nWrite the mutant scripts now.\n")
 
 
 def critic_user(spec: dict) -> str:

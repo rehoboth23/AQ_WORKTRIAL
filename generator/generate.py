@@ -33,14 +33,16 @@ from pydantic import BaseModel, Field, field_validator
 
 import difficulty
 import prompts
-from checks import _read, run_all
+from checks import _read, run_all, run_harbor
 from config import (
     CANARY_LINE,
+    GEN_REASONING,
     INSTRUCTION_REVIEW,
     LOGS_DIR,
     MAX_REPAIR_ROUNDS,
     MAX_SPEC_ATTEMPTS,
     MODEL,
+    MUTATION_CHECK,
     OUTPUT_DIR,
     SPEC_CRITIC,
     TASK_ORG,
@@ -54,10 +56,13 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
     """llm.chat with a reply cache in the run's logs dir (README Part 4: resume without
     re-paying). Replies are keyed by model + prompts; a resumed run gets the same prompts for
     every call that finished before the kill, so those replies come back free."""
+    # Per-stage reasoning effort (config.GEN_REASONING), by the label's stage name.
+    effort = GEN_REASONING.get(re.split(r"[-_]", label, maxsplit=1)[0])
     run = getattr(log, "__self__", None)
     if not isinstance(run, RunLog):
-        return llm.chat(system, user, parse, log, label)
-    key = hashlib.sha256(f"{MODEL}\0{system}\0{user}".encode("utf-8")).hexdigest()[:24]
+        return llm.chat(system, user, parse, log, label, reasoning=effort)
+    salt = f"\0{effort}" if effort else ""  # unset effort keeps the earlier cache keys valid
+    key = hashlib.sha256(f"{MODEL}\0{system}\0{user}{salt}".encode("utf-8")).hexdigest()[:24]
     path = os.path.join(run.dir, "cache", f"{key}.txt")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
@@ -69,7 +74,7 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
         else:
             run.event("llm_cached", label=label, key=key)
             return parsed, text, {}
-    parsed, text, usage = llm.chat(system, user, parse, log, label)
+    parsed, text, usage = llm.chat(system, user, parse, log, label, reasoning=effort)
     write_text_atomic(path, text)
     return parsed, text, usage
 
@@ -123,10 +128,15 @@ class Spec(BaseModel):
     why_not_textbook: str = ""
     static_read: str = ""
     crux: str = ""
+    challenge_kind: str = ""
+    sequence_invariant: str = ""
+    nameable_fix: str = ""
+    self_check_blind_spot: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
-                     "failure_modes", "why_not_textbook", "static_read", "crux", "base_image", "category",
+                     "failure_modes", "why_not_textbook", "static_read", "crux", "challenge_kind",
+                     "sequence_invariant", "nameable_fix", "self_check_blind_spot", "base_image", "category",
                      mode="before")
     @classmethod
     def _text(cls, v):
@@ -258,6 +268,49 @@ def review_instruction(spec: dict, files: dict[str, str], log) -> dict[str, str]
     if review["instruction"]:
         files = {**files, "instruction.md": review["instruction"]}
     return files
+
+
+def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_prefix: str) -> dict:
+    """Run each fault's `wrong_fix` as a mutant solve.sh in a copy of the task; the tests must
+    fail it. A mutant the tests pass means that trap is not real. A mutant that fails EVERY test
+    probably broke something unrelated, so it proves nothing either way ("broken")."""
+    faults = [f for f in spec.get("faults") or [] if isinstance(f, dict) and f.get("wrong_fix")]
+    if not faults:
+        return {"survived": [], "results": []}
+    try:
+        blocks, _, _ = chat(prompts.MUTANT_SYSTEM, prompts.mutants_user(spec.get("faults") or [], files["solution/solve.sh"]),
+                            parse_file_blocks, log.llm, "mutants")
+    except LLMError as e:
+        log.event("mutation_error", error=str(e)[:300])
+        return {"survived": [], "results": [], "error": str(e)[:300]}
+    results = []
+    for path in sorted(blocks):
+        m = re.fullmatch(r"mutants/(\d+)\.sh", path.strip())
+        if not m or int(m.group(1)) >= len(spec.get("faults") or []):
+            continue
+        idx = int(m.group(1))
+        mdir = os.path.join(log.dir, "mutants", f"{idx}-{time.strftime('%H%M%S')}")
+        shutil.copytree(task_dir, mdir)
+        with open(os.path.join(mdir, "solution", "solve.sh"), "w", encoding="utf-8") as f:
+            f.write(_with_canary(blocks[path]))
+        r = run_harbor(mdir, "oracle", f"{job_prefix}-mutant{idx}")
+        failed, total = _ctrf_counts(r.details.get("trial_dir"))
+        verdict = ("survived" if r.reward == 1.0 else "broken" if total and failed == total
+                   else "killed" if r.reward is not None else "error")
+        results.append({"fault": idx, "wrong_fix": spec["faults"][idx].get("wrong_fix"), "verdict": verdict,
+                        "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir})
+        shutil.rmtree(mdir, ignore_errors=True)
+    log.event("mutation_check", results=[{k: v for k, v in x.items() if k != "job_dir"} for x in results])
+    return {"survived": [x for x in results if x["verdict"] == "survived"], "results": results}
+
+
+def _ctrf_counts(trial_dir: str | None) -> tuple[int, int]:
+    """(failed, total) tests of a trial, from the verifier's CTRF report."""
+    try:
+        tests = json.loads(_read(os.path.join(trial_dir or "", "verifier", "ctrf.json")) or "{}")["results"]["tests"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return 0, 0
+    return sum(t.get("status") not in ("passed", "skipped") for t in tests), len(tests)
 
 
 def clean_files(raw: dict[str, str]) -> tuple[dict[str, str], list[str]]:
@@ -515,6 +568,16 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
             results = run_all(task_dir, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}")
             record["checks"] = [r.to_dict() for r in results]
             error = next((r.error for r in results if not r.passed), "")
+            if not error and MUTATION_CHECK and not control:
+                mut = mutation_check(task_dir, spec, files, log, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}")
+                record["mutation"] = mut["results"]
+                if mut["survived"]:
+                    error = ("The tests do not catch these plausible incomplete fixes (each one was run as "
+                             "solve.sh and ALL tests passed):\n- "
+                             + "\n- ".join(f"fault {x['fault']}: {x['wrong_fix']}" for x in mut["survived"])
+                             + "\nAdd or strengthen a test for each: it must run that fault's counterexample "
+                               "through the program's public behaviour and fail the incomplete fix, and it "
+                               "must follow from instruction.md's goal. Keep the correct solution passing.")
         summary["rounds"].append(record)
         log.event("checks", round=rnd, passed=not error,
                   results={c["name"]: c["reward"] if c["name"] != "validator" else c["passed"]

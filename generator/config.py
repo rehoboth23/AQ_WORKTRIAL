@@ -99,6 +99,12 @@ SPEC_CRITIC = os.environ.get("SPEC_CRITIC", "1") == "1"
 # A short glm-5.1 check, after files are written and before Docker, that instruction.md states
 # symptoms and requirements but no diagnosis of the hidden faults ("0" to disable).
 INSTRUCTION_REVIEW = os.environ.get("INSTRUCTION_REVIEW", "1") == "1"
+# After oracle/nop pass: run each fault's `wrong_fix` as a mutant solution; the tests must fail
+# every mutant, or the trap is not real and the task goes back for repair ("0" to disable).
+MUTATION_CHECK = os.environ.get("MUTATION_CHECK", "1") == "1"
+# Optional glm-5.1 reasoning effort per stage (e.g. GEN_REASONING_SPEC=medium); unset = gateway default.
+GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
+                 for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Spec attempts when the spec gate fails (each is one more spec call).
 MAX_SPEC_ATTEMPTS = int(os.environ.get("MAX_SPEC_ATTEMPTS", "2"))
 # How many recent band verdicts are fed back into the spec prompt.

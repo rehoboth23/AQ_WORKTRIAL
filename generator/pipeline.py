@@ -135,13 +135,17 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     failures = []
     if band.verdict == "learnable":
         failures = triage(task_dir, [t for t in valid if t["outcome"] == "fail"], log.llm)
-    task_faults = [f for f in failures if f["fault"] != "model"]
+    task_faults = [f for f in failures if f["fault"] == "task"]
+    unknown = [f for f in failures if f["fault"] not in ("model", "task")]
 
     if band.verdict != "learnable":
         decision, why = "rejected", band.verdict + (
             f" (stopped early after {band.passes} passes)" if band.early_stop else "")
     elif task_faults:
         decision, why = "rejected", "unfair: " + "; ".join(f["reason"] for f in task_faults)[:300]
+    elif unknown:  # README: know why every shipped task fails; an unexplained failure isn't shipped
+        decision, why = "review", "triage could not explain: " + "; ".join(
+            f"{f['trial']}: {f['reason']}" for f in unknown)[:400]
     else:
         decision, why = "kept", "learnable; failures: " + "; ".join(dict.fromkeys(
             f"{f['category']}: {f['reason']}" for f in failures))[:500]
@@ -234,6 +238,7 @@ def funnel_flags(state: dict) -> dict:
         "evaluated": rec.get("verdict") in ("too_hard", "learnable", "too_easy"),
         "learnable": rec.get("verdict") == "learnable",
         "kept": rec.get("decision") == "kept",
+        "review": rec.get("decision") == "review",
     }
 
 
@@ -293,7 +298,7 @@ def _adopt_orphan_harbor(pid: int | None, run_id: str, ledger: Ledger, topic: st
         return "harbor" in cmd and f"band-{run_id}-" in cmd
     if not ours():
         return
-    ledger.audit("adopt_orphan_harbor", topic=topic, pid=pid, run_id=run_id)
+    ledger.audit("adopt_orphan_harbor", topic=topic, harbor_pid=pid, run_id=run_id)
     deadline = time.time() + TRIAL_WALL_SEC + 600
     while ours():
         passes = sum(t["outcome"] == "pass" for j in prior_band_jobs(run_id) for t in _collect(j))
@@ -301,7 +306,7 @@ def _adopt_orphan_harbor(pid: int | None, run_id: str, ledger: Ledger, topic: st
             kill_tree(pid)
             break
         time.sleep(ORPHAN_POLL_SEC)
-    ledger.audit("orphan_harbor_done", topic=topic, pid=pid)
+    ledger.audit("orphan_harbor_done", topic=topic, harbor_pid=pid)
 
 
 def _recover_moved_record(state: dict) -> dict | None:
@@ -413,7 +418,8 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
                        ("structural validation passed", "structural"),
                        ("functionally correct (oracle 1, nop 0)", "correct"),
                        ("band-evaluated", "evaluated"), (f"learnable ({BAND_LOW}-{BAND_HIGH}/{N_RUNS})", "learnable"),
-                       ("kept (learnable, every failure the model's fault)", "kept")):
+                       ("kept (learnable, every failure the model's fault)", "kept"),
+                       ("needs review (triage could not explain a failure)", "review")):
         lines.append(f"| {label} | {count(key)} | {pct(count(key), n)} |")
     lines += ["", f"**Yield: {kept} / {n} topics kept ({pct(kept, n)}); "
                   f"{count('learnable')} / {count('correct')} correct tasks learnable "

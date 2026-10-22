@@ -1,31 +1,29 @@
 # DRAFT for review (not yet used by the pipeline; scripts/topics.txt is unchanged).
 # One topic per line. Lines starting with # are ignored.
-# Shape: a realistic in-house codebase with ONE domain-knowledge weakness whose complete fix
-# spans several places. Finding it takes knowing what correct code in that domain must do; a
-# partial fix passes the obvious checks. Deterministic, self-contained in one container, no
-# network needed. Spread across categories (diversity is graded). Avoid the examples/ tasks.
+# Shape (measured 2026-10-21): the reference agent solves fixes an expert can name in a few words
+# and finds inconsistencies by reading. Each topic below is a defect that only shows in behaviour
+# over a SEQUENCE (second run, resume, retry, late or duplicate events), with an invariant the
+# instruction can state and conditions a test can produce deterministically (flags, fake clocks,
+# scripted inputs, crash-injection settings). Spread across domains (diversity is graded).
+# Previous version (domain-knowledge topics): topics-draft.txt.bak.
 
-# web protocol
-an in-house HTTP/1.1 request parser behind a small API gateway that accepts ambiguous requests (conflicting Content-Length and Transfer-Encoding, duplicate length headers) that a downstream server reads differently
-# data export
-a reporting service whose CSV and spreadsheet exports let user-supplied text be interpreted as formulas by spreadsheet applications, across several export paths and field types
-# archives
-an artifact-upload service that unpacks tar and zip bundles into a workspace and can be made to write outside it through crafted entry names, absolute paths and links
-# time and calendars
-a recurring-event scheduler that produces wrong occurrence times around daylight-saving transitions and across time zones for some recurrence rules
-# money
-an invoicing module that computes line items, discounts, tax and totals with mixed numeric types and rounding rules, so invoices disagree with the ledger by small amounts
-# identity
-an account service where visually identical usernames written with different Unicode forms are treated as different accounts at some entry points and the same at others
-# authentication
-a session-token verifier for internal services that can be tricked into accepting tokens it did not issue, through the signature-algorithm choice and the way signatures are compared
-# concurrency and queues
-a job queue with leases and retries that processes some jobs twice when workers are slow, crash, or acknowledge out of order
-# file formats and encodings
-a log ingestion tool that mis-parses records with mixed line endings, multi-byte characters split across read buffers and byte-order marks, silently corrupting some fields
-# numerical
-a metrics aggregator whose percentiles, averages and counters drift from the true values because of floating-point accumulation, integer overflow and resets between windows
-# configuration and precedence
-a deployment tool whose settings come from defaults, files, environment variables and command-line flags, but the precedence and type coercion differ between commands
-# databases
-a data-retention job that deletes or keeps the wrong rows because of NULL semantics, time-zone-naive timestamps and inclusive versus exclusive date boundaries in its queries
+# incremental_state
+an analytics job that rebuilds daily aggregates incrementally from changed source partitions, whose totals drift from a full rebuild after some kinds of edits to the source data
+# resume_after_interruption
+a bulk data export that can be stopped and resumed with a checkpoint file, but a resumed export sometimes differs from an uninterrupted one
+# retry_idempotency
+a webhook consumer that records payments from a provider that retries deliveries, where retried or partially processed deliveries change balances more than once
+# ordering_and_duplicates
+an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log
+# cache_invalidation
+a report renderer with an on-disk cache keyed by its inputs, which serves stale reports after some changes to templates, settings or reference data
+# format_migration
+a command-line notes tool whose on-disk store is being upgraded to a new format while older files must stay readable, and some notes change or disappear after the upgrade or on a rerun of it
+# streaming_boundaries
+a log shipper that tails files in fixed-size chunks and survives restarts, but drops or duplicates lines around chunk boundaries, rotations and restarts
+# incremental_state (build systems)
+a small build tool for a C project that decides what to recompile from timestamps and dependency lists, and leaves stale objects after some edit sequences
+# retry_idempotency (operations)
+a deployment script that applies database migrations and config changes in steps, which leaves the system in a different state when a failed run is retried
+# ordering_and_duplicates (scheduling)
+a job scheduler that persists its queue to disk and runs recurring jobs, which runs some jobs twice or skips them after a restart or a clock change
