@@ -93,10 +93,15 @@ def spec_gate(spec: dict, genre: str = "") -> list[str]:
     incomplete = [str(i) for i, c in enumerate(checks) if not all(str(c.get(k) or "").strip() for k in keys)]
     if incomplete:
         problems.append("every check needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
-    words = [_words(c.get("requirement", "")) for c in checks]
-    same = [(i, j) for i in range(len(words)) for j in range(i + 1, len(words)) if _similar(words[i], words[j], 0.8)]
+    # Several checks may quote the same sentence ("stay within tolerance for every unseen
+    # condition") and differ in their hidden input; a duplicate repeats both.
+    req = [_words(c.get("requirement", "")) for c in checks]
+    inp = [_words(c.get("hidden_test_input", "")) for c in checks]
+    same = [(i, j) for i in range(len(checks)) for j in range(i + 1, len(checks))
+            if _similar(req[i], req[j], 0.8) and _similar(inp[i], inp[j], 0.6)]
     if same:
-        problems.append("checks must be independent, not one requirement restated: " + ", ".join(f"{i}~{j}" for i, j in same[:4]))
+        problems.append("checks must be independent (a check that repeats another's requirement AND hidden input "
+                        "adds nothing): " + ", ".join(f"{i}~{j}" for i, j in same[:4]))
     for key, why in (("shape", "the kind of work the topic names"),
                      ("hidden_evaluation", "what the tests check that the agent cannot fully reproduce"),
                      ("ground_truth", "how the tests compute every expected value with code")):
