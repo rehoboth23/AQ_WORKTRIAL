@@ -69,6 +69,10 @@ EVAL_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "5"))
 # Timeouts and infra errors don't count as runs; at most this many extra runs
 # replace them before the verdict becomes "inconclusive".
 MAX_INVALID_RERUNS = _retry_limit("MAX_INVALID_RERUNS", 3)
+# Time budgets checked on the oracle run: its solve time and the verifier's run time (seconds).
+# A slow oracle or verifier turns failures into timeouts instead of the work.
+ORACLE_MAX_SEC = float(os.environ.get("ORACLE_MAX_SEC", "180"))
+VERIFY_MAX_SEC = float(os.environ.get("VERIFY_MAX_SEC", "420"))
 # --- Difficulty knobs (generator/difficulty.py gates, critic, prompts) -------
 # Fixed values in generator/difficulty.toml (measured from reference/petrify-stale-build).
 # Precedence: env var > file > the defaults below.

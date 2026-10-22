@@ -85,6 +85,21 @@ DIFFICULTY_RULE = f"""\
     hidden tests cover, e.g. in tests_public/) may ship so the agent's verify loop works; they never
     contain a hidden input or an edge case. The tool and the public tests run in under 60 s on 1 CPU,
     so failures come from the work, not from waiting.
+  * PRACTICE vs GRADED instances: whatever the agent gets (data, files, a reference it may run) is a
+    practice set. The hidden tests grade DIFFERENT instances, generated in tests/ from sibling seeds
+    with the same plan, never present in the environment; otherwise the agent can compute the graded
+    answers itself (a reference or a standard library that decodes them) and the task is solved by
+    comparison. tests/ also checks the generator is deterministic (same seed, same bytes) and that a
+    different seed changes the instances.
+  * An exact observable CONTRACT: the entry point, every output, exit codes per case, and the
+    precedence when two conditions hold at once. Every line of it is stated in instruction.md; a test
+    never decides an unstated choice.
+  * INVISIBLE TRAPS: at least one case where a plausible wrong solution gives no runtime signal (the
+    output looks right, nothing errors) and only careful reading of the stated contract avoids it.
+    Each is stated in instruction.md. These set the band; traps the agent will see and debug do not.
+  * Anti-cheese at RUN time, not only by scanning source: the tests run the solution with the
+    forbidden modules or binaries disabled (removed from the path, an import hook), as well as any
+    static scan; a static scan alone misses indirect routes (codecs, archive modules, eval).
   * Fair: an expert reading instruction.md and the environment can derive every check. Every
     exception to a general rule is named in instruction.md; where two behaviours are both
     reasonable (reject vs sanitise, round before vs after) instruction.md states which is required.
@@ -106,13 +121,19 @@ DIFFICULTY_SPEC_FIELDS = """,
   "checks": [{"requirement": "the instruction.md (or named document) sentence the check follows from",
               "assumed_instead": "what a reasonable implementer would do without reading it carefully",
               "hidden_test_input": "the input or scenario the hidden test uses",
-              "why_missed": "why a careful agent's own testing might not cover it"}],
+              "why_missed": "why a careful agent's own testing might not cover it",
+              "caught_by_tests": ["names of the hidden test functions that must fail when this check is done wrong"]}],
   "preserved_behaviours": [{"behaviour": "an existing behaviour that must keep working", "hidden_test_input": "the input whose output must stay the same"}],
   "ground_truth": "how the tests compute every expected value (reference in tests/, verifier-only package, seeded generator)",
   "dial": "what moves the pass rate, its fair range and the chosen value (from the seed card when given); empty if none",
   "quirk_matrix": "dimensions x levels the hidden instances are drawn from, and the mix (from the seed card)",
   "public_tests": "what the visible common-path tests cover (about 30%), and where they ship",
-  "anti_cheese": "the paired gate that stops a shortcut (performance budget, forbidden library or file, output identity) and its hidden test",
+  "anti_cheese": "the paired gate that stops a shortcut (performance budget, forbidden library or file, output identity), enforced at run time, and its hidden test",
+  "graded_instances": "how the graded instances differ from the practice set the agent gets (sibling seeds generated in tests/), and the determinism self-check",
+  "contract": ["each exact observable rule: entry point, outputs, exit codes per case, precedence"],
+  "invisible_traps": [{"trap": "a case with no runtime signal", "stated_in": "the instruction sentence that makes it fair"}],
+  "instance_plan": [{"instance": "a graded instance", "quirks": "its quirk-matrix cells", "purpose": "what it tests"}],
+  "adjust_rules": {"too_easy": ["fair moves if 4-5/5"], "too_hard": ["fair moves if 0/5"]},
   "verifier_packages": ["pip packages the tests need, as name==version (installed only for the verifier); may be empty"],
   "verifier_apt": ["Debian packages the tests need (e.g. gcc to compile a pristine reference); may be empty"],
   "reference_in_environment": "none, or the reference program that IS the specification and how the tests hide it"
@@ -374,7 +395,8 @@ right on its own, which it would verify with its own tests, and which it would l
 spec is TOO EASY if it has fewer than {MIN_CHECKS} checks, if the agent could reproduce the hidden
 evaluation (all hidden inputs are guessable from the examples, a reference answers every case), if
 most checks match what a programmer does by default, if several checks are one check restated, or
-if anything in the environment or instruction gives the answer away. It is UNFAIR if a check does
+if anything in the environment or instruction gives the answer away, if the graded instances are in
+the environment (the agent can compute their answers), or if there is no invisible trap. It is UNFAIR if a check does
 not follow from instruction.md, a named document or the environment, if two reasonable readings
 give different results, if an expected value comes from the designer's reasoning instead of code
 the tests run, or if anything depends on timing, randomness or the network.
@@ -412,6 +434,8 @@ Check, against the list of checks and tests/test_outputs.py given to you:
      flag them only if they contain a hidden input or an edge case the hidden tests check.
   4. UNSTATED FORMAT: a test requires an exact textual form no sentence states; report it as
      "UNSTATED FORMAT: <test> requires <form>".
+  5. MISSING CONTRACT LINE: a line of the design's `contract` (exit code, output rule, precedence)
+     or an `invisible_traps` statement that instruction.md does not state.
 Also make sure the interface is stated: the command or entry point, inputs, outputs, exit codes.
 Pattern-scan hints may be given below; they are often false alarms (a rule constant is not a
 pasted answer, a file the task must name is not a leak). Act on a hint only if it is a real

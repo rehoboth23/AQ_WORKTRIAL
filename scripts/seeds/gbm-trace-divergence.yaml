@@ -4,6 +4,31 @@ shape: debugging against a reference trace; graded on hidden training configurat
 agent_cannot_verify: The library change only alters results for some settings (e.g. ties in histogram
   binning or a min-child-weight boundary); the visible config can be matched by a narrow fix that still
   diverges on the hidden configs.
+contract:
+- 'entry point: python3 /app/train.py --config CONFIG writes /app/out/trace.csv (round, train_metric,
+  valid_metric)'
+- the fix lives in the installed library; train.py and the configs are unchanged
+- traces must match the reference to 1e-9 for every round
+- the library's public API and documented parameter semantics are kept
+invisible_traps:
+- trap: a fix that only restores the default config's path still diverges when ties occur in histogram
+    binning
+  stated_in: the library docs' binning rule, referenced by the instruction
+- trap: the min-child-weight comparison is wrong only exactly at the boundary
+  stated_in: the parameter's documented semantics (>=)
+graded_instances: the agent gets the visible default config and its reference trace; the hidden tests
+  run 6 other configs (sibling seeds for data and parameters, generated in tests/) against traces from
+  the pristine library kept in tests/, and check the data generator is deterministic and seed-sensitive
+instance_plan:
+- instance: c1-c2
+  quirks: 'binning ties: many'
+  purpose: tie handling
+- instance: c3-c4
+  quirks: 'min-child-weight: exactly at'
+  purpose: boundary comparison
+- instance: c5-c6
+  quirks: clipping with shrinkage
+  purpose: operation order
 dial: number of hidden configurations that must match the reference to 1e-9; fair range 3-8.
 quirk_matrix:
   binning ties:
@@ -44,3 +69,10 @@ out_of_bounds:
 - changes the docs do not describe
 precheck:
 - confirm the visible config alone does not reveal every changed behaviour
+adjust_rules:
+  too_easy:
+  - add a config hitting two changed behaviours at once
+  - remove the visible trace's second config hint
+  too_hard:
+  - add the binning tie case to the public tests
+  - state the parameter semantics in the instruction too

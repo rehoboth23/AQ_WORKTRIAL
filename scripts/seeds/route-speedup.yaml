@@ -4,6 +4,35 @@ shape: performance target with correctness parity; graded on hidden graphs
 agent_cannot_verify: 'Byte-identical tie-breaking: among equal-cost routes the library returns a specific
   one (lowest node ids in path order), and fast algorithms change tie order; the agent''s benchmark graphs
   have few ties, hidden graphs many.'
+contract:
+- 'entry point: the C API route_find(graph, src, dst, out_path, out_len) and the CLI ./route GRAPH SRC
+  DST'
+- 'output: the node ids of the route, space-separated, then the total cost; exit 0'
+- 'unreachable destination: prints ''unreachable'', exit 1'
+- among equal-cost routes, the one whose node-id sequence is lexicographically smallest
+- the relaxation counter (route_relaxations()) must drop at least 10x on the benchmark
+invisible_traps:
+- trap: a faster algorithm returns a different equal-cost route on tie-heavy graphs; output still looks
+    valid
+  stated_in: the tie-break sentence of the contract
+- trap: zero-weight edges create equal-cost routes of different lengths
+  stated_in: the same tie-break sentence
+graded_instances: the agent gets the visible benchmark graphs; the hidden tests generate 12 fresh graphs
+  from sibling seeds in tests/ (same generator, denser ties) and compute reference routes with the original
+  library kept in tests/; they also check the generator is deterministic and seed-sensitive
+instance_plan:
+- instance: g1-g4
+  quirks: 'ties: many; graph: grid'
+  purpose: tie-breaking under a faster search
+- instance: g5-g8
+  quirks: zero-weight edges; sparse random
+  purpose: tie-break with different path lengths
+- instance: g9-g10
+  quirks: disconnected components
+  purpose: unreachable contract
+- instance: g11-g12
+  quirks: large sparse
+  purpose: performance gate
 dial: 'speed-up threshold measured as operation counts (deterministic), not wall-clock: the library counts
   edge relaxations; fair range 5-20x fewer, start 10x.'
 quirk_matrix:
@@ -46,3 +75,10 @@ out_of_bounds:
 precheck:
 - confirm a binary-heap Dijkstra reaches the 10x relaxation target and that a naive heap rewrite breaks
   ties
+adjust_rules:
+  too_easy:
+  - add tie-heavy graphs with longer equal-cost alternatives
+  - tighten the relaxation budget toward 20x
+  too_hard:
+  - add one visible tie example to the public tests
+  - loosen the budget toward 5x
