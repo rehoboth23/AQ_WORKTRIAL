@@ -40,7 +40,11 @@ from config import (
     INSTRUCTION_REVIEW,
     LOGS_DIR,
     MAX_REPAIR_ROUNDS,
+    DIAL_HIGH,
+    DIAL_LOW,
     MAX_SPEC_ATTEMPTS,
+    PROBE,
+    PROBE_ROUNDS,
     MODEL,
     MUTATION_CHECK,
     OUTPUT_DIR,
@@ -48,6 +52,7 @@ from config import (
     TASK_ORG,
 )
 import llm
+import probe
 from ledger import reserve_dir, write_text_atomic
 from llm import LLMError, parse_file_blocks, parse_json_object
 
@@ -259,7 +264,49 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
     problems = difficulty.spec_gate(spec, genre)
     if problems:
         raise SpecRejected("spec failed the difficulty gate: " + "; ".join(problems))
+    if PROBE and genre == "domain":
+        spec = dial_spec(spec, topic, calibration, systems, log, genre)
     return spec
+
+
+def dial_spec(spec: dict, topic: str, calibration: str, systems: dict, log, genre: str) -> dict:
+    """Measure how often the EVAL model knows each knowledge point (probe.py) and, while the
+    predicted pass rate is outside [DIAL_LOW, DIAL_HIGH], send the spec back with the rates."""
+    best = None
+    for rnd in range(PROBE_ROUNDS + 1):
+        pts = spec.get("knowledge_points") or []
+        results = probe.probe_points(pts, log=log.llm)
+        pred = probe.predicted_pass(results)
+        log.event("probe", round=rnd, predicted_pass=round(pred, 3),
+                  points=[{"detail": str(p.get("detail"))[:80], "rate": r["rate"], "answers": r["answers"]}
+                          for p, r in zip(pts, results)])
+        dist = 0 if DIAL_LOW <= pred <= DIAL_HIGH else min(abs(pred - DIAL_LOW), abs(pred - DIAL_HIGH))
+        if best is None or dist < best[0]:
+            best = (dist, spec, pred)
+        if dist == 0 or rnd == PROBE_ROUNDS:
+            break
+        table = "\n".join(f"- point {i} ({str(p.get('detail'))[:70]}): answered right {r['rate']:.0%} of the time"
+                           for i, (p, r) in enumerate(zip(pts, results)) if r["rate"] is not None)
+        if pred > DIAL_HIGH:
+            ask = (f"The evaluated model knows these details too well: predicted pass rate {pred:.0%} (target "
+                   f"{DIAL_LOW:.0%}-{DIAL_HIGH:.0%}). Replace the points it gets right 100% of the time with "
+                   f"details of the same standard it gets wrong more often, or add such points.")
+        else:
+            ask = (f"Too many details the evaluated model rarely knows: predicted pass rate {pred:.0%} (target "
+                   f"{DIAL_LOW:.0%}-{DIAL_HIGH:.0%}). Drop or replace the points with the lowest rates.")
+        try:
+            new, _, _ = chat(systems["spec"], prompts.spec_retry_user(topic, calibration, [ask, "Measured rates:\n" + table,
+                             "Return the full revised spec JSON, same topic, every rule of the genre still met."]),
+                             parse_spec, log.llm, f"spec-dial{rnd}")
+        except LLMError as e:
+            log.event("probe_error", error=str(e)[:300])
+            break
+        if difficulty.spec_gate(new, genre):
+            log.event("probe_redesign_rejected", problems=difficulty.spec_gate(new, genre))
+            break
+        spec = new
+    log.event("probe_final", predicted_pass=round(best[2], 3))
+    return best[1]
 
 
 def parse_review(text: str) -> dict:

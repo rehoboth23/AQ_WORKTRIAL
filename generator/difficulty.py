@@ -315,7 +315,7 @@ def spec_gate_domain(spec: dict) -> list[str]:
     problems = []
     if not (MIN_KNOWLEDGE <= len(pts) <= MAX_KNOWLEDGE):
         problems.append(f"needs {MIN_KNOWLEDGE} to {MAX_KNOWLEDGE} knowledge points, has {len(pts)}")
-    keys = ("detail", "standard_ref", "common_mistake", "hidden_test_input")
+    keys = ("detail", "standard_ref", "common_mistake", "hidden_test_input", "probe_question", "probe_answer")
     incomplete = [str(i) for i, p in enumerate(pts) if not all(str(p.get(k) or "").strip() for k in keys)]
     if incomplete:
         problems.append("every knowledge point needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))

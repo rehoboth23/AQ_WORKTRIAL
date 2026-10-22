@@ -137,6 +137,16 @@ GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Spec attempts when the spec gate fails (each is one more spec call).
 MAX_SPEC_ATTEMPTS = int(os.environ.get("MAX_SPEC_ATTEMPTS", "2"))
+# Knowledge probe + difficulty dial (domain genre): before any files are written, ask the EVAL
+# model each knowledge point's short probe question PROBE_RUNS times. The product of the
+# per-point success rates predicts the pass rate; outside [DIAL_LOW, DIAL_HIGH] the spec goes
+# back to the author with the measured rates, at most PROBE_ROUNDS times.
+PROBE = os.environ.get("PROBE", "1") == "1"
+PROBE_RUNS = int(os.environ.get("PROBE_RUNS", "5"))
+PROBE_ROUNDS = int(os.environ.get("PROBE_ROUNDS", "2"))
+DIAL_LOW = float(os.environ.get("DIAL_LOW", "0.2"))
+DIAL_HIGH = float(os.environ.get("DIAL_HIGH", "0.6"))
+PROBE_MODEL = os.environ.get("PROBE_MODEL", EVAL_MODEL.split("/", 1)[1] if EVAL_MODEL.startswith("openrouter/") else EVAL_MODEL)
 # How many recent band verdicts are fed back into the spec prompt.
 CALIBRATION_WINDOW = int(os.environ.get("CALIBRATION_WINDOW", "8"))
 # Tag for the task-design rules in prompts.py. History lines record it, and the spec prompt is

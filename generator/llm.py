@@ -47,7 +47,8 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def chat(system: str, user: str, parse, log=None, label: str = "call", reasoning: str | None = None):
+def chat(system: str, user: str, parse, log=None, label: str = "call", reasoning: str | None = None,
+         model: str | None = None):
     """Call the model and return (parsed, raw_text, usage).
 
     `parse` turns the reply text into a value or raises ValueError; a parse
@@ -56,17 +57,18 @@ def chat(system: str, user: str, parse, log=None, label: str = "call", reasoning
     and once before each attempt with {"phase": "start"} so live status can show
     calls in flight.
     """
+    model = model or MODEL
     last_err = None
     for attempt in range(LLM_MAX_RETRIES + 1):
         started = time.time()
         text, usage = "", {}
         if log:
-            log(label, {"phase": "start", "attempt": attempt, "model": MODEL, "reasoning": reasoning})
+            log(label, {"phase": "start", "attempt": attempt, "model": model, "reasoning": reasoning})
         try:
             # OpenRouter-style reasoning control; omitted entirely unless a stage sets it.
             extra = {"extra_body": {"reasoning": {"effort": reasoning}}} if reasoning else {}
             resp = _get_client().chat.completions.create(
-                model=MODEL,
+                model=model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},

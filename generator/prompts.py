@@ -1028,6 +1028,10 @@ DIFFICULTY_RULE_DOMAIN = f"""\
     import those packages. solve.sh must not use them (the agent will not have them).
   * Fair: an expert in the domain derives every expected value from the named standard plus
     instruction.md. No trick data, nothing undiscoverable; a test fails only on a wrong detail.
+  * Each knowledge point carries a PROBE: a short, self-contained question (give the input bytes
+    or values; ask for one exact output) and its exact answer. Before any files are written, the
+    evaluated model is asked each probe several times; points it always gets right add nothing
+    and must be replaced, and the product of the measured rates must land the task in band.
 """
 
 DIFFICULTY_SPEC_FIELDS_DOMAIN = """,
@@ -1037,7 +1041,9 @@ DIFFICULTY_SPEC_FIELDS_DOMAIN = """,
   "knowledge_points": [{"detail": "the exact rule the standard fixes",
                         "standard_ref": "where the standard says it",
                         "common_mistake": "what a generalist does instead",
-                        "hidden_test_input": "the data the test uses to catch the mistake"}],
+                        "hidden_test_input": "the data the test uses to catch the mistake",
+                        "probe_question": "a short self-contained question whose answer shows whether someone knows this detail (give the bytes/values; ask for one exact value)",
+                        "probe_answer": "the exact expected answer, e.g. -1234.5 or 0x29B1; alternatives separated by ||"}],
   "verifier_packages": ["reference library the tests use, as name==version (installed only for the verifier)"],
   "reference_check": "how each expected value is computed independently of solve.sh (which package / test vectors)",
   "reference_in_environment": "any library, tool, table or worked example in the environment that implements the standard; must be none"
