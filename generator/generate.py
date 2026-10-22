@@ -298,11 +298,38 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
         failed, total = _ctrf_counts(r.details.get("trial_dir"))
         verdict = ("survived" if r.reward == 1.0 else "broken" if total and failed == total
                    else "killed" if r.reward is not None else "error")
-        results.append({"fault": idx, "wrong_fix": spec["faults"][idx].get("wrong_fix"), "verdict": verdict,
-                        "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir})
+        result = {"fault": idx, "wrong_fix": spec["faults"][idx].get("wrong_fix"), "verdict": verdict,
+                  "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir}
+        if verdict == "survived":  # a gap in the tests, or a partial fix that is in fact correct?
+            eq = _equivalence(spec["faults"][idx], files, blocks[path], log, idx)
+            result.update(eq)
+            if eq.get("equivalent"):
+                result["verdict"] = "equivalent"
+        results.append(result)
         shutil.rmtree(mdir, ignore_errors=True)
     log.event("mutation_check", results=[{k: v for k, v in x.items() if k != "job_dir"} for x in results])
     return {"survived": [x for x in results if x["verdict"] == "survived"], "results": results}
+
+
+def _parse_equivalence(text: str) -> dict:
+    obj = parse_json_object(text)
+    if not isinstance(obj.get("equivalent"), bool):
+        raise ValueError("`equivalent` must be true or false")
+    return {"equivalent": obj["equivalent"], "distinguishing_case": str(obj.get("distinguishing_case") or ""),
+            "equivalence_reason": str(obj.get("reason") or "")}
+
+
+def _equivalence(fault: dict, files: dict[str, str], mutant_sh: str, log, idx: int) -> dict:
+    """Ask whether a surviving mutant is behaviourally equivalent to the full fix (then the fault is
+    redundant and no test can fail it) or there is a case the tests miss (returned as a test recipe).
+    On a model error the mutant counts as survived, as before."""
+    try:
+        eq, _, _ = chat(prompts.EQUIVALENCE_SYSTEM,
+                        prompts.equivalence_user(fault, files.get("instruction.md", ""), files["solution/solve.sh"], mutant_sh),
+                        _parse_equivalence, log.llm, f"mutants-equiv{idx}")
+        return eq
+    except LLMError as e:
+        return {"equivalent": False, "distinguishing_case": "", "equivalence_reason": f"check failed: {e}"[:200]}
 
 
 def _ctrf_counts(trial_dir: str | None) -> tuple[int, int]:
@@ -575,7 +602,10 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
                 if mut["survived"]:
                     error = ("The tests do not catch these plausible incomplete fixes (each one was run as "
                              "solve.sh and ALL tests passed):\n- "
-                             + "\n- ".join(f"fault {x['fault']}: {x['wrong_fix']}" for x in mut["survived"])
+                             + "\n- ".join(f"fault {x['fault']}: {x['wrong_fix']}"
+                                            + (f"\n  Case the tests miss (write a test for it): {x['distinguishing_case']}"
+                                               if x.get("distinguishing_case") else "")
+                                            for x in mut["survived"])
                              + "\nAdd or strengthen a test for each: it must run that fault's counterexample "
                                "through the program's public behaviour and fail the incomplete fix, and it "
                                "must follow from instruction.md's goal. Keep the correct solution passing.")

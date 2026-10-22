@@ -499,6 +499,31 @@ Reply with one block per fault, nothing before or after, named by the fault's in
 """
 
 
+EQUIVALENCE_SYSTEM = """\
+You check whether a partial fix of a Terminal-Bench 2 task is really wrong. The task's tests all
+passed when this partial fix (the "mutant") was used as the solution. Either the tests miss a case,
+or the mutant is behaviourally equivalent to the correct solution (another fix covers the same
+cases, so no input can tell them apart).
+
+Compare the correct solve.sh and the mutant against instruction.md's goal. Look for ONE concrete
+input or sequence of operations (files, commands, order) on which the program would behave
+differently after the mutant than after the correct solution, in a way the goal makes wrong.
+Only answer "equivalent" if no such case exists.
+
+Reply with ONE JSON object and nothing else:
+{"equivalent": true or false,
+ "distinguishing_case": "exact steps (setup, commands, expected vs mutant result), or empty if equivalent",
+ "reason": "one or two sentences"}
+"""
+
+
+def equivalence_user(fault: dict, instruction: str, solve_sh: str, mutant_sh: str) -> str:
+    keep = ("where", "what", "wrong_fix", "counterexample")
+    return ("Fault and its partial fix:\n" + json.dumps({k: fault.get(k) for k in keep}, indent=2)
+            + "\n\ninstruction.md:\n" + instruction + "\n\nCorrect solution/solve.sh:\n" + solve_sh
+            + "\n\nMutant solve.sh (all tests passed with it):\n" + mutant_sh + "\n")
+
+
 def mutants_user(faults: list, solve_sh: str) -> str:
     keep = ("where", "what", "wrong_fix", "counterexample")
     return ("Faults:\n" + json.dumps([{"index": i, **{k: f.get(k) for k in keep}}
