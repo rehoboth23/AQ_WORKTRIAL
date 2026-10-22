@@ -52,12 +52,16 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
 
     `parse` turns the reply text into a value or raises ValueError; a parse
     failure counts as a failed attempt and is retried. `log(label, record)` is
-    called once per attempt with the raw reply and usage, for the audit trail.
+    called once per attempt with the raw reply and usage, for the audit trail,
+    and once before each attempt with {"phase": "start"} so live status can show
+    calls in flight.
     """
     last_err = None
     for attempt in range(LLM_MAX_RETRIES + 1):
         started = time.time()
         text, usage = "", {}
+        if log:
+            log(label, {"phase": "start", "attempt": attempt, "model": MODEL})
         try:
             resp = _get_client().chat.completions.create(
                 model=MODEL,
@@ -72,6 +76,12 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
                     "prompt_tokens": resp.usage.prompt_tokens,
                     "completion_tokens": resp.usage.completion_tokens,
                 }
+                cost = (getattr(resp.usage, "model_extra", None) or {}).get("cost")
+                if isinstance(cost, (int, float)):  # OpenRouter-style gateways report it
+                    usage["cost_usd"] = float(cost)
+            # "length" means the reply was cut off at the output limit (often after long
+            # hidden reasoning); "stop" means the model finished on its own.
+            usage["finish_reason"] = resp.choices[0].finish_reason
             parsed = parse(text)
         except Exception as e:  # network, API or parse error
             last_err = e
@@ -86,6 +96,44 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
     raise LLMError(f"{label} failed after {LLM_MAX_RETRIES + 1} attempts: {last_err!r}")
 
 
+def _relax_json(text: str) -> str:
+    """Remove trailing commas (`,}` / `,]`) and // or /* */ comments, outside string literals.
+    One stray comma at the end of a 20k-token reply shouldn't throw the whole reply away."""
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            out.append(c)
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        elif c == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1
+                continue
+            out.append(c)
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def parse_json_object(text: str) -> dict:
     """Pull the first JSON object out of a reply (fenced or bare)."""
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
@@ -93,9 +141,12 @@ def parse_json_object(text: str) -> dict:
     if not candidate:
         raise ValueError("no JSON object in reply")
     try:
-        obj = json.loads(candidate)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"invalid JSON: {e}") from e
+        obj = json.loads(candidate, strict=False)
+    except json.JSONDecodeError:
+        try:  # common model slips: trailing commas, // or /* */ comments
+            obj = json.loads(_relax_json(candidate), strict=False)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"invalid JSON: {e}") from e
     if not isinstance(obj, dict):
         raise ValueError("reply JSON is not an object")
     return obj

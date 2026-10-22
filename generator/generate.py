@@ -19,6 +19,7 @@ The reward contract: tests/test.sh writes `1` (pass) or `0` (fail) to
 """
 
 import argparse
+import hashlib
 import json
 import os
 import posixpath
@@ -28,12 +29,49 @@ import sys
 import time
 
 import toml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+import difficulty
 import prompts
-from checks import run_all
-from config import CANARY_LINE, LOGS_DIR, MAX_REPAIR_ROUNDS, MODEL, OUTPUT_DIR, TASK_ORG
-from llm import LLMError, chat, parse_file_blocks, parse_json_object
+from checks import _read, run_all
+from config import (
+    CANARY_LINE,
+    INSTRUCTION_REVIEW,
+    LOGS_DIR,
+    MAX_REPAIR_ROUNDS,
+    MAX_SPEC_ATTEMPTS,
+    MODEL,
+    OUTPUT_DIR,
+    SPEC_CRITIC,
+    TASK_ORG,
+)
+import llm
+from ledger import reserve_dir, write_text_atomic
+from llm import LLMError, parse_file_blocks, parse_json_object
+
+
+def chat(system: str, user: str, parse, log=None, label: str = "call"):
+    """llm.chat with a reply cache in the run's logs dir (README Part 4: resume without
+    re-paying). Replies are keyed by model + prompts; a resumed run gets the same prompts for
+    every call that finished before the kill, so those replies come back free."""
+    run = getattr(log, "__self__", None)
+    if not isinstance(run, RunLog):
+        return llm.chat(system, user, parse, log, label)
+    key = hashlib.sha256(f"{MODEL}\0{system}\0{user}".encode("utf-8")).hexdigest()[:24]
+    path = os.path.join(run.dir, "cache", f"{key}.txt")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        try:
+            parsed = parse(text)
+        except Exception:  # cached reply no longer parses (parser changed): pay again
+            pass
+        else:
+            run.event("llm_cached", label=label, key=key)
+            return parsed, text, {}
+    parsed, text, usage = llm.chat(system, user, parse, log, label)
+    write_text_atomic(path, text)
+    return parsed, text, usage
 
 CANARY_COMMENT = f"# {CANARY_LINE}"
 
@@ -78,6 +116,52 @@ class Spec(BaseModel):
     test_plan: list[str] | str = ""
     anti_cheat: str = ""
     failure_modes: str = ""
+    # Difficulty profile (prompts.DIFFICULTY_SPEC_FIELDS), checked by difficulty.spec_gate().
+    faults: list[dict] = Field(default_factory=list)
+    decoys: list[dict | str] = Field(default_factory=list)
+    hidden_edge_cases: list[dict | str] = Field(default_factory=list)
+    why_not_textbook: str = ""
+    static_read: str = ""
+    crux: str = ""
+    expected_agent_steps: float | None = None
+
+    @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
+                     "failure_modes", "why_not_textbook", "static_read", "crux", "base_image", "category",
+                     mode="before")
+    @classmethod
+    def _text(cls, v):
+        """glm-5.1 sometimes returns bullet lists for prose fields; join them instead of
+        rejecting a whole (6-minute) reply."""
+        if isinstance(v, list):
+            return "\n".join(f"- {x}" if not isinstance(x, (dict, list)) else f"- {json.dumps(x)}" for x in v)
+        if isinstance(v, dict):
+            return json.dumps(v)
+        return v
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _str_list(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return [x if isinstance(x, str) else json.dumps(x) for x in (v or [])]
+
+    @field_validator("decoys", "hidden_edge_cases", mode="before")
+    @classmethod
+    def _dict_list(cls, v):
+        """Keep structured entries ({"where": ..., "why_innocent": ...}) as dicts; the files
+        prompt reads them better than a JSON string."""
+        if isinstance(v, (str, dict)):
+            return [v]
+        return [x if isinstance(x, (str, dict)) else json.dumps(x) for x in (v or [])]
+
+    @field_validator("expected_agent_steps", mode="before")
+    @classmethod
+    def _steps(cls, v):
+        if isinstance(v, str):  # e.g. "15-25" -> 15
+            import re as _re
+            m = _re.search(r"\d+(\.\d+)?", v)
+            return float(m.group()) if m else None
+        return v
 
 
 def slugify(text: str, max_len: int = 60) -> str:
@@ -91,6 +175,89 @@ def parse_spec(text: str) -> dict:
     if spec["difficulty"] not in ("easy", "medium", "hard"):
         spec["difficulty"] = "hard"
     return spec
+
+
+def parse_critic(text: str) -> dict:
+    obj = parse_json_object(text)
+    if not isinstance(obj.get("spec"), dict) and "faults" in obj and "name" in obj:
+        # glm-5.1 sometimes writes the walkthrough as prose and returns the revised spec bare;
+        # keep it rather than throw away a 40k-token reply.
+        obj = {"walkthrough": [text[:text.find("{")].strip()[:4000]], "too_easy_because": [], "spec": obj}
+    if not isinstance(obj.get("spec"), dict):
+        raise ValueError("critic reply has no `spec` object")
+    return {"too_easy_because": obj.get("too_easy_because") or [],
+            "walkthrough": obj.get("walkthrough") or [],
+            "spec": parse_spec(json.dumps(obj["spec"]))}
+
+
+class SpecRejected(Exception):
+    """The design still fails the difficulty spec gate after every attempt."""
+
+
+def design_spec(topic: str, calibration: str, control: bool, systems: dict, log) -> dict:
+    """Spec call(s), then the difficulty gate and the red-team critic (both skipped for control).
+    Raises SpecRejected if no design passes the gate, before any files or Docker are spent."""
+    user = prompts.spec_user(topic, calibration)
+    for attempt in range(MAX_SPEC_ATTEMPTS):
+        spec, _, _ = chat(systems["spec"], user, parse_spec, log.llm, "spec" if attempt == 0 else f"spec-a{attempt}")
+        if control:
+            return spec
+        problems = difficulty.spec_gate(spec)
+        log.event("spec_gate", attempt=attempt, problems=problems)
+        if not problems:
+            break
+        user = prompts.spec_retry_user(topic, calibration, problems)
+
+    if SPEC_CRITIC:
+        try:
+            critic, _, _ = chat(prompts.CRITIC_SYSTEM, prompts.critic_user(spec), parse_critic, log.llm, "critic")
+            log.write_json("critic.json", critic)
+            revised_problems = difficulty.spec_gate(critic["spec"])
+            log.event("critic", too_easy_because=critic["too_easy_because"], revised_gate=revised_problems)
+            if not revised_problems:
+                spec = critic["spec"]
+        except LLMError as e:  # the critic is an improvement step; keep the gated spec without it
+            log.event("critic_error", error=str(e)[:300])
+
+    problems = difficulty.spec_gate(spec)
+    # Grade of the critic's discovery-step estimates, for the dashboard and audit trail only.
+    # It lives in the run's logs, never in the task files the solving agent sees.
+    log.event("discovery_eval", **difficulty.discovery_eval(spec))
+    if problems:
+        raise SpecRejected("spec failed the difficulty gate: " + "; ".join(problems))
+    return spec
+
+
+def parse_review(text: str) -> dict:
+    """Instruction-review reply: 'VERDICT: clean', or 'VERDICT: leaks' + leak lines + a file block."""
+    m = re.search(r"VERDICT:\s*(clean|leaks)", text, re.I)
+    if not m:
+        raise ValueError("no VERDICT line in review reply")
+    if m.group(1).lower() == "clean":
+        return {"verdict": "clean", "leaks": [], "instruction": None}
+    blocks = parse_file_blocks(text)  # raises ValueError if the rewrite is missing
+    if "instruction.md" not in blocks:
+        raise ValueError("leaks reported but no rewritten instruction.md")
+    head = text[m.end(): text.find("<<<FILE")]
+    leaks = [l.strip("- ").strip() for l in head.splitlines() if l.strip().startswith("-")]
+    return {"verdict": "leaks", "leaks": leaks, "instruction": blocks["instruction.md"]}
+
+
+def review_instruction(spec: dict, files: dict[str, str], log) -> dict[str, str]:
+    """Rewrite instruction.md if it diagnoses a hidden fault (keeps requirements). Best effort:
+    on a model error the instruction is kept and the gates and band eval still apply."""
+    try:
+        review, _, _ = chat(prompts.INSTRUCTION_REVIEW_SYSTEM,
+                            prompts.instruction_review_user(files["instruction.md"], spec.get("faults") or [],
+                                                            files.get("tests/test_outputs.py", "")),
+                            parse_review, log.llm, "review")
+    except LLMError as e:
+        log.event("review_error", error=str(e)[:300])
+        return files
+    log.event("instruction_review", verdict=review["verdict"], leaks=review["leaks"])
+    if review["instruction"]:
+        files = {**files, "instruction.md": review["instruction"]}
+    return files
 
 
 def clean_files(raw: dict[str, str]) -> tuple[dict[str, str], list[str]]:
@@ -110,6 +277,59 @@ def clean_files(raw: dict[str, str]) -> tuple[dict[str, str], list[str]]:
 
 def missing_files(files: dict[str, str]) -> list[str]:
     return [p for p in prompts.MODEL_FILES if not files.get(p, "").strip()]
+
+
+def missing_copy_sources(files: dict[str, str]) -> list[str]:
+    """Paths the Dockerfile COPYs/ADDs from the build context that were never written."""
+    import fnmatch
+    missing = []
+    for line in files.get("environment/Dockerfile", "").splitlines():
+        m = re.match(r"\s*(COPY|ADD)\s+(.*)", line, re.I)
+        if not m or "--from" in m.group(2):
+            continue
+        args = m.group(2).strip()
+        if args.startswith("["):  # JSON form: COPY ["src", "dest"]
+            try:
+                parts = json.loads(args)
+            except json.JSONDecodeError:
+                continue
+        else:
+            parts = [a for a in args.split() if not a.startswith("--")]
+        for src in parts[:-1]:
+            if src.startswith(("http://", "https://")):
+                continue
+            src = src.lstrip("./").rstrip("/")
+            if src in ("", "."):  # the whole build context: nothing specific to check
+                continue
+            path = "environment/" + src
+            if not any(k == path or k.startswith(path + "/") or fnmatch.fnmatch(k, path) for k in files):
+                missing.append(src)
+    return missing
+
+
+def parse_project(text: str) -> dict:
+    """Project reply: a <<<MANIFEST>>> of planned paths, then complete file blocks."""
+    m = re.search(r"<<<MANIFEST>>>\n(.*?)<<<END>>>", text, re.S)
+    manifest = [l.strip() for l in m.group(1).splitlines() if l.strip()] if m else []
+    files = parse_file_blocks(text)  # raises ValueError if there are no file blocks at all
+    return {"manifest": [p for p in manifest if p.startswith("environment/") and p != "environment/Dockerfile"],
+            "files": files}
+
+
+def write_project(spec: dict, systems: dict, log, max_continuations: int = 2) -> dict[str, str]:
+    """Write the environment project first (manifest + files), asking for any manifest files a
+    cut-off reply left out, so no single reply has to hold the whole task."""
+    project, _, _ = chat(systems["project"], prompts.project_user(spec), parse_project, log.llm, "project")
+    files, manifest = dict(project["files"]), project["manifest"]
+    for k in range(max_continuations):
+        missing = [p for p in manifest if p not in files]
+        if not missing:
+            break
+        log.event("project_missing", missing=missing)
+        more, _, _ = chat(systems["project"], prompts.project_continue_user(spec, sorted(files), missing),
+                          parse_file_blocks, log.llm, f"project-cont{k + 1}")
+        files.update(more)
+    return files
 
 
 def _with_canary(body: str) -> str:
@@ -140,7 +360,9 @@ def task_toml(spec: dict, task_name: str) -> str:
             "generator_model": MODEL,
         },
         "verifier": {"timeout_sec": 900.0},
-        "agent": {"timeout_sec": 3600.0},
+        # No network while solving, so the agent can't fetch the original code (the one fair
+        # failure we have seen came from removing reference copies). The verifier keeps network.
+        "agent": {"timeout_sec": 3600.0, "network_mode": "no-network"},
         "environment": {
             "build_timeout_sec": 600.0,
             "cpus": 1,
@@ -152,8 +374,12 @@ def task_toml(spec: dict, task_name: str) -> str:
 
 def write_task(task_dir: str, spec: dict, task_name: str, files: dict[str, str]) -> None:
     """(Re)write the whole task directory from the model's files plus our boilerplate."""
+    # Empty the dir but keep it: removing it would free the reserved name for a moment, and
+    # another copy of the pipeline could reserve it in between (found by the concurrency test).
     if os.path.isdir(task_dir):
-        shutil.rmtree(task_dir)
+        for name in os.listdir(task_dir):
+            path = os.path.join(task_dir, name)
+            shutil.rmtree(path) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
     out = dict(files)
     for path in ("environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py"):
         out[path] = _with_canary(out[path])
@@ -174,8 +400,9 @@ class RunLog:
     def __init__(self, path: str):
         self.dir = path
         os.makedirs(path, exist_ok=True)
-        self.n = 0
-        self.tokens = {"prompt_tokens": 0, "completion_tokens": 0}
+        # A resumed run appends to the same dir: continue the NN- numbering, never overwrite.
+        self.n = sum(1 for n in os.listdir(path) if re.match(r"\d\d+-", n))
+        self.tokens = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
 
     def event(self, kind: str, **data) -> None:
         rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": kind, **data}
@@ -183,10 +410,13 @@ class RunLog:
             f.write(json.dumps(rec) + "\n")
 
     def llm(self, label: str, record: dict) -> None:
+        if record.get("phase") == "start":  # call in flight (for live status), no reply yet
+            self.event("llm_start", label=label, attempt=record.get("attempt"), model=record.get("model"))
+            return
         self.n += 1
         with open(os.path.join(self.dir, f"{self.n:02d}-{label}.txt"), "w", encoding="utf-8") as f:
             f.write(record.get("raw", ""))
-        for k in self.tokens:
+        for k in self.tokens:  # cost_usd only when the gateway reports it
             self.tokens[k] += (record.get("usage") or {}).get(k) or 0
         self.event("llm_call", label=label, **{k: v for k, v in record.items() if k != "raw"})
 
@@ -195,7 +425,8 @@ class RunLog:
             json.dump(data, f, indent=2)
 
 
-def generate_task(topic: str, output_dir: str | None = None) -> dict:
+def generate_task(topic: str, output_dir: str | None = None, calibration: str = "",
+                  control: bool = False, resume_dir: str | None = None, on_start=None) -> dict:
     """Generate a Harbor task for the given topic.
 
     Args:
@@ -203,14 +434,29 @@ def generate_task(topic: str, output_dir: str | None = None) -> dict:
             (e.g. "fix a memory bug in a C ring buffer").
         output_dir: Where to write the generated task files.
             Defaults to output/<task-name from the spec>.
+        calibration: Optional text with recent band-eval verdicts, appended
+            to the spec prompt (see prompts.calibration_block).
+        control: Use prompts.CONTROL_SYSTEMS (no difficulty rule) for an
+            A/B control arm.
+        resume_dir: logs dir of an earlier, killed run of this topic. Its cached
+            replies are reused, so finished model calls are not paid again.
+        on_start: called with the logs dir as soon as it exists (the batch
+            ledger records it, so a kill after this point can resume).
 
     Returns:
         dict with at least {"task_dir": <path>, "status": "ok" | "failed"}.
     """
     started = time.time()
-    run_id = f"{slugify(topic, 40)}-{time.strftime('%Y%m%d-%H%M%S')}"
-    log = RunLog(os.path.join(os.path.abspath(LOGS_DIR), run_id))
-    log.event("start", topic=topic, model=MODEL)
+    if resume_dir:
+        run_id = os.path.basename(resume_dir.rstrip("/"))
+    else:  # the random suffix keeps two copies started in the same second apart
+        run_id = f"{slugify(topic, 40)}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(2).hex()}"
+    log = RunLog(resume_dir or os.path.join(os.path.abspath(LOGS_DIR), run_id))
+    if on_start:
+        on_start(log.dir)
+    systems = prompts.CONTROL_SYSTEMS if control else prompts.SYSTEMS
+    log.event("resume" if resume_dir else "start", topic=topic, model=MODEL, calibration=calibration,
+              control=control)
     summary = {"topic": topic, "run_id": run_id, "logs_dir": log.dir, "task_dir": None,
                "status": "failed", "rounds": []}
 
@@ -221,27 +467,52 @@ def generate_task(topic: str, output_dir: str | None = None) -> dict:
         return summary
 
     try:
-        spec, _, _ = chat(prompts.SPEC_SYSTEM, prompts.spec_user(topic), parse_spec, log.llm, "spec")
+        spec = design_spec(topic, calibration, control, systems, log)
         log.write_json("spec.json", spec)
-        raw, _, _ = chat(prompts.FILES_SYSTEM, prompts.files_user(spec), parse_file_blocks, log.llm, "files")
-    except LLMError as e:
+        project = write_project(spec, systems, log)
+        core, _, _ = chat(systems["files"], prompts.files_user(spec, project), parse_file_blocks, log.llm, "files")
+        raw = {**project, **core}
+    except (LLMError, SpecRejected) as e:
         return finish("failed", error=str(e))
 
     task_name = spec["name"]
-    task_dir = os.path.abspath(output_dir or os.path.join(OUTPUT_DIR, task_name))
-    if output_dir is None and os.path.exists(task_dir):  # never overwrite an earlier task
-        task_dir = f"{task_dir}-{time.strftime('%H%M%S')}"
+    if output_dir:
+        task_dir = os.path.abspath(output_dir)
+    else:
+        # Reserve output/<name> atomically (never overwrite an earlier task, never race another
+        # copy of the pipeline); a resumed run reuses the dir it reserved before the kill.
+        reserved = os.path.join(log.dir, "task_dir.txt")
+        task_dir = (_read(reserved) or "").strip()
+        if not (task_dir and os.path.isdir(task_dir)):
+            task_dir = reserve_dir(os.path.abspath(os.path.join(OUTPUT_DIR, task_name)))
+            write_text_atomic(reserved, task_dir)
         task_name = os.path.basename(task_dir)
     files, dropped = clean_files(raw)
 
+    reviewed = None  # instruction.md text the reviewer last saw
     for rnd in range(MAX_REPAIR_ROUNDS + 1):
         record = {"round": rnd, "dropped_paths": dropped, "checks": []}
-        missing = missing_files(files)
+        if (INSTRUCTION_REVIEW and not control and files.get("instruction.md", "").strip()
+                and files["instruction.md"] != reviewed):
+            files = review_instruction(spec, files, log)
+            reviewed = files["instruction.md"]
+        missing = missing_files(files) + [f"environment/{p} (the Dockerfile COPYs it, but it was never written)"
+                                          for p in missing_copy_sources(files)]
+        leaks = difficulty.meta_leaks(files)  # both arms: the agent must never see the design
+        if leaks:
+            missing += ["spec details visible to the solving agent (remove them, make the code look "
+                        "ordinary): " + "; ".join(leaks[:8])]
+        gate = [] if control or missing else difficulty.files_gate(files, spec)
+        record["difficulty_gate"] = gate
         if missing:
             error = "These required files are missing or empty: " + ", ".join(missing)
+        elif gate:  # too easy by construction: fix it before spending on Docker
+            error = ("The task is too easy by construction (difficulty gate). Fix all of these:\n- "
+                     + "\n- ".join(gate))
         else:
             write_task(task_dir, spec, task_name, files)
-            results = run_all(task_dir, f"gen-{run_id}-r{rnd}")
+            # Time-stamped so a resumed run never reuses a job dir a killed run left behind.
+            results = run_all(task_dir, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}")
             record["checks"] = [r.to_dict() for r in results]
             error = next((r.error for r in results if not r.passed), "")
         summary["rounds"].append(record)
@@ -254,7 +525,7 @@ def generate_task(topic: str, output_dir: str | None = None) -> dict:
         if rnd == MAX_REPAIR_ROUNDS:
             break
         try:
-            patch, _, _ = chat(prompts.REPAIR_SYSTEM, prompts.repair_user(spec, files, error),
+            patch, _, _ = chat(systems["repair"], prompts.repair_user(spec, files, error),
                                parse_file_blocks, log.llm, f"repair-r{rnd + 1}")
         except LLMError as e:
             summary["error"] = str(e)
@@ -264,7 +535,9 @@ def generate_task(topic: str, output_dir: str | None = None) -> dict:
 
     # Failed: keep the last attempt in the logs, not in output/, so output/ only holds good tasks.
     if os.path.isdir(task_dir):
-        shutil.move(task_dir, os.path.join(log.dir, "last-attempt"))
+        last = os.path.join(log.dir, "last-attempt")
+        shutil.rmtree(last, ignore_errors=True)  # a resumed run's newer attempt replaces it
+        shutil.move(task_dir, last)
     return finish("failed")
 
 

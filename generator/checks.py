@@ -77,20 +77,94 @@ def run_validator(task_dir: str) -> CheckResult:
     )
 
 
+def _docker_env() -> dict:
+    env = dict(os.environ)
+    env["PATH"] = os.path.expanduser("~/.docker/bin") + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def kill_tree(pid: int, grace: float = 10.0) -> None:
+    """SIGTERM a process and all its descendants, then SIGKILL whatever is left."""
+    import signal
+    ps = subprocess.run(["ps", "-eo", "pid=,ppid="], capture_output=True, text=True).stdout
+    children: dict[int, list[int]] = {}
+    for line in ps.splitlines():
+        p, pp = (int(x) for x in line.split())
+        children.setdefault(pp, []).append(p)
+    tree, stack = [], [pid]
+    while stack:
+        p = stack.pop()
+        tree.append(p)
+        stack.extend(children.get(p, []))
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for p in reversed(tree):
+            try:
+                os.kill(p, sig)
+            except ProcessLookupError:
+                pass
+        if sig == signal.SIGTERM:
+            time.sleep(grace)
+
+
+def remove_containers(prefixes: list[str]) -> list[str]:
+    """Force-remove Docker containers whose names start with any prefix (lower-cased, as
+    Harbor/compose names them). Used after stopping a run early."""
+    prefixes = [p.lower() for p in prefixes if p]
+    out = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True,
+                         text=True, env=_docker_env()).stdout
+    names = [n for n in out.split() if any(n.startswith(p) for p in prefixes)]
+    if names:
+        subprocess.run(["docker", "rm", "-f", *names], capture_output=True, env=_docker_env())
+    return names
+
+
+# PIDs of harbor runs in flight, so a SIGTERM/SIGINT handler can stop them (pipeline.py).
+CHILDREN: set[int] = set()
+
+
+def harbor_run(task_dir: str, job_name: str, args: list[str],
+               timeout: int = HARBOR_RUN_TIMEOUT_SEC, stop_when=None, on_start=None) -> tuple[str, str]:
+    """Run `harbor run` on one task into JOBS_DIR/<job_name>; return (cli output, job dir).
+    Shared by the oracle/nop checks and the band eval. If `stop_when(job_dir)` turns true
+    while it runs (polled every 15 s), the job is stopped early and the containers of its
+    unfinished trials are removed."""
+    cmd = [HARBOR, "run", "-p", task_dir, "-o", JOBS_DIR, "--job-name", job_name, "-q", "-y", *args]
+    job_dir = os.path.join(JOBS_DIR, job_name)
+    started = time.time()
+    os.makedirs(JOBS_DIR, exist_ok=True)
+    with open(os.path.join(JOBS_DIR, f".{job_name}.cli.txt"), "w+", encoding="utf-8") as out:
+        proc = subprocess.Popen(cmd, env=_docker_env(), stdout=out, stderr=subprocess.STDOUT, text=True)
+        CHILDREN.add(proc.pid)
+        if on_start:  # e.g. the batch ledger records the pid, to kill a stale job on resume
+            on_start(proc.pid)
+        note = ""
+        while proc.poll() is None:
+            time.sleep(15 if stop_when else 2)
+            if time.time() - started > timeout:
+                note = f"\nharbor run timed out after {timeout}s"
+            elif stop_when and stop_when(job_dir):
+                note = "\nstopped early: verdict already certain"
+            else:
+                continue
+            kill_tree(proc.pid)
+            unfinished = [os.path.basename(os.path.dirname(t)) for t in
+                          glob.glob(os.path.join(job_dir, "*", "config.json"))
+                          if not os.path.exists(os.path.join(os.path.dirname(t), "result.json"))]
+            remove_containers(unfinished)
+            break
+        CHILDREN.discard(proc.pid)
+        out.seek(0)
+        cli_out = out.read() + note
+    return cli_out, job_dir
+
+
 def run_harbor(task_dir: str, agent: str, job_name: str) -> CheckResult:
     """Run one oracle/nop trial and return its reward plus failure context."""
     started = time.time()
-    env = dict(os.environ)
-    env["PATH"] = os.path.expanduser("~/.docker/bin") + os.pathsep + env.get("PATH", "")
-    cmd = [HARBOR, "run", "-p", task_dir, "-a", agent, "-o", JOBS_DIR, "--job-name", job_name, "-q", "-y"]
+    args = ["-a", agent]
     if agent == "oracle":
-        cmd += ["--agent-timeout-multiplier", ORACLE_TIMEOUT_MULTIPLIER]
-    try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=HARBOR_RUN_TIMEOUT_SEC)
-        cli_out = proc.stdout + proc.stderr
-    except subprocess.TimeoutExpired as e:
-        cli_out = f"harbor run timed out after {HARBOR_RUN_TIMEOUT_SEC}s\n{e.stdout or ''}"
-    job_dir = os.path.join(JOBS_DIR, job_name)
+        args += ["--agent-timeout-multiplier", ORACLE_TIMEOUT_MULTIPLIER]
+    cli_out, job_dir = harbor_run(task_dir, job_name, args)
     result = CheckResult(name=agent, passed=False, job_dir=job_dir)
 
     trial_results = glob.glob(os.path.join(job_dir, "*", "result.json"))
