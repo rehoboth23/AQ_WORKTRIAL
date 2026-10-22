@@ -19,6 +19,9 @@ quirk_matrix:
   - several
   - several with cached keysets
   mix: about 30% easy cells
+self_check_gap: a rotation that passes the practice client log can still reject a token issued just inside
+  the grace period or accept a revoked one; the policy document states both and the practice scenario
+  shows one of each
 answer_source: stated
 reference_access: none
 quirk_evidence:

@@ -19,6 +19,8 @@ quirk_matrix:
   - save then edit
   - delete with dependents
   mix: about 30% easy cells
+self_check_gap: a port matching the recorded practice scenarios can still round a boundary amount differently
+  or show errors in a different order when several occur; the Tcl source determines both
 answer_source: stated
 reference_access: frozen_examples
 quirk_evidence:

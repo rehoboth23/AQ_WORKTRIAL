@@ -21,6 +21,15 @@ quirk_matrix:
   - near midnight local
   - across a DST change
   mix: about 30% easy cells
+self_check_gap: a solution reproducing all 40,000 labels can still place a threshold anywhere inside the
+  gap between the largest passing and smallest flagged training value, take the window as exclusive at
+  one end, or map a UTC hour to the wrong local hour on a DST day; held-out flows sit on those exact boundaries
+  (the training data straddles them, 2-3 flows per side)
+hidden_case_evidence:
+- 'each threshold: 2-3 flows per side of the boundary in train.csv'
+- 'window edge: bursts with a flow exactly 60 s apart'
+- 'DST: flows on both transition days, both local hours'
+- 'negative cases: UDP flows over the byte threshold labelled pass, UDP low-packet flows labelled pass'
 answer_source: inferred
 reference_access: none
 quirk_evidence:

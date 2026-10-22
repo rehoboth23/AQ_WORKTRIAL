@@ -49,6 +49,9 @@ quirk_matrix:
   - some unreachable
   - disconnected components
   mix: about 30% easy cells
+self_check_gap: a faster library byte-identical on the benchmark graphs can still break ties differently
+  on hidden graphs with equal-cost routes or mishandle unreachable nodes; the header comment states the
+  tie rule and the README the unreachable output
 answer_source: stated
 reference_access: 'runnable: the original library is the baseline to speed up; the hard part is the 10x
   target, and matching it is the guard'

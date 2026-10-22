@@ -43,6 +43,14 @@ quirk_matrix:
   - one variable
   - one saturated
   mix: about 30% easy cells
+self_check_gap: a pipeline matching every practice star's magnitudes and periods can still pick the one-day
+  alias on a star whose practice nights never cover a full cycle; the conventions document states the
+  period-search rule and the practice set holds one star where the alias and the true period both fit
+  two nights but only the true period fits all three
+hidden_case_evidence:
+- 'each star type: practice stars with 3 nights'
+- 'alias vs true period: one practice star where only the true period fits all nights'
+- 'comparison-star rule and zero point: the conventions document (data cannot show the convention)'
 answer_source: inferred
 stated_facts:
 - fact: the observatory's reduction conventions (comparison stars, zero point, period search range)

@@ -21,6 +21,14 @@ quirk_matrix:
   - ferry day
   - ferry day on a holiday
   mix: about 30% easy cells
+self_check_gap: a model fitted to the 10 training weeks can match them closely and still be wrong below
+  the training temperature range (cold snap), on a Friday holiday (one in training), and on a ferry day
+  that is also a holiday; the notes state the mechanisms, the data shows each case at least once
+hidden_case_evidence:
+- 'heating slope and knee: the cold training weeks'
+- 'ferry bump and its hours: 6 ferry days'
+- 'holiday kinds: one Friday, one Tuesday, one Saturday-with-ferry holiday'
+- 'below training temperatures: stated fact (no cap)'
 answer_source: inferred
 stated_facts:
 - fact: the heating response to temperatures below the training range

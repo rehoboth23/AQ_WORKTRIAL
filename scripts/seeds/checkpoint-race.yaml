@@ -18,6 +18,9 @@ quirk_matrix:
   - medium
   - many chunks
   mix: about 30% easy cells
+self_check_gap: a fix that passes the practice harness at its default scheduling can still lose bytes
+  at a crash point between two writes the practice run never hits; the checkpoint format document states
+  the write order and the harness exposes every crash point
 answer_source: stated
 reference_access: none
 quirk_evidence:

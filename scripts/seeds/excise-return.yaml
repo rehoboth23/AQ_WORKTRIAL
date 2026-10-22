@@ -19,6 +19,9 @@ quirk_matrix:
   - one 503
   - 503 then a duplicate risk
   mix: about 30% easy cells
+self_check_gap: a return correct for the practice movements can still mis-handle a loss exactly at the
+  tolerance or a retried submission that already succeeded; the manual states both, the practice data
+  contains neither at the boundary
 answer_source: stated
 reference_access: none
 quirk_evidence:

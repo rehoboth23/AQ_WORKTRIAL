@@ -18,6 +18,8 @@ quirk_matrix:
   - stale note
   - note contradicts formulary
   mix: about 30% easy cells
+self_check_gap: decisions matching the practice cases can still be wrong where two sources conflict or
+  a quantity sits exactly on the limit; the manual states the precedence and the limit table
 answer_source: stated
 reference_access: none
 quirk_evidence:

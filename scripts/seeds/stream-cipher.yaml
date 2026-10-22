@@ -18,6 +18,8 @@ quirk_matrix:
   - mixed
   - binary-ish
   mix: about 30% easy cells
+self_check_gap: a recovery that works on the given pairs can still fail on a shorter ciphertext or a key
+  with a repeated schedule word; the cipher source determines both
 answer_source: stated
 reference_access: none
 quirk_evidence:

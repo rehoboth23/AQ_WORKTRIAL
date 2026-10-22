@@ -18,6 +18,8 @@ quirk_matrix:
   - read/write
   - same-session read-after-write
   mix: about 30% easy cells
+self_check_gap: a migration that passes the practice load run can still lose a write that arrives during
+  the switch-over or expire a session early; the runbook states both rules
 answer_source: stated
 reference_access: none
 quirk_evidence:

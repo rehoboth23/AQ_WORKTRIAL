@@ -19,6 +19,9 @@ quirk_matrix:
   - minus
   - minus with a frameshift
   mix: about 30% easy cells
+self_check_gap: a caller matching every practice sample can still call a minus-strand variant in forward
+  notation or place an indel at the wrong edge of a repeat; the nomenclature document states both rules
+  and the practice set shows each once
 answer_source: stated
 reference_access: none
 quirk_evidence:

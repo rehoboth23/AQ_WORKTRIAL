@@ -20,6 +20,14 @@ quirk_matrix:
   - longer
   - much longer
   mix: about 30% easy cells
+self_check_gap: constants fitted to the practice runs reproduce them to within noise while a different
+  constant set does too (the forward and reverse step trade off); the held-out conditions excite the reverse
+  step and separate the sets, and the practice runs contain two conditions that already distinguish them
+  for a careful fit
+hidden_case_evidence:
+- 'each rate constant: practice runs where it dominates'
+- 'reverse step: two practice conditions that excite it'
+- 'measurement noise level: repeated practice runs'
 answer_source: inferred
 reference_access: none
 quirk_evidence:
