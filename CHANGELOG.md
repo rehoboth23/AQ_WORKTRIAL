@@ -485,3 +485,41 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 **Part 3 status:** `part3-batch-1` (hidden-fault genre, stopped after 3 of 8 topics once the pattern was clear): 1 too easy, 1 rejected as unfair after re-triage, 1 failed generation on its last repair round (an untested trap); $3.04. Spend on all batch reports so far $8.01, plus about $3 of hand experiments. Three runs under the mixed-genre rules (two judgement, one spec) are in progress.
 
 **Open:** the 20-topic batch (`bash scripts/run-batch.sh scripts/topics-draft.txt <batch> 3 6,14`) waits on those three results; a "preserve existing behaviour" rule with regression tests, so rewriting a starter from the spec is the wrong move; a report column comparing the critic's flags with the band result, since its verdicts have never been checked against outcomes; `.bak` cleanup before packaging.
+
+## 2026-10-22: Six task shapes measured; one recipe for every topic
+**Measured with terminus-2 + glm-5.3-flash at high effort, 5 runs each (early stops on):**
+
+| Task | Shape | Result |
+|---|---|---|
+| HTTP header injection (regenerated under the required-handling rule) | judgement | 3/3, too easy |
+| billing rounding (generated) | judgement | 3/3, too easy |
+| billing, hand-edited: float-derived rates and a global `Decimal` precision change added | judgement | 1/3 but **unfair** (the instruction said every rate is exact, a docstring said exchange rates are cut to 6 figures; two runs followed the instruction); with the exception named: 3/3 |
+| ledger report, hand-built: six chained build, ABI, lock, tz-data and logic obstacles | long road | 3/3 in 8–9 steps |
+| Markdown table formatter (18 stated rules) | spec | first eval 0/5 from three **unfair** tests (a column with no data rows was numeric by rule 7's literal wording; `--check`'s exit code); fixed: 4–5/5, stopped early |
+| packing slip | spec | 3/3, too easy |
+| mainframe EBCDIC extract, hand-built: COMP-3, `SIGN IS LEADING`, `P` scaling, alternate sign nibbles | domain | 5/5 |
+
+**What the trajectories show.**
+- **The model fixes by reading.** On the ledger task every run read every file first and fixed all six obstacles in one batch of edits; the chain only exists for someone who fixes by trial and error.
+- **It knows more niche detail than expected, and it builds its own test data.** Every EBCDIC run wrote its own encoder to make synthetic records and checked its converter against them.
+- **Most "learnable" results were task faults.** Three of the four in-band results this week (webhook, HTTP, billing) and the Markdown 0/5 came from a contradiction or an unstated choice. The tell: every failing run fails the same assertion.
+- **Generated tasks are small.** Expert estimates of 20–45 minutes and 300–500 line projects; every one was solved in 8–30 steps.
+
+**Decisions, in order:**
+- **Early stops, one switch each.** A band eval also stops as learnable at one pass plus two failures (certain). `EARLY_STOP_FIRST_PASSES`, `EARLY_STOP_TOO_EASY` and `EARLY_STOP_LEARNABLE` turn each stop off on its own, e.g. to give triage every failure.
+- **Judgement fairness rules.** Every exception to a "must hold everywhere" property is named in the instruction, never left to a docstring; a correct helper that the violating sites merely bypass is an answer key ("use `round_money` everywhere" fixed every billing site). Triage: a run that followed one instruction sentence and broke another is the task's fault (triage had called both billing failures the model's).
+- **Leaked-answer check narrowed.** It flagged rule constants (`40.0` matched inside `0.0`) and required output labels; payroll lost four repair rounds making its instruction vaguer. Now only computed-looking values, matched as whole tokens.
+- **Spec rules live in a document the instruction names** instead of a numbered checklist; the gates exempt that document and coverage, review and triage read it.
+- **Long-road genre** (chained real failure modes to an exact end state), then the rule its first result taught: at most one obstacle may be readable in the source.
+- **Domain genre** with expected values from a pinned library installed only for the verifier, so a detail the generator misremembers cannot make the solution and the tests wrong together.
+- **Knowledge probe and dial.** Before any files are written, glm-5.3-flash answers each knowledge point five times; the product of the rates predicts the pass rate and steers the design to 20–60%. A 14-question run: EBCDIC 80–100%, CRC and SAM 100%, time scales 80–100%, **ISDA day counts 0–20%** (Bond Basis treated as US 30/360, 30E/360 ISDA confused with 30E/360, Actual/Actual ISDA off by a fixed amount). Calls are cheap; 70 took about 5 minutes when the gateway was slow, seconds when it was not.
+- **Generated-input tests: a fairness tool, not a difficulty lever.** 1,500 seeded tables compared with the reference found three ambiguities 55 fixed tests had missed (truncation and column width, merging an empty extra cell, rule 1's own example); after fixing them two of the four agent tools matched the reference on every table. `FUZZ_TESTS` is off by default.
+- **Executable reference, then one recipe for every topic.** The specification becomes a stripped C binary the agent can run but not read; it must probe for 8–15 decision points (rounding steps, tie-breaks, boundaries, byte layout) and build an artifact that matches on hidden inputs of the sample's kinds. Tests compile a pristine copy of the reference and compare about 500 generated inputs; the oracle check proves the task solvable; one mutant per decision point. Every topic now uses this recipe (`TOPIC_TAGS=1` brings back the others), and the topic list is 16 black-box topics.
+
+**Why the executable reference.** Every shape above failed the same way: whatever the agent can read (code, rules, faults) or already knows (standards), it verifies and gets right. A reference it can only run keeps the specification observable, so the task stays fair, while making coverage the work: runs differ by how thoroughly they probe and when they decide they are done. A hand-built test (a mawk report script to port byte for byte, quirks such as `substr(s, 0, 4)`, byte-wise UTF-8, 32-bit integer printing) produced the first early trajectories that disagreed instead of converging; one run concluded the wrong comparison rule.
+
+**Operational facts.**
+- Gateway failures rose from about 2% of calls (00:00–04:00) to about 24% (04:00–05:30): dropped connections and empty replies after long reasoning. Not call length (successful calls ran up to 20 minutes), not our concurrency, not prompt changes; recovered by 05:32.
+- Stopping a background shell does not stop the harbor job it started: its agent containers keep running. Stop the pipeline (its handler cleans up) or run `checks.cleanup_job` on the job.
+
+**Open:** the awk parity result and the first three generated executable-reference tasks (tax calculator, shift scheduler, bond day counts); the Part 3 funnel report for today's runs; `.bak` cleanup before packaging.
