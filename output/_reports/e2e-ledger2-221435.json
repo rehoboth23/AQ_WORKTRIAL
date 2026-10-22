@@ -1,0 +1,131 @@
+[
+  {
+    "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+    "stage": "done",
+    "spec_ok": true,
+    "files_written": true,
+    "structural": true,
+    "correct": true,
+    "evaluated": true,
+    "learnable": false,
+    "kept": false,
+    "review": false,
+    "gen_cost": {
+      "input": 45722,
+      "output": 192147,
+      "cost_usd": 0.9095,
+      "cost_source": "list price"
+    },
+    "eval_cost_usd": 0.0672,
+    "gen_seconds": 3714.0,
+    "eval_seconds": 370.2,
+    "record": {
+      "name": "inventory-ledger-replay-drift",
+      "description": "Fix an event-sourced inventory ledger whose snapshot diverges from replaying the event log due to incorrect correction deltas and non-idempotent event logging.",
+      "difficulty": "hard",
+      "arm": "treatment",
+      "run_id": "inventory-ledger-replay-drift-20261021-231630-9e25",
+      "features": {
+        "env_lines": 645,
+        "solve_lines": 64,
+        "faults": 2,
+        "fault_layers": 1
+      },
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 4,
+      "n_invalid": 1,
+      "decision": "rejected",
+      "why": "too_easy (stopped early after 4 passes)",
+      "triage": [],
+      "band": {
+        "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/inventory-ledger-replay-drift",
+        "verdict": "too_easy",
+        "passes": 4,
+        "n_valid": 4,
+        "n_invalid": 1,
+        "trials": [
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__7D4LRTv",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 128030,
+            "output_tokens": 16547,
+            "cost_usd": 0.011360085999999998,
+            "episodes": 10,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__B4xYKfR",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 325836,
+            "output_tokens": 23234,
+            "cost_usd": 0.024623722,
+            "episodes": 18,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__L783NDd",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 120118,
+            "output_tokens": 14229,
+            "cost_usd": 0.010504534,
+            "episodes": 10,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__dNcM55j",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 118257,
+            "output_tokens": 9200,
+            "cost_usd": 0.009241852000000002,
+            "episodes": 10,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__kx7RTuW",
+            "outcome": "invalid",
+            "detail": "CancelledError",
+            "reward": null,
+            "input_tokens": 130925,
+            "output_tokens": 16156,
+            "cost_usd": 0.01145042,
+            "episodes": 12,
+            "failed_tests": [],
+            "found_step": 1
+          }
+        ],
+        "jobs": [
+          "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0"
+        ],
+        "tokens": {
+          "input": 823166,
+          "output": 79366
+        },
+        "cost_usd": 0.0672,
+        "median_steps": 10.0,
+        "median_found_step": 1.0,
+        "early_stop": true,
+        "seconds": 370.2,
+        "error": ""
+      },
+      "eval_model": "openrouter/z-ai/glm-5.3-flash",
+      "reasoning_effort": "high",
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/inventory-ledger-replay-drift",
+      "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+      "stage": "eval",
+      "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261021-221436-f438"
+    }
+  }
+]

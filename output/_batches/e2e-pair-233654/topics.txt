@@ -1,0 +1,2 @@
+an analytics job that rebuilds daily aggregates incrementally from changed source partitions, whose totals drift from a full rebuild after some kinds of edits to the source data
+a report renderer with an on-disk cache keyed by its inputs, which serves stale reports after some changes to templates, settings or reference data

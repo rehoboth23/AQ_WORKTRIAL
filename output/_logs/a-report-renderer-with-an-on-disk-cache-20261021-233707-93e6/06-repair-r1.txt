@@ -1,0 +1,125 @@
+Looking at the two issues:
+
+1. **instruction.md** points to README.md which lists all source files, indirectly revealing fault locations
+2. **__main__.py line 61** comment states "The template, base formatting config, and data file are always required regardless of report content" — this is exactly the rule the lazy-registration fault breaks
+
+I'll fix both: remove the README.md pointer from instruction.md, and neutralize the revealing comment in __main__.py.
+
+<<<FILE instruction.md>>>
+ReportForge generates formatted HTML reports from CSV transaction data. It caches rendered reports to speed up repeated runs. The cache is not working correctly: changing source files and re-running the same report command can still produce stale output.
+
+**Goal:** The cache must be fixed so that re-running a report always produces output reflecting the current state of all files that affect it. This includes files that are created or deleted between runs. The cache must still serve valid hits: identical inputs with no intervening changes should produce a cache hit, avoiding re-renders.
+
+**Command:** `python3 -m reportgen <report_type> --data <csv_path> --from <start> --to <end>`
+
+Output is printed to stdout as HTML.
+<<<END>>>
+
+<<<FILE environment/reportgen/__main__.py>>>
+"""Command-line entry point for ReportForge."""
+
+import argparse
+import os
+import sys
+
+from .cache import Cache
+from .loader import (
+    get_dependency_paths,
+    load_data,
+    load_formatting,
+    load_overrides,
+    load_products,
+    load_rates,
+    load_template,
+    register_dep,
+    reset_deps,
+)
+from .renderer import render_report
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="reportgen",
+        description="ReportForge — Generate formatted HTML reports from CSV data",
+    )
+    parser.add_argument(
+        "report_type",
+        help="Report template to use (e.g. sales_report)",
+    )
+    parser.add_argument(
+        "--data",
+        required=True,
+        help="Path to the CSV data file",
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_date",
+        required=True,
+        help="Start date, inclusive (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_date",
+        required=True,
+        help="End date, inclusive (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Force a fresh render, ignoring the cache",
+    )
+    args = parser.parse_args()
+
+    data_path = os.path.abspath(args.data)
+
+    # Reset dependency tracking for this invocation
+    reset_deps()
+
+    # Register dependencies available before rendering begins
+    register_dep(f"/app/templates/{args.report_type}.html")
+    register_dep("/app/config/formatting.yml")
+    register_dep(data_path)
+
+    cache = Cache()
+
+    # Check the cache unless --fresh was requested
+    if not args.fresh:
+        dep_paths = get_dependency_paths()
+        cached = cache.lookup(
+            args.report_type, data_path,
+            args.from_date, args.to_date,
+            dep_paths,
+        )
+        if cached is not None:
+            sys.stdout.write(cached)
+            return
+
+    # ---- Render the report ------------------------------------------------
+    # Loading data and reference files also registers their paths as
+    # dependencies via register_dep(), so the cache manifest is complete.
+    template = load_template(args.report_type)
+    formatting = load_formatting()
+    overrides = load_overrides()
+    data = load_data(data_path, args.from_date, args.to_date)
+    products = load_products()
+    rates = load_rates()
+
+    # Merge settings: optional overrides take precedence over base formatting
+    settings = {**formatting, **overrides}
+
+    output = render_report(template, data, products, rates, settings)
+
+    # Store the rendered output and its dependency manifest
+    dep_paths = get_dependency_paths()
+    cache.store(
+        args.report_type, data_path,
+        args.from_date, args.to_date,
+        dep_paths, output,
+    )
+
+    sys.stdout.write(output)
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>

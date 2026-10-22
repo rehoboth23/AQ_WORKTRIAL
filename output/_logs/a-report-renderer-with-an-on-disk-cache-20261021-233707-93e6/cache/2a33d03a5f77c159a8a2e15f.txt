@@ -1,0 +1,781 @@
+<<<MANIFEST>>>
+environment/reportgen/__init__.py
+environment/reportgen/__main__.py
+environment/reportgen/cache.py
+environment/reportgen/loader.py
+environment/reportgen/renderer.py
+environment/templates/sales_report.html
+environment/generate_data.py
+environment/README.md
+<<<END>>>
+<<<FILE environment/reportgen/__init__.py>>>
+"""ReportForge — HTML report generator with dependency-tracked caching."""
+
+__version__ = "1.2.0"
+<<<END>>>
+<<<FILE environment/reportgen/__main__.py>>>
+"""Command-line entry point for ReportForge."""
+
+import argparse
+import os
+import sys
+
+from .cache import Cache
+from .loader import (
+    get_dependency_paths,
+    load_data,
+    load_formatting,
+    load_overrides,
+    load_products,
+    load_rates,
+    load_template,
+    register_dep,
+    reset_deps,
+)
+from .renderer import render_report
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="reportgen",
+        description="ReportForge — Generate formatted HTML reports from CSV data",
+    )
+    parser.add_argument(
+        "report_type",
+        help="Report template to use (e.g. sales_report)",
+    )
+    parser.add_argument(
+        "--data",
+        required=True,
+        help="Path to the CSV data file",
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_date",
+        required=True,
+        help="Start date, inclusive (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_date",
+        required=True,
+        help="End date, inclusive (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Force a fresh render, ignoring the cache",
+    )
+    args = parser.parse_args()
+
+    data_path = os.path.abspath(args.data)
+
+    # Reset dependency tracking for this invocation
+    reset_deps()
+
+    # Pre-register dependencies that are known before rendering begins.
+    # The template, base formatting config, and data file are always required
+    # regardless of report content, so they can be registered up front.
+    register_dep(f"/app/templates/{args.report_type}.html")
+    register_dep("/app/config/formatting.yml")
+    register_dep(data_path)
+
+    cache = Cache()
+
+    # Check the cache unless --fresh was requested
+    if not args.fresh:
+        dep_paths = get_dependency_paths()
+        cached = cache.lookup(
+            args.report_type, data_path,
+            args.from_date, args.to_date,
+            dep_paths,
+        )
+        if cached is not None:
+            sys.stdout.write(cached)
+            return
+
+    # ---- Render the report ------------------------------------------------
+    # Loading data and reference files also registers their paths as
+    # dependencies via register_dep(), so the cache manifest is complete.
+    template = load_template(args.report_type)
+    formatting = load_formatting()
+    overrides = load_overrides()
+    data = load_data(data_path, args.from_date, args.to_date)
+    products = load_products()
+    rates = load_rates()
+
+    # Merge settings: optional overrides take precedence over base formatting
+    settings = {**formatting, **overrides}
+
+    output = render_report(template, data, products, rates, settings)
+
+    # Store the rendered output and its dependency manifest
+    dep_paths = get_dependency_paths()
+    cache.store(
+        args.report_type, data_path,
+        args.from_date, args.to_date,
+        dep_paths, output,
+    )
+
+    sys.stdout.write(output)
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/reportgen/cache.py>>>
+"""On-disk cache for rendered reports.
+
+The cache stores rendered HTML output alongside a manifest of dependency
+file hashes.  On lookup, current file hashes are compared against the
+manifest to decide whether the cached output is still valid.
+
+Cache entries live under ``CACHE_DIR`` in sub-directories named by a
+truncated SHA-256 digest of the report parameters (type, data path,
+date range).  Each entry contains:
+
+  - ``manifest.json``  — map of dependency path → SHA-256 hex digest
+  - ``output.html``    — the rendered HTML
+"""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+
+CACHE_DIR = "/app/cache"
+
+
+class Cache:
+    """File-based report cache with dependency-hash validation."""
+
+    def __init__(self, cache_dir=CACHE_DIR):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cache_key(report_type, data_path, from_date, to_date):
+        """Deterministic cache key derived from report parameters."""
+        key_str = f"{report_type}|{data_path}|{from_date}|{to_date}"
+        return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _hash_file(filepath):
+        """SHA-256 hex digest of a file's contents."""
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def lookup(self, report_type, data_path, from_date, to_date, dep_paths):
+        """Return cached output if still valid, otherwise ``None``.
+
+        A cache entry is considered valid when every dependency file that
+        appears in *both* the current set and the stored manifest has the
+        same hash.  Files that are absent from either side are silently
+        ignored — they cannot cause a mismatch.
+        """
+        key = self._cache_key(report_type, data_path, from_date, to_date)
+        entry_dir = self.cache_dir / key
+        manifest_path = entry_dir / "manifest.json"
+        output_path = entry_dir / "output.html"
+
+        if not manifest_path.exists() or not output_path.exists():
+            return None
+
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+        # Compute current hashes for dependency files that currently exist
+        current_hashes = {}
+        for dep_path in dep_paths:
+            if os.path.exists(dep_path):
+                current_hashes[dep_path] = self._hash_file(dep_path)
+
+        # Compare only files present in both the current set and manifest
+        for dep_path in set(current_hashes) & set(manifest):
+            if current_hashes[dep_path] != manifest[dep_path]:
+                return None
+
+        # All compared hashes match — cache hit
+        with open(output_path) as f:
+            return f.read()
+
+    def store(self, report_type, data_path, from_date, to_date, dep_paths, output):
+        """Persist rendered output together with a dependency manifest."""
+        key = self._cache_key(report_type, data_path, from_date, to_date)
+        entry_dir = self.cache_dir / key
+        entry_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build manifest: hash each dependency that exists on disk
+        manifest = {}
+        for dep_path in dep_paths:
+            if os.path.exists(dep_path):
+                manifest[dep_path] = self._hash_file(dep_path)
+
+        with open(entry_dir / "manifest.json", "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        with open(entry_dir / "output.html", "w") as f:
+            f.write(output)
+
+    def invalidate(self, report_type, data_path, from_date, to_date):
+        """Remove a single cache entry."""
+        key = self._cache_key(report_type, data_path, from_date, to_date)
+        entry_dir = self.cache_dir / key
+        if entry_dir.exists():
+            for f in entry_dir.iterdir():
+                f.unlink()
+            entry_dir.rmdir()
+
+    def clear(self):
+        """Remove all cache entries."""
+        if self.cache_dir.exists():
+            for entry in self.cache_dir.iterdir():
+                if entry.is_dir():
+                    for f in entry.iterdir():
+                        f.unlink()
+                    entry.rmdir()
+<<<END>>>
+<<<FILE environment/reportgen/loader.py>>>
+"""Data loading utilities for ReportForge.
+
+Each ``load_*`` function registers its input file as a cache dependency
+via :func:`register_dep`, so the caching layer knows which files to
+track for invalidation.
+"""
+
+import csv
+import json
+import os
+
+import yaml
+
+
+# ---------------------------------------------------------------------------
+# Dependency registry
+# ---------------------------------------------------------------------------
+
+# Accumulates file paths that influence report output.  Queried by the
+# cache layer at lookup and store time.
+_registered_deps: list[str] = []
+
+
+def register_dep(path):
+    """Add *path* to the dependency registry (deduplicated)."""
+    abs_path = os.path.abspath(path)
+    if abs_path not in _registered_deps:
+        _registered_deps.append(abs_path)
+
+
+def get_dependency_paths():
+    """Return a snapshot of all registered dependency paths."""
+    return list(_registered_deps)
+
+
+def reset_deps():
+    """Clear the dependency registry (called once per invocation)."""
+    global _registered_deps
+    _registered_deps = []
+
+
+# ---------------------------------------------------------------------------
+# Load functions
+# ---------------------------------------------------------------------------
+
+def load_template(report_type):
+    """Load the HTML template for *report_type*."""
+    template_path = f"/app/templates/{report_type}.html"
+    register_dep(template_path)
+    with open(template_path) as f:
+        return f.read()
+
+
+def load_formatting():
+    """Load base formatting settings from the YAML config."""
+    config_path = "/app/config/formatting.yml"
+    register_dep(config_path)
+    with open(config_path) as f:
+        data = yaml.safe_load(f)
+        return data if data else {}
+
+
+def load_overrides():
+    """Load optional formatting overrides.
+
+    The overrides file (``/app/config/overrides.yml``) is not required to
+    exist.  When absent, no overrides are applied.
+    """
+    overrides_path = "/app/config/overrides.yml"
+    register_dep(overrides_path)
+    if not os.path.exists(overrides_path):
+        return {}
+    with open(overrides_path) as f:
+        data = yaml.safe_load(f)
+        return data if data else {}
+
+
+def load_data(csv_path, from_date, to_date):
+    """Load CSV transaction rows filtered by date range.
+
+    Dates are compared as strings (ISO YYYY-MM-DD), which is correct for
+    the format used in the data files.
+    """
+    register_dep(csv_path)
+    rows = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            row_date = row.get("date", "")
+            if from_date <= row_date <= to_date:
+                rows.append(row)
+    return rows
+
+
+def load_products():
+    """Load the product catalog from the reference data directory."""
+    products_path = "/app/refdata/products.json"
+    register_dep(products_path)
+    with open(products_path) as f:
+        return json.load(f)
+
+
+def load_rates():
+    """Load the exchange-rate table from the reference data directory."""
+    rates_path = "/app/refdata/rates.json"
+    register_dep(rates_path)
+    with open(rates_path) as f:
+        return json.load(f)
+<<<END>>>
+<<<FILE environment/reportgen/renderer.py>>>
+"""HTML report renderer for ReportForge.
+
+Produces a complete HTML document by substituting computed values into
+the report template.  Template placeholders:
+
+    ``{{heading}}``      — report heading text
+    ``{{date_range}}``   — human-readable date range
+    ``{{rows}}``         — HTML table rows (one per transaction)
+    ``{{total}}``        — formatted grand total
+"""
+
+import html
+
+
+def render_report(template, data, products, rates, settings):
+    """Render an HTML report.
+
+    Parameters
+    ----------
+    template : str
+        HTML template with ``{{…}}`` placeholders.
+    data : list[dict]
+        Filtered CSV rows (date, product_id, quantity, unit_price, currency).
+    products : dict
+        Product catalog  ``{id: {name: …}}``.
+    rates : dict
+        Exchange rates   ``{code: {to_usd: …, name: …}}``.
+    settings : dict
+        Merged formatting settings (currency_symbol, decimal_places, …).
+
+    Returns
+    -------
+    str
+        Complete HTML document.
+    """
+    currency_symbol = settings.get("currency_symbol", "$")
+    decimal_places = int(settings.get("decimal_places", 2))
+
+    total = 0.0
+    rows_html = []
+
+    for row in data:
+        date_str = row.get("date", "")
+        product_id = row.get("product_id", "")
+        quantity = _parse_float(row.get("quantity", 0))
+        unit_price = _parse_float(row.get("unit_price", 0))
+        currency = row.get("currency", "US")
+
+        product_name = _lookup_product_name(product_id, products)
+        rate = _get_conversion_rate(currency, rates)
+        amount_usd = quantity * unit_price * rate
+        total += amount_usd
+
+        formatted_price = format_currency(unit_price, currency_symbol, decimal_places)
+        formatted_amount = format_currency(amount_usd, currency_symbol, decimal_places)
+
+        rows_html.append(
+            f"            <tr>"
+            f"<td>{html.escape(date_str)}</td>"
+            f"<td>{html.escape(product_name)}</td>"
+            f"<td>{quantity:.0f}</td>"
+            f"<td>{formatted_price}</td>"
+            f"<td>{formatted_amount}</td>"
+            f"</tr>"
+        )
+
+    rows_str = "\n".join(rows_html)
+    formatted_total = format_currency(total, currency_symbol, decimal_places)
+
+    # Date range label
+    if data:
+        date_range = f"{data[0]['date']} to {data[-1]['date']}"
+    else:
+        date_range = "No data in range"
+
+    # Substitute placeholders
+    output = template
+    output = output.replace("{{heading}}", html.escape(settings.get("heading", "Sales Report")))
+    output = output.replace("{{date_range}}", html.escape(date_range))
+    output = output.replace("{{rows}}", rows_str)
+    output = output.replace("{{total}}", formatted_total)
+
+    return output
+
+
+def format_currency(amount, symbol, decimal_places):
+    """Format *amount* as a currency string with the given *symbol*."""
+    return f"{symbol}{amount:.{decimal_places}f}"
+
+
+def _parse_float(value):
+    """Safely coerce *value* to float, returning 0.0 on failure."""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _lookup_product_name(product_id, products):
+    """Resolve a product name from the catalog, falling back to the ID."""
+    product_info = products.get(product_id, {})
+    return product_info.get("name", product_id)
+
+
+def _get_conversion_rate(currency, rates):
+    """Return the conversion factor to USD for *currency*."""
+    rate_info = rates.get(currency, {})
+    return float(rate_info.get("to_usd", 1.0))
+<<<END>>>
+<<<FILE environment/templates/sales_report.html>>>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{heading}}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        .subtitle {
+            color: #7f8c8d;
+            margin-top: 0;
+            font-size: 0.95em;
+        }
+        .date-range {
+            color: #555;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+        }
+        th {
+            background-color: #34495e;
+            color: white;
+            padding: 12px 15px;
+            text-align: left;
+        }
+        td {
+            border-bottom: 1px solid #ecf0f1;
+            padding: 10px 15px;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        tr:hover {
+            background-color: #eef2f7;
+        }
+        tfoot td {
+            border-top: 2px solid #34495e;
+            font-weight: bold;
+            padding: 12px 15px;
+        }
+        .footer {
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid #ecf0f1;
+            color: #95a5a6;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{{heading}}</h1>
+        <p class="subtitle">Sales Performance Summary</p>
+        <p class="date-range">Period: {{date_range}}</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Product</th>
+                    <th>Quantity</th>
+                    <th>Unit Price</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+{{rows}}
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan="4">Total</td>
+                    <td>{{total}}</td>
+                </tr>
+            </tfoot>
+        </table>
+        <div class="footer">
+            <p>Generated by ReportForge</p>
+        </div>
+    </div>
+</body>
+</html>
+<<<END>>>
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""Generate sample data files for ReportForge.
+
+Creates the CSV transaction log, product catalog, exchange-rate table,
+and base formatting configuration.  Run once during image build; the
+script itself is deleted afterwards.
+"""
+
+import csv
+import json
+import os
+import random
+from datetime import date, timedelta
+
+import yaml
+
+random.seed(42)
+
+BASE = "/app"
+
+
+# ---------------------------------------------------------------------------
+# Data generators
+# ---------------------------------------------------------------------------
+
+def generate_products():
+    """Return the product catalog as a dict."""
+    return {
+        "P001": {"name": "Widget Alpha"},
+        "P002": {"name": "Gadget Beta"},
+        "P003": {"name": "Sensor Gamma"},
+        "P004": {"name": "Motor Delta"},
+        "P005": {"name": "Board Epsilon"},
+        "P006": {"name": "Chip Zeta"},
+        "P007": {"name": "Cable Eta"},
+        "P008": {"name": "Panel Theta"},
+        "P009": {"name": "Valve Iota"},
+        "P010": {"name": "Bulb Kappa"},
+        "P011": {"name": "Filter Lambda"},
+        "P012": {"name": "Coil Mu"},
+    }
+
+
+def generate_rates():
+    """Return the exchange-rate table as a dict."""
+    return {
+        "US": {"to_usd": 1.00, "name": "US Dollar"},
+        "EU": {"to_usd": 1.10, "name": "Euro"},
+        "UK": {"to_usd": 1.27, "name": "British Pound"},
+        "JP": {"to_usd": 0.0067, "name": "Japanese Yen"},
+        "CA": {"to_usd": 0.74, "name": "Canadian Dollar"},
+    }
+
+
+def generate_transactions(products, rates, n=60):
+    """Generate *n* random transaction rows."""
+    product_ids = list(products.keys())
+    currency_codes = list(rates.keys())
+
+    transactions = []
+    start = date(2024, 1, 1)
+
+    for _ in range(n):
+        d = start + timedelta(days=random.randint(0, 180))
+        pid = random.choice(product_ids)
+        qty = random.randint(1, 100)
+        price = round(random.uniform(5.0, 500.0), 2)
+        curr = random.choice(currency_codes)
+        transactions.append({
+            "date": d.isoformat(),
+            "product_id": pid,
+            "quantity": qty,
+            "unit_price": f"{price:.2f}",
+            "currency": curr,
+        })
+
+    transactions.sort(key=lambda t: t["date"])
+    return transactions
+
+
+# ---------------------------------------------------------------------------
+# Write files
+# ---------------------------------------------------------------------------
+
+def main():
+    os.makedirs(f"{BASE}/data", exist_ok=True)
+    os.makedirs(f"{BASE}/refdata", exist_ok=True)
+    os.makedirs(f"{BASE}/config", exist_ok=True)
+    os.makedirs(f"{BASE}/cache", exist_ok=True)
+
+    products = generate_products()
+    rates = generate_rates()
+    transactions = generate_transactions(products, rates)
+
+    with open(f"{BASE}/refdata/products.json", "w") as f:
+        json.dump(products, f, indent=2)
+
+    with open(f"{BASE}/refdata/rates.json", "w") as f:
+        json.dump(rates, f, indent=2)
+
+    with open(f"{BASE}/data/transactions.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["date", "product_id", "quantity", "unit_price", "currency"],
+        )
+        writer.writeheader()
+        writer.writerows(transactions)
+
+    formatting = {
+        "currency_symbol": "$",
+        "decimal_places": 2,
+        "date_format": "%Y-%m-%d",
+        "heading": "Sales Report",
+    }
+    with open(f"{BASE}/config/formatting.yml", "w") as f:
+        yaml.dump(formatting, f, default_flow_style=False)
+
+    print("ReportForge sample data generated.")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/README.md>>>
+# ReportForge
+
+Command-line tool for generating formatted HTML reports from CSV
+transaction data.  Supports product-catalog lookups, multi-currency
+conversion, and configurable formatting — with on-disk caching to speed
+up repeated runs.
+
+## Usage
+
+```bash
+python3 -m reportgen <report_type> --data <csv_path> --from <start> --to <end>
+```
+
+### Arguments
+
+| Argument        | Description                                   |
+|-----------------|-----------------------------------------------|
+| `report_type`   | Template to use (e.g. `sales_report`)          |
+| `--data PATH`   | Path to the CSV data file                      |
+| `--from DATE`   | Start date, inclusive (`YYYY-MM-DD`)           |
+| `--to DATE`     | End date, inclusive (`YYYY-MM-DD`)             |
+| `--fresh`       | Force a fresh render, ignoring the cache       |
+
+## Input Files
+
+### Transaction Data (CSV)
+
+| Column        | Description                          |
+|---------------|--------------------------------------|
+| `date`        | Transaction date (`YYYY-MM-DD`)      |
+| `product_id`  | Product identifier (e.g. `P001`)     |
+| `quantity`    | Number of units                      |
+| `unit_price`  | Price per unit in local currency     |
+| `currency`    | Currency code (`US`, `EU`, `UK`, …)  |
+
+### Product Catalog — `/app/refdata/products.json`
+
+Maps product IDs to display names:
+
+```json
+{ "P001": { "name": "Widget Alpha" } }
+```
+
+### Exchange Rates — `/app/refdata/rates.json`
+
+Conversion factors to USD:
+
+```json
+{ "EU": { "to_usd": 1.10, "name": "Euro" } }
+```
+
+### Formatting — `/app/config/formatting.yml`
+
+Controls report appearance:
+
+```yaml
+currency_symbol: "$"
+decimal_places: 2
+heading: "Sales Report"
+```
+
+### Optional Overrides — `/app/config/overrides.yml`
+
+If present, any key here overrides the matching key in
+`formatting.yml`.  The file does not exist by default; create it to
+customise formatting without editing the base configuration.
+
+```yaml
+currency_symbol: "€"
+```
+
+## Caching
+
+Rendered reports are cached under `/app/cache/` and are keyed on report
+type, data file, and date range.  The cache tracks all files that
+influence the output — templates, data, configuration, and reference
+data — and is invalidated automatically when any dependency changes.
+
+Use `--fresh` to bypass the cache for a single run.
+
+## Output
+
+The rendered HTML is written to stdout.
+<<<END>>>

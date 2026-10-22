@@ -1,0 +1,123 @@
+<<<FILE mutants/0.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+python3 << 'PYEOF'
+import re
+
+with open('/app/tally.py', 'r') as f:
+    content = f.read()
+
+# WRONG fix for fault 0: modify subtraction step to negate for known negative accounts
+# instead of fixing normalize_for_storage. Leave r2(normalize_for_storage(v)) as-is.
+
+lines = content.split('\n')
+found = False
+
+for i in range(len(lines)):
+    # Look for inner for loop: for ACCT, AMT in DICT.items():
+    m = re.match(r'^(\s+)for\s+(\w+)\s*,\s*(\w+)\s+in\s+(\w+)\.items\(\):\s*$', lines[i])
+    if not m:
+        continue
+
+    acct_var = m.group(2)
+    amt_var = m.group(3)
+    dict_var = m.group(4)
+    inner_indent = len(m.group(1))
+
+    # Verify this is a nested loop - check for outer loop above producing dict_var
+    outer_found = False
+    for k in range(i - 1, max(i - 5, -1), -1):
+        if re.search(r'\bfor\b', lines[k]) and dict_var in lines[k]:
+            outer_found = True
+            break
+
+    if not outer_found:
+        continue
+
+    # Find the body of this inner loop - look for subtraction of amt_var
+    for j in range(i + 1, min(i + 6, len(lines))):
+        if not lines[j].strip():
+            continue
+        j_indent = len(lines[j]) - len(lines[j].lstrip())
+        if j_indent <= inner_indent:
+            break  # Exited the inner loop
+
+        # Check if this line subtracts amt_var
+        if re.search(rf'-=?\s*{re.escape(amt_var)}\b', lines[j]):
+            # Found the subtraction line
+            sub_indent_str = lines[j][:j_indent]
+            check_line = f"{sub_indent_str}if 'Refund' in {acct_var} or 'Discount' in {acct_var}:"
+            negate_line = f"{sub_indent_str}    {amt_var} = -{amt_var}"
+            lines.insert(j, negate_line)
+            lines.insert(j, check_line)
+            found = True
+            break
+
+    if found:
+        break
+
+assert found, "Could not find subtraction step in tally.py"
+
+content = '\n'.join(lines)
+
+# CORRECT fix for fault 1: full replacement of update_cache
+old_body = '''    result = dict(old)
+    for d, ac in new.items():
+        if d in result:
+            merged = dict(result[d])
+            merged.update(ac)
+            result[d] = merged
+        else:
+            result[d] = dict(ac)
+    return result'''
+
+new_body = '''    return {d: dict(ac) for d, ac in new.items()}'''
+
+assert old_body in content, "Could not find old update_cache body in tally.py"
+content = content.replace(old_body, new_body)
+
+with open('/app/tally.py', 'w') as f:
+    f.write(content)
+PYEOF
+
+python3 /app/tally.py full
+<<<END>>>
+
+<<<FILE mutants/1.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+python3 << 'PYEOF'
+with open('/app/tally.py', 'r') as f:
+    content = f.read()
+
+# CORRECT fix for fault 0: remove normalize_for_storage from write_cache
+content = content.replace('r2(normalize_for_storage(v))', 'r2(v)')
+
+# WRONG fix for fault 1: replace account-level merge with full assignment per date,
+# but keep the date-level merge (preserve dates absent from new via dict(old))
+old_body = '''    result = dict(old)
+    for d, ac in new.items():
+        if d in result:
+            merged = dict(result[d])
+            merged.update(ac)
+            result[d] = merged
+        else:
+            result[d] = dict(ac)
+    return result'''
+
+new_body = '''    result = dict(old)
+    for d, ac in new.items():
+        result[d] = dict(ac)
+    return result'''
+
+assert old_body in content, "Could not find old update_cache body in tally.py"
+content = content.replace(old_body, new_body)
+
+with open('/app/tally.py', 'w') as f:
+    f.write(content)
+PYEOF
+
+python3 /app/tally.py full
+<<<END>>>

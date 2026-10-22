@@ -1,0 +1,161 @@
+[
+  {
+    "topic": "an analytics job that rebuilds daily aggregates incrementally from changed source partitions, whose totals drift from a full rebuild after some kinds of edits to the source data",
+    "stage": "done",
+    "spec_ok": true,
+    "files_written": true,
+    "structural": true,
+    "correct": true,
+    "evaluated": true,
+    "learnable": false,
+    "kept": false,
+    "review": false,
+    "gen_cost": {
+      "input": 58383,
+      "output": 192527,
+      "cost_usd": 0.9289,
+      "cost_source": "list price"
+    },
+    "eval_cost_usd": 0.2173,
+    "gen_seconds": 3553.0,
+    "eval_seconds": 895.4,
+    "record": {
+      "name": "incremental-aggregate-cache-drift",
+      "description": "Fix an incremental analytics pipeline whose daily aggregates drift from a full rebuild after source edits, due to cache sign-loss and stale-entry merge bugs.",
+      "difficulty": "hard",
+      "arm": "treatment",
+      "run_id": "incremental-aggregate-cache-drift-20261022-003617-2cbc",
+      "features": {
+        "env_lines": 798,
+        "solve_lines": 21,
+        "faults": 2,
+        "fault_layers": 1
+      },
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 4,
+      "n_invalid": 1,
+      "decision": "rejected",
+      "why": "too_easy (stopped early after 4 passes)",
+      "triage": [],
+      "band": {
+        "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/incremental-aggregate-cache-drift",
+        "verdict": "too_easy",
+        "passes": 4,
+        "n_valid": 4,
+        "n_invalid": 1,
+        "trials": [
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__3nbZCSw",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 305513,
+            "output_tokens": 20318,
+            "cost_usd": 0.0219448697,
+            "episodes": 19,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__7ZAfex5",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 929829,
+            "output_tokens": 54351,
+            "cost_usd": 0.06562077799999999,
+            "episodes": 34,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__PdgXnom",
+            "outcome": "invalid",
+            "detail": "CancelledError",
+            "reward": null,
+            "input_tokens": 768979,
+            "output_tokens": 46075,
+            "cost_usd": 0.054006908699999995,
+            "episodes": 38,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__Q3Chqiy",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 396180,
+            "output_tokens": 33015,
+            "cost_usd": 0.030782250000000004,
+            "episodes": 23,
+            "failed_tests": [],
+            "found_step": 1
+          },
+          {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__SxfJrG8",
+            "outcome": "pass",
+            "detail": "",
+            "reward": 1.0,
+            "input_tokens": 635572,
+            "output_tokens": 31215,
+            "cost_usd": 0.044941184,
+            "episodes": 34,
+            "failed_tests": [],
+            "found_step": 1
+          }
+        ],
+        "jobs": [
+          "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0"
+        ],
+        "tokens": {
+          "input": 3036073,
+          "output": 184974
+        },
+        "cost_usd": 0.2173,
+        "median_steps": 28.5,
+        "median_found_step": 1.0,
+        "early_stop": true,
+        "seconds": 895.4,
+        "error": ""
+      },
+      "eval_model": "openrouter/z-ai/glm-5.3-flash",
+      "reasoning_effort": "high",
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/incremental-aggregate-cache-drift",
+      "topic": "an analytics job that rebuilds daily aggregates incrementally from changed source partitions, whose totals drift from a full rebuild after some kinds of edits to the source data",
+      "stage": "eval",
+      "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9"
+    }
+  },
+  {
+    "topic": "a report renderer with an on-disk cache keyed by its inputs, which serves stale reports after some changes to templates, settings or reference data",
+    "stage": "gen_failed",
+    "spec_ok": true,
+    "files_written": true,
+    "structural": true,
+    "correct": false,
+    "evaluated": false,
+    "learnable": false,
+    "kept": false,
+    "review": false,
+    "gen_cost": {
+      "input": 94780,
+      "output": 175750,
+      "cost_usd": 0.906,
+      "cost_source": "list price"
+    },
+    "eval_cost_usd": 0.0,
+    "gen_seconds": 3394.0,
+    "eval_seconds": 0.0,
+    "record": {
+      "topic": "a report renderer with an on-disk cache keyed by its inputs, which serves stale reports after some changes to templates, settings or reference data",
+      "arm": "treatment",
+      "stage": "generate",
+      "verdict": "gen_failed",
+      "decision": "rejected",
+      "why": "failed generation: Part 1 checks",
+      "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-report-renderer-with-an-on-disk-cache-20261021-233707-93e6"
+    }
+  }
+]

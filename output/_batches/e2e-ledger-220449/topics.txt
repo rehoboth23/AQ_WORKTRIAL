@@ -1,0 +1,1 @@
+an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log

@@ -1,0 +1,273 @@
+Looking at the error, the only issue is that `solve.sh` has too few meaningful lines (21, needs at least 30). The fix needs to demonstrate real diagnostic and repair work, not just two string replacements. I'll expand `solve.sh` with proper step-by-step diagnosis, targeted fixes with assertions, and verification steps for each bug.
+
+<<<FILE solution/solve.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+# ── Diagnose and fix the tally incremental rebuild bugs ───────────────
+#
+# Two bugs in tally.py cause incremental aggregates to drift from
+# full rebuilds:
+#
+# Bug 1 (sign-loss): write_cache() passes amounts through
+#   normalize_for_storage() which applies abs(), storing unsigned
+#   values. When the incremental subtraction step reads these
+#   cached values and subtracts them, negative-amount accounts
+#   (Refunds, Discounts) get the wrong sign, compounding error
+#   with each run.
+#
+# Bug 2 (stale entries): update_cache() merges new contributions
+#   into old cache via dict.update(), preserving date/account keys
+#   that no longer exist in the current source. On the next
+#   incremental run of the same partition, these ghost entries
+#   are subtracted from aggregates that shouldn't be affected.
+
+TARGET="/app/tally.py"
+
+python3 << 'PYEOF'
+import sys
+
+with open("/app/tally.py", "r") as f:
+    content = f.read()
+
+# ── Fix 1: Store signed amounts in the contribution cache ─────────────
+#
+# write_cache() currently calls normalize_for_storage(v) which applies
+# abs(), stripping the sign before writing to the JSON cache file.
+# The incremental subtraction step (subtract()) reads these cached
+# values and assumes they carry the correct sign. For negative-amount
+# accounts (e.g. Refunds: -320.00), the cache stores 320.00, so
+# subtracting 320.00 instead of -320.00 adds 640.00 of error.
+#
+# Fix: write_cache should store the raw signed value r2(v) instead
+# of r2(normalize_for_storage(v)). The normalize_for_storage helper
+# is still correct for its other caller (volume_report) where
+# absolute values are intended.
+
+sign_old = "data[d] = {a: r2(normalize_for_storage(v)) for a, v in ac.items()}"
+sign_new = "data[d] = {a: r2(v) for a, v in ac.items()}"
+
+sign_count = content.count(sign_old)
+if sign_count != 1:
+    print(f"ERROR: Expected 1 normalize_for_storage call in write_cache,"
+          f" found {sign_count}", file=sys.stderr)
+    sys.exit(1)
+
+content = content.replace(sign_old, sign_new)
+print("Fix 1 applied: write_cache now stores signed amounts")
+
+# ── Fix 2: Replace cache merge with full replacement ──────────────────
+#
+# update_cache() uses dict.update() to merge new contributions into
+# the old cache, preserving stale date and account keys from the old
+# cache that are absent from the new contributions. The cache must be
+# a complete snapshot of the partition's current contributions.
+# Stale entries are subtracted on the next incremental run, causing
+# drift that is invisible on the first run after a change but
+# appears on the second.
+#
+# Fix: update_cache should return only the new contributions
+# structure, discarding any old entries not present in the new data.
+
+merge_old = (
+    "    result = dict(old)\n"
+    "    for d, ac in new.items():\n"
+    "        if d in result:\n"
+    "            merged = dict(result[d])\n"
+    "            merged.update(ac)\n"
+    "            result[d] = merged\n"
+    "        else:\n"
+    "            result[d] = dict(ac)\n"
+    "    return result"
+)
+
+merge_new = (
+    "    # Cache must exactly represent current contributions;\n"
+    "    # stale entries from the old cache would be incorrectly\n"
+    "    # subtracted on the next incremental run.\n"
+    "    return {d: dict(ac) for d, ac in new.items()}"
+)
+
+if merge_old not in content:
+    print("ERROR: Could not locate update_cache merge body in tally.py",
+          file=sys.stderr)
+    sys.exit(1)
+
+content = content.replace(merge_old, merge_new)
+print("Fix 2 applied: update_cache now fully replaces old cache")
+
+with open("/app/tally.py", "w") as f:
+    f.write(content)
+
+print("Both fixes written to /app/tally.py")
+PYEOF
+
+# ── Regenerate all caches and aggregates with corrected code ──────────
+python3 /app/tally.py full
+
+# ── Verify fix 1: edit negative-amount entry, incr must match full ────
+python3 << 'VERIFY1'
+import json, subprocess, sys
+from pathlib import Path
+
+def read_aggs():
+    d = Path("/app/data/agg")
+    out = {}
+    for p in sorted(d.glob("*.json")):
+        with open(p) as f:
+            out[p.stem] = {k: round(float(v), 2) for k, v in json.load(f).items()}
+    return out
+
+def aggs_match(a, b):
+    for d in set(list(a) + list(b)):
+        ad, bd = a.get(d, {}), b.get(d, {})
+        for acct in set(list(ad) + list(bd)):
+            av = round(ad.get(acct, 0.0), 2)
+            bv = round(bd.get(acct, 0.0), 2)
+            if abs(av - bv) > 1e-9:
+                return False
+    return True
+
+jrn = Path("/app/data/journals/journal_2024-01-15.jsonl")
+entries = []
+with open(jrn) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries.append(json.loads(line))
+
+for e in entries:
+    if e["id"] == "REF-001":
+        e["amount"] = -400.00
+
+with open(jrn, "w") as f:
+    for e in entries:
+        f.write(json.dumps(e, separators=(",", ":")) + "\n")
+
+subprocess.run([sys.executable, "/app/tally.py", "incr"], check=True)
+incr = read_aggs()
+subprocess.run([sys.executable, "/app/tally.py", "full"], check=True)
+full = read_aggs()
+
+if not aggs_match(incr, full):
+    print("FAIL: Incremental != Full after negative-amount edit",
+          file=sys.stderr)
+    sys.exit(1)
+print("Verify 1 OK: sign-loss fix confirmed")
+VERIFY1
+
+# ── Verify fix 2: remove an entry, incr, edit another in same ────────
+# partition, incr again — stale cache entries must not cause drift
+python3 << 'VERIFY2'
+import json, subprocess, sys
+from pathlib import Path
+
+def read_aggs():
+    d = Path("/app/data/agg")
+    out = {}
+    for p in sorted(d.glob("*.json")):
+        with open(p) as f:
+            out[p.stem] = {k: round(float(v), 2) for k, v in json.load(f).items()}
+    return out
+
+def aggs_match(a, b):
+    for d in set(list(a) + list(b)):
+        ad, bd = a.get(d, {}), b.get(d, {})
+        for acct in set(list(ad) + list(bd)):
+            av = round(ad.get(acct, 0.0), 2)
+            bv = round(bd.get(acct, 0.0), 2)
+            if abs(av - bv) > 1e-9:
+                return False
+    return True
+
+# Restore 01-15 journal from verify1 changes and reset state
+jrn = Path("/app/data/journals/journal_2024-01-15.jsonl")
+entries = []
+with open(jrn) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries.append(json.loads(line))
+for e in entries:
+    if e["id"] == "REF-001":
+        e["amount"] = -320.00
+with open(jrn, "w") as f:
+    for e in entries:
+        f.write(json.dumps(e, separators=(",", ":")) + "\n")
+subprocess.run([sys.executable, "/app/tally.py", "full"], check=True)
+
+# Remove DIS-001 from 2024-01-15 (only Discounts entry for that date)
+entries = []
+with open(jrn) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries.append(json.loads(line))
+entries = [e for e in entries if e["id"] != "DIS-001"]
+with open(jrn, "w") as f:
+    for e in entries:
+        f.write(json.dumps(e, separators=(",", ":")) + "\n")
+subprocess.run([sys.executable, "/app/tally.py", "incr"], check=True)
+
+# Edit another entry in same partition and incr again — the stale
+# Discounts key in the cache would be subtracted on this second incr
+entries2 = []
+with open(jrn) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries2.append(json.loads(line))
+for e in entries2:
+    if e["id"] == "REV-001":
+        e["amount"] = 3000.00
+with open(jrn, "w") as f:
+    for e in entries2:
+        f.write(json.dumps(e, separators=(",", ":")) + "\n")
+subprocess.run([sys.executable, "/app/tally.py", "incr"], check=True)
+incr = read_aggs()
+subprocess.run([sys.executable, "/app/tally.py", "full"], check=True)
+full = read_aggs()
+
+if not aggs_match(incr, full):
+    print("FAIL: Incremental != Full after stale-entry test",
+          file=sys.stderr)
+    sys.exit(1)
+print("Verify 2 OK: stale-entry fix confirmed")
+VERIFY2
+
+# ── Restore original journal data and do final clean rebuild ──────────
+python3 << 'RESTORE'
+import json, subprocess
+from pathlib import Path
+
+jrn = Path("/app/data/journals/journal_2024-01-15.jsonl")
+entries = []
+with open(jrn) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries.append(json.loads(line))
+
+if not any(e["id"] == "DIS-001" for e in entries):
+    entries.append({
+        "id": "DIS-001",
+        "date": "2024-01-15",
+        "account": "Discounts",
+        "amount": -150.00,
+        "description": "Early payment discount"
+    })
+
+for e in entries:
+    if e["id"] == "REV-001":
+        e["amount"] = 2500.00
+    if e["id"] == "REF-001":
+        e["amount"] = -320.00
+
+with open(jrn, "w") as f:
+    for e in entries:
+        f.write(json.dumps(e, separators=(",", ":")) + "\n")
+RESTORE
+
+python3 /app/tally.py full
+echo "Done — tally incremental rebuild system fixed and verified"
+<<<END>>>

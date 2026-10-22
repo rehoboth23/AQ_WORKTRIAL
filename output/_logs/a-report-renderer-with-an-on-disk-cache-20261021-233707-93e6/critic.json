@@ -1,0 +1,116 @@
+{
+  "too_easy_because": [
+    "Fault 1 in the original spec (get_dependency_paths() omits rates.json and overrides.yml from a static list) is trivially found by reading one function and comparing with what the renderer loads \u2014 a classic single-function omission that the strong agent solves in ~10 steps.",
+    "The nameable_fix 'include all dependency file hashes in cache validation and handle missing files' is sufficiently nameable that a strong agent can apply it mechanically after finding the first fault by reading.",
+    "The lookup's intersection-based comparison (Fault 3 in the revised analysis) is not present as a distinct fault in the original, meaning the agent who fixes the omission and the store guard has solved everything \u2014 there is no remaining interaction to reason about.",
+    "The original Fault 1 and Fault 2 are in different conceptual layers (enumeration vs storage) but both manifest as 'file not in manifest,' which makes them feel like the same root cause repeated rather than independent interacting defects."
+  ],
+  "walkthrough": [
+    "Agent reads instruction.md: 'after any change to any file that affects report output, re-running the same report command always produces output reflecting those changes.' Symptom: cached reports show old information after updating source files.",
+    "Agent explores /app/reportgen/ package structure, reads __main__.py to understand the pipeline: parse args \u2192 cache lookup \u2192 render \u2192 cache store \u2192 output.",
+    "Agent reads cache.py: finds lookup() computes current hashes for dependency paths from get_dependency_paths(), compares against stored manifest. Store() hashes each dep if it exists on disk. Lookup compares only keys present in both current_hashes and manifest (intersection).",
+    "Agent reads loader.py: finds get_dependency_paths() collects dependencies from a module-level _registered_deps list. Various load functions (load_products, load_rates, load_overrides) each call register_dep() as a side effect when invoked during rendering.",
+    "Agent reads renderer.py: sees that rendering calls load_products(), load_rates(), and conditionally load_overrides() \u2014 but all of these happen AFTER cache lookup in the pipeline. At cache-lookup time, _registered_deps only contains the eagerly-registered static deps (template, formatting.yml, data file). The lazily-registered deps (products.json, rates.json, overrides.yml) are unknown to the cache at lookup time.",
+    "Agent also reads cache.py store(): sees the `if os.path.exists(dep_path)` guard that silently skips missing files instead of recording a sentinel. This looks like defensive coding \u2014 can't hash a file that isn't there \u2014 but means creating a previously-absent file doesn't invalidate the cache.",
+    "Agent recognizes Fault 1: lazy dependency registration means the cache lookup only validates static deps; changes to products.json, rates.json, or overrides.yml are invisible to cache validation.",
+    "Agent fixes Fault 1 by eagerly registering all possible dependency paths (products.json, rates.json, overrides.yml) before the cache lookup step, perhaps by moving registration into __main__.py before the cache check.",
+    "Agent re-tests: modify rates.json, run report \u2192 output reflects change \u2713. Create overrides.yml, modify it, run report \u2192 output reflects change \u2713. Agent thinks the fix is complete.",
+    "However, Fault 2 is still present. The agent's re-test always has the files existing at both store and lookup time. The hidden test: delete overrides.yml, run report (cache entry stored; store() skips overrides.yml because it doesn't exist, manifest has no entry), create overrides.yml with currency_symbol: \u00a3, run report \u2192 cached output still shows $ because the manifest has no entry for overrides.yml and the intersection comparison skips it.",
+    "To fix Fault 2, agent must also change store() to record a None sentinel for non-existent dependency files, and change lookup() to handle sentinels: if manifest has None and file now exists \u2192 invalidate; if manifest has a real hash and file is now missing \u2192 invalidate.",
+    "Agent must also fix the intersection-only comparison in lookup(): comparing only keys in both current_hashes and manifest means newly-created files (in current_hashes but not manifest) and deleted files (in manifest but not current_hashes) are silently ignored. The fix must compare the full union of keys."
+  ],
+  "spec": {
+    "name": "stale-cached-report-renderer",
+    "description": "Fix a report renderer whose on-disk cache serves stale output after changes to templates, reference data, or settings \u2014 including files that are created or deleted between runs",
+    "difficulty": "medium",
+    "category": "debugging",
+    "tags": [
+      "cache-invalidation",
+      "lazy-registration",
+      "conditional-loading",
+      "report-generation"
+    ],
+    "expert_time_estimate_min": 30.0,
+    "junior_time_estimate_min": 100.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "ReportForge is a command-line tool that generates formatted HTML reports from CSV data. It caches rendered reports on disk to speed up repeated runs. Users report that after updating source files \u2014 product names in the catalog, exchange rates, formatting settings \u2014 the reports still show the old information. Deleting the /app/cache directory by hand fixes it temporarily, but the problem returns as soon as the cache is repopulated. The --fresh flag also works as a per-run workaround. One user noted that adding a new overrides configuration file had no effect until they cleared the cache manually.",
+    "environment_setup": "The Dockerfile installs PyYAML and copies the ReportForge Python package to /app/reportgen/, along with templates (/app/templates/), CSV data (/app/data/), reference data (/app/refdata/products.json and rates.json), and config (/app/config/formatting.yml). The optional overrides file /app/config/overrides.yml does NOT exist by default. The cache lives in /app/cache/. Three interacting bugs exist: (1) loader.py uses lazy dependency registration \u2014 load functions call register_dep() as a side effect during rendering, but the cache lookup happens before rendering, so lazily-registered deps (products.json, rates.json, overrides.yml) are invisible to cache validation; (2) cache.py's store() silently skips dependency files that don't exist on disk instead of recording them as missing, so creating a previously absent dependency file after caching doesn't invalidate the entry; (3) cache.py's lookup() compares only the intersection of current dependency hashes and manifest entries, so files present in only one dict (newly created or newly deleted) are silently ignored. Each behavior looks locally reasonable; the defect emerges from their composition.",
+    "instruction_summary": "Fix ReportForge so that after any change to any file that affects report output, re-running the same report command always produces output reflecting those changes. The cache should still work (identical inputs produce a cache hit, avoiding re-renders). Command: python3 -m reportgen <report_type> --data <csv_path> --from <start> --to <end>. Output is printed to stdout as HTML.",
+    "solution_outline": [
+      "In __main__.py or loader.py, eagerly register all possible dependency paths (products.json, rates.json, overrides.yml) before the cache lookup step, so get_dependency_paths() returns the complete list at both lookup and store time",
+      "In cache.py store(), record non-existent dependency files with a None sentinel value instead of silently skipping them",
+      "In cache.py lookup(), compare the full union of current dependency hashes and manifest entries \u2014 not just the intersection \u2014 so that newly-created files (in current but not manifest) and deleted files (in manifest but not current) both cause invalidation",
+      "In cache.py lookup(), handle None sentinels: if manifest has None and file now exists \u2192 invalidate; if manifest has a real hash and file is now missing \u2192 invalidate",
+      "Clear stale cache entries: rm -rf /app/cache/*"
+    ],
+    "test_plan": [
+      "test_product_name_change: Run report, change a product name in products.json, run again, verify new name in output",
+      "test_exchange_rate_change: Run report, change rates.json (set EU\u2192USD to 999.0), run again, verify output differs and reflects new rate",
+      "test_formatting_change: Change currency_symbol in formatting.yml to \u20ac, run report, verify \u20ac appears in output",
+      "test_template_change: Change template heading, run report, verify new heading in output",
+      "test_cache_hit_no_change: Run report twice without changes, verify identical output (cache still works)",
+      "test_overrides_created_after_cache: Delete overrides.yml if present, run report (caches without it), create overrides.yml with currency_symbol: \u00a3, run report, verify \u00a3 appears \u2014 catches partial fix that doesn't handle non-existent deps in store() or intersection-only lookup",
+      "test_overrides_modification: Write overrides.yml with currency_symbol: \u00a3, run report, verify \u00a3 appears; then change to \u00a5, run again, verify \u00a5 appears \u2014 catches partial fix that eagerly registers deps but doesn't handle missing-file sentinels",
+      "test_file_deleted_after_cache: Run report with all files present, delete overrides.yml, run report, verify output no longer shows overrides \u2014 catches partial fix that doesn't handle deletion (intersection-only lookup ignores manifest entries with no current hash)",
+      "test_different_data_file: Create a new CSV with different transactions, run report with it, verify output reflects new data"
+    ],
+    "anti_cheat": "Expected outputs are not stored anywhere in the image. Tests independently modify input files and verify the report output changes accordingly. A solution that hard-codes output or deletes the cache entirely would fail the cache-efficiency test. Tests use different modifications (different symbols, rates, names) so hard-coding specific values cannot pass.",
+    "failure_modes": "An agent may eagerly register products.json and rates.json (fixing the most visible lazy-registration gap) but miss overrides.yml because it is conditionally loaded, passing most tests but failing the overrides tests. Alternatively, eagerly registering all deps but not fixing store()'s missing-file handling passes when all files already exist (the agent's re-test) but fails when overrides.yml is created from scratch after caching. A third trap: fixing store() sentinels but leaving the intersection-only comparison in lookup() means deleted files are still invisible to validation.",
+    "faults": [
+      {
+        "layer": "code",
+        "where": "reportgen/loader.py and reportgen/__main__.py \u2014 lazy dependency registration via register_dep() side effects",
+        "what": "Dependency paths for products.json, rates.json, and overrides.yml are registered lazily when their respective load functions are called during rendering. The cache lookup calls get_dependency_paths() before rendering, so these lazily-registered deps are absent from the validation set. Only the eagerly-registered static deps (template, formatting.yml, data file) are validated.",
+        "symptom": "Changing exchange rates, product names, or creating/modifying overrides has no effect on cached reports",
+        "how_discovered": "Trace the rendering pipeline: cache lookup \u2192 render \u2192 cache store. Notice that register_dep() calls happen inside load_products(), load_rates(), and load_overrides(), all of which are called during rendering \u2014 after the cache has already been checked. Compare the dep list at lookup time vs store time.",
+        "central": "true",
+        "wrong_fix": "Eagerly register products.json and rates.json before cache lookup (because they always exist and are always needed), but leave overrides.yml as lazily/conditionally registered since it's optional and may not exist",
+        "counterexample": "Create overrides.yml with currency_symbol: \u00a3, run report \u2192 output still shows $ because overrides.yml was never registered at lookup time and isn't in the validation set",
+        "why_normal_case_passes": "Changing rates.json now correctly invalidates the cache; modifying an already-existing overrides.yml also works if it was registered during a prior render. The agent's re-test (modify rates.json, modify existing overrides.yml) succeeds.",
+        "caught_by_test": "test_overrides_created_after_cache creates overrides.yml from scratch and checks for \u00a3 in output; test_overrides_modification writes then modifies overrides.yml"
+      },
+      {
+        "layer": "code",
+        "where": "reportgen/cache.py in Cache.store()",
+        "what": "Silently skips dependency files that don't exist at store time (the `if os.path.exists(dep_path)` guard before hashing), instead of recording them as missing. A file created later is invisible to the manifest, so the cache entry is served stale.",
+        "symptom": "If overrides.yml doesn't exist when a report is first cached, creating it later doesn't update the report",
+        "how_discovered": "Reason about the lifecycle: what happens if a tracked dependency is absent at cache-write time but appears later? Read store() and notice the exists guard drops the entry entirely rather than marking it missing.",
+        "central": "true",
+        "wrong_fix": "Eagerly register all deps including overrides.yml, but don't fix store()'s handling of non-existent files \u2014 the file appears in the dep list but store() still skips it when it's absent",
+        "counterexample": "Delete overrides.yml, run report (cache entry written; store skips overrides.yml so manifest has no entry for it), create overrides.yml with currency_symbol: \u00a3, run report \u2192 stale output still shows $",
+        "why_normal_case_passes": "If overrides.yml already exists when first cached, store() hashes it normally; modifying it changes the hash and correctly invalidates the cache. The agent's re-test (edit existing overrides.yml after eagerly registering it) passes.",
+        "caught_by_test": "test_overrides_created_after_cache deletes overrides.yml, caches a report, creates the file, re-runs, and checks for \u00a3"
+      },
+      {
+        "layer": "code",
+        "where": "reportgen/cache.py in Cache.lookup()",
+        "what": "The lookup compares current dependency hashes against the manifest by iterating over the intersection of their keys: `for dep_path in set(current_hashes) & set(manifest)`. Files present in the manifest but absent from current_hashes (deleted since caching) and files present in current_hashes but absent from the manifest (created since caching) are both silently ignored, so neither deletion nor creation invalidates the cache.",
+        "symptom": "Deleting a reference file or creating a new one after a report is cached does not cause the cache to invalidate",
+        "how_discovered": "Trace the lookup logic: after computing current_hashes (which also skips non-existent files via an exists guard), the comparison uses set intersection. Reason about what happens to manifest entries whose files have been deleted, or current files that weren't in the manifest.",
+        "central": "true",
+        "wrong_fix": "Fix Faults 1 and 2 (eager registration and store sentinels) but leave the intersection-based comparison in lookup. Since sentinels ensure every dep is in the manifest, newly-created files now have a sentinel entry and ARE in the intersection \u2014 so creation works. But deleted files are not in current_hashes (exists guard) and thus fall out of the intersection, so deletion after caching still serves stale output.",
+        "counterexample": "Cache a report with overrides.yml present (manifest has its hash). Delete overrides.yml. Run report \u2192 output still shows the old overrides because the manifest entry for overrides.yml is not in the intersection (file absent \u2192 not in current_hashes \u2192 not compared)",
+        "why_normal_case_passes": "The agent's re-test involves modifying existing files (which stay in both dicts) or creating new files (which, after store-sentinel fix, have a manifest entry and are in the intersection). Deletion is not part of the agent's natural re-test because the visible symptom only mentions updates and additions.",
+        "caught_by_test": "test_file_deleted_after_cache caches with all files present, deletes overrides.yml, re-runs, and verifies the output no longer reflects the deleted overrides"
+      }
+    ],
+    "decoys": [],
+    "hidden_edge_cases": [
+      "Creating a dependency file from nothing after a cache entry already exists (overrides.yml created post-cache)",
+      "Deleting a tracked dependency file after a cache entry was written with it present",
+      "An overrides.yml containing only YAML comments (parsed as None by safe_load) vs one that doesn't exist \u2014 both result in no overrides applied, but are different states for the cache manifest",
+      "Running with --fresh produces correct output but doesn't fix the cache invalidation for subsequent non-fresh runs",
+      "Rapid create-delete-create cycle: delete overrides, cache, create overrides, cache again, delete overrides \u2014 each transition must invalidate"
+    ],
+    "why_not_textbook": "This is not a standard cache-invalidation pattern like HTTP ETags, CDN purge, version-busting query strings, or the well-known 'cache key omits a parameter' bug. The specific interaction \u2014 lazy side-effect-based dependency registration that is temporally misaligned with cache validation, combined with a store that silently drops missing files and a lookup that compares only key intersections \u2014 is bespoke to this codebase. No well-known bug (Pillow ANTIALIAS, nginx trailing slash, etc.) covers it.",
+    "static_read": "Reading loader.py shows get_dependency_paths() returns _registered_deps and various load functions call register_dep(). Reading cache.py shows the exists guard in store() and the intersection comparison in lookup(). However, each piece looks like reasonable defensive code \u2014 lazy registration is a common pattern, the exists guard prevents errors on optional files, and the intersection comparison avoids KeyError on mismatched dicts. The bug only manifests when you trace the full execution sequence: deps are registered after the cache already validated, missing files are erased from the manifest, and the intersection silently drops both new and deleted entries.",
+    "crux": "A cache validation system must account for the full lifecycle of every file that can affect output: it must know about all such files at validation time (not just at store time), it must record their absence as a distinct state (not erase them from the manifest), and it must compare the complete set of tracked files (not just the intersection of what exists now vs what existed before). Each of these three requirements is violated by code that looks locally correct.",
+    "challenge_kind": "cache_invalidation",
+    "sequence_invariant": "After any change to any file that affects report output, re-running the same report command always produces output reflecting those changes. This includes creating a previously absent file or deleting a previously present one.",
+    "nameable_fix": "eagerly register all dependencies, record missing files as sentinels, and validate the full dependency set",
+    "self_check_blind_spot": "The agent modifies an existing file (e.g., rates.json or an already-present overrides.yml) and re-runs the report, which works correctly after eagerly registering deps. The failing sequences \u2014 creating a file that didn't exist when the cache entry was written, or deleting a file that did exist \u2014 are not part of the agent's natural re-test because the visible symptom only mentions updates to existing files.",
+    "reference_in_environment": "None. No code in the environment correctly handles the missing-file sentinel case, the lazy-registration timing, or the full-set comparison. The README lists all input files and describes the caching behavior but does not state the validation completeness rule.",
+    "interaction": "1. loader.py's load functions register dependencies lazily (as side effects during rendering), under the assumption that anything calling get_dependency_paths() does so after rendering. 2. __main__.py calls the cache lookup before rendering, under the assumption that get_dependency_paths() already knows all deps. 3. cache.py's store() skips non-existent files under the assumption that a missing file cannot change. 4. cache.py's lookup() compares only the intersection of current and stored dep sets under the assumption that both sets have the same keys. Each component's local assumption is reasonable; the defect emerges when they compose: the cache validates an incomplete set of deps, erases missing files from the manifest, and ignores entries that don't appear on both sides of the comparison.",
+    "expected_agent_steps": null
+  }
+}

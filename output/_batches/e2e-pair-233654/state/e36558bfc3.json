@@ -1,0 +1,196 @@
+{
+  "topic": "an analytics job that rebuilds daily aggregates incrementally from changed source partitions, whose totals drift from a full rebuild after some kinds of edits to the source data",
+  "key": "e36558bfc3",
+  "stage": "done",
+  "calibration": "",
+  "arm": "treatment",
+  "updated": "2026-10-22T00:51:12",
+  "started": "2026-10-21T23:37:04",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9",
+  "gen": {
+    "status": "ok",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/incremental-aggregate-cache-drift",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9",
+    "run_id": "an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9-r0-002901-oracle",
+            "seconds": 24.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9-r0-002901-oracle/incremental-aggregate-cache-drif__ZPEdNno",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9-r0-002901-nop",
+            "seconds": 22.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9-r0-002901-nop/incremental-aggregate-cache-drif__kr5y6Xb",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "Fix the subtraction step to negate the cached value for known negative accounts (e.g., check if account name contains 'Refund' or 'Discount').",
+            "verdict": "killed",
+            "failed_tests": 8,
+            "total_tests": 10,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9-r0-002948-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "Replace dict.update() at the account level with full assignment per date (old_cache[date] = dict(new_contribs[date])), but keep the date-level merge (don't remove dates absent from new_contribs).",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 10,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9-r0-002948-mutant1"
+          }
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 1046,
+      "completion_tokens": 19196,
+      "cost_usd": 0.0
+    },
+    "seconds": 435.6,
+    "task_name": "afterquery/incremental-aggregate-cache-drift"
+  },
+  "run_id": "incremental-aggregate-cache-drift-20261022-003617-2cbc",
+  "harbor_pid": null,
+  "record": {
+    "name": "incremental-aggregate-cache-drift",
+    "description": "Fix an incremental analytics pipeline whose daily aggregates drift from a full rebuild after source edits, due to cache sign-loss and stale-entry merge bugs.",
+    "difficulty": "hard",
+    "arm": "treatment",
+    "run_id": "incremental-aggregate-cache-drift-20261022-003617-2cbc",
+    "features": {
+      "env_lines": 798,
+      "solve_lines": 21,
+      "faults": 2,
+      "fault_layers": 1
+    },
+    "verdict": "too_easy",
+    "passes": 4,
+    "n_valid": 4,
+    "n_invalid": 1,
+    "decision": "rejected",
+    "why": "too_easy (stopped early after 4 passes)",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/incremental-aggregate-cache-drift",
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 4,
+      "n_invalid": 1,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__3nbZCSw",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 305513,
+          "output_tokens": 20318,
+          "cost_usd": 0.0219448697,
+          "episodes": 19,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__7ZAfex5",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 929829,
+          "output_tokens": 54351,
+          "cost_usd": 0.06562077799999999,
+          "episodes": 34,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__PdgXnom",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 768979,
+          "output_tokens": 46075,
+          "cost_usd": 0.054006908699999995,
+          "episodes": 38,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__Q3Chqiy",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 396180,
+          "output_tokens": 33015,
+          "cost_usd": 0.030782250000000004,
+          "episodes": 23,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0/incremental-aggregate-cache-drif__SxfJrG8",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 635572,
+          "output_tokens": 31215,
+          "cost_usd": 0.044941184,
+          "episodes": 34,
+          "failed_tests": [],
+          "found_step": 1
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0"
+      ],
+      "tokens": {
+        "input": 3036073,
+        "output": 184974
+      },
+      "cost_usd": 0.2173,
+      "median_steps": 28.5,
+      "median_found_step": 1.0,
+      "early_stop": true,
+      "seconds": 895.4,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/incremental-aggregate-cache-drift",
+    "topic": "an analytics job that rebuilds daily aggregates incrementally from changed source partitions, whose totals drift from a full rebuild after some kinds of edits to the source data",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-analytics-job-that-rebuilds-daily-agg-20261021-233704-abf9"
+  }
+}

@@ -1,0 +1,3 @@
+{"time": "2026-10-21T23:16:30", "event": "band_start", "task": "inventory-ledger-replay-drift", "run_id": "inventory-ledger-replay-drift-20261021-231630-9e25"}
+{"time": "2026-10-21T23:22:40", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0", "requested": 5, "outcomes": ["pass", "pass", "pass", "pass", "invalid(CancelledError)"]}
+{"time": "2026-10-21T23:22:40", "event": "band_done", "task": "inventory-ledger-replay-drift", "verdict": "too_easy", "passes": 4, "decision": "rejected"}

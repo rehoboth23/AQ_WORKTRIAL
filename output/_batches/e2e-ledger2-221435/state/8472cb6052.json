@@ -1,0 +1,204 @@
+{
+  "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+  "key": "8472cb6052",
+  "stage": "done",
+  "calibration": "Calibration: recent tasks and how often the reference agent solved them (target: 1-3 of 5 runs).\n- fix-c-makefile-lib-reorg [medium]: 5/5 -> too_easy. Fix a C project's Makefile after a library reorganization broke include paths and linker flags\n- fix-sqlite-migration-corruption [medium]: 5/5 -> too_easy. Diagnose and repair a SQLite database where a migration script silently shuffled data into wrong columns during a table recreation.\n- nginx-proxy-swapped-routes [medium]: 5/5 -> too_easy. Fix an nginx reverse proxy that routes requests to the wrong backend services due to swapped upstream ports and missing path-stripping slashes.\n- pillow-10-resampling-migration [medium]: 5/5 -> too_easy. Fix a thumbnail library whose test suite broke after a Pillow 10.x dependency upgrade removed Image.ANTIALIAS.\n- cmake-visibility-plugin-crash [hard]: 5/5 -> too_easy. Diagnose and fix a CMake C++ project whose shared library hides symbols needed by dynamically loaded plugins, causing runtime symbol-resolution failures\n- sqlite-null-tz-revenue-report [hard]: 4/5 -> too_easy (agent median 19.5 steps, reached the faulty files on turn 2). Fix a migrated PostgreSQL-to-SQLite analytics pipeline that produces incorrect monthly revenue reports after migration.\n- unicode-account-normalization-drift [hard]: 4/5 -> too_easy (agent median 73 steps, reached the faulty files on turn 2.5). Fix an account service where visually identical usernames in different Unicode normalization forms are treated as different accounts by some entry points and the same by others.\nTasks solved too often were solved because their fixes could be found by reading and named in a few words. Make this design harder by changing the SHAPE of the problem (behaviour over a sequence that the agent must reason out), not by adding faults, code or steps; make it easier than the too_hard ones.",
+  "arm": "treatment",
+  "updated": "2026-10-21T23:22:40",
+  "started": "2026-10-21T22:14:36",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261021-221436-f438",
+  "gen": {
+    "status": "ok",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/inventory-ledger-replay-drift",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261021-221436-f438",
+    "run_id": "an-event-sourced-inventory-ledger-that-a-20261021-221436-f438",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/ledger.py:310: states the rule a fault breaks: effective quantity.  The referenced event must not itself be a"
+        ]
+      },
+      {
+        "round": 1,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261021-221436-f438-r1-230935-oracle",
+            "seconds": 26.1,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261021-221436-f438-r1-230935-oracle/inventory-ledger-replay-drift__5Wip3hi",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261021-221436-f438-r1-230935-nop",
+            "seconds": 20.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261021-221436-f438-r1-230935-nop/inventory-ledger-replay-drift__rVKC8GV",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "Modify _get_ref_qty to scan for prior corrections but stop at the first one found (e.g. using a break after finding the earliest correction). This returns the first correction's new_qty as the effective value, which happens to be correct for exactly two corrections but wrong for three or more.",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 8,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261021-221436-f438-r1-231021-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "Add deduplication to the replay function (skip events whose event_id was already seen during replay) instead of preventing duplicates from entering the log. This makes verify pass but leaves the log containing duplicate entries, violating the log-integrity requirement.",
+            "verdict": "killed",
+            "failed_tests": 7,
+            "total_tests": 8,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261021-221436-f438-r1-231021-mutant1"
+          }
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 16247,
+      "completion_tokens": 37121,
+      "cost_usd": 0.0
+    },
+    "seconds": 600.0,
+    "task_name": "afterquery/inventory-ledger-replay-drift"
+  },
+  "run_id": "inventory-ledger-replay-drift-20261021-231630-9e25",
+  "harbor_pid": null,
+  "record": {
+    "name": "inventory-ledger-replay-drift",
+    "description": "Fix an event-sourced inventory ledger whose snapshot diverges from replaying the event log due to incorrect correction deltas and non-idempotent event logging.",
+    "difficulty": "hard",
+    "arm": "treatment",
+    "run_id": "inventory-ledger-replay-drift-20261021-231630-9e25",
+    "features": {
+      "env_lines": 645,
+      "solve_lines": 64,
+      "faults": 2,
+      "fault_layers": 1
+    },
+    "verdict": "too_easy",
+    "passes": 4,
+    "n_valid": 4,
+    "n_invalid": 1,
+    "decision": "rejected",
+    "why": "too_easy (stopped early after 4 passes)",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/inventory-ledger-replay-drift",
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 4,
+      "n_invalid": 1,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__7D4LRTv",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 128030,
+          "output_tokens": 16547,
+          "cost_usd": 0.011360085999999998,
+          "episodes": 10,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__B4xYKfR",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 325836,
+          "output_tokens": 23234,
+          "cost_usd": 0.024623722,
+          "episodes": 18,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__L783NDd",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 120118,
+          "output_tokens": 14229,
+          "cost_usd": 0.010504534,
+          "episodes": 10,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__dNcM55j",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 118257,
+          "output_tokens": 9200,
+          "cost_usd": 0.009241852000000002,
+          "episodes": 10,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0/inventory-ledger-replay-drift__kx7RTuW",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 130925,
+          "output_tokens": 16156,
+          "cost_usd": 0.01145042,
+          "episodes": 12,
+          "failed_tests": [],
+          "found_step": 1
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-inventory-ledger-replay-drift-20261021-231630-9e25-0"
+      ],
+      "tokens": {
+        "input": 823166,
+        "output": 79366
+      },
+      "cost_usd": 0.0672,
+      "median_steps": 10.0,
+      "median_found_step": 1.0,
+      "early_stop": true,
+      "seconds": 370.2,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/inventory-ledger-replay-drift",
+    "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261021-221436-f438"
+  }
+}

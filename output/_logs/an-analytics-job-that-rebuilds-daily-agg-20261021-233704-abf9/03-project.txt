@@ -1,0 +1,1008 @@
+<<<MANIFEST>>>
+environment/tally.py
+environment/generate_journals.py
+environment/README.md
+<<<END>>>
+<<<FILE environment/tally.py>>>
+#!/usr/bin/env python3
+"""
+tally — Financial Analytics Aggregation System
+
+Processes daily journal entries (JSONL) and produces per-date, per-account
+aggregate totals stored as JSON.  Two rebuild modes are supported:
+
+  full  — recompute every aggregate from source journals
+  incr  — update only partitions whose source file changed, using a
+          contribution cache to avoid re-processing unchanged data
+
+The system guarantees that incremental and full rebuilds produce identical
+results regardless of edit history.
+"""
+
+import csv
+import hashlib
+import json
+import os
+import sys
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+
+# ── Paths & constants ─────────────────────────────────────────────────────
+
+BASE     = Path("/app/data")
+JRN_DIR  = BASE / "journals"
+AGG_DIR  = BASE / "agg"
+CCH_DIR  = BASE / "cache"
+MNF_PATH = BASE / "manifest.json"
+
+JRN_GLOB = "journal_*.jsonl"
+EXT      = ".json"
+ZERO_EPS = 1e-9
+
+# Account metadata (used by reports, not by core aggregation)
+ACCT_META: dict[str, dict[str, str]] = {
+    "Revenue":    {"type": "income",        "group": "operating"},
+    "Services":   {"type": "income",        "group": "operating"},
+    "Consulting": {"type": "income",        "group": "operating"},
+    "Refunds":    {"type": "contra_income", "group": "operating"},
+    "Discounts":  {"type": "contra_income", "group": "operating"},
+    "Payroll":    {"type": "expense",       "group": "operating"},
+    "Rent":       {"type": "expense",       "group": "facility"},
+    "Supplies":   {"type": "expense",       "group": "admin"},
+}
+DEFAULT_META = {"type": "other", "group": "misc"}
+
+ACCEPTED_ACCT_TYPES = {"income", "contra_income", "expense", "other"}
+
+
+# ── Exceptions ────────────────────────────────────────────────────────────
+
+class TallyError(Exception):
+    """Base exception for tally."""
+
+
+class JournalError(TallyError):
+    """Problem reading or parsing a journal file."""
+
+
+class AggregateError(TallyError):
+    """Problem with aggregate data."""
+
+
+class CacheError(TallyError):
+    """Problem with contribution cache."""
+
+
+# ── Logging ───────────────────────────────────────────────────────────────
+
+def _emit(lvl: str, msg: str) -> None:
+    stream = sys.stderr if lvl in ("WARN", "ERR") else sys.stdout
+    print(f"[tally:{lvl}] {msg}", file=stream)
+
+
+def info(msg: str)  -> None: _emit("INFO", msg)
+def warn(msg: str)  -> None: _emit("WARN", msg)
+def err(msg: str)   -> None: _emit("ERR",  msg)
+
+
+# ── File helpers ──────────────────────────────────────────────────────────
+
+def _mkdir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def _sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for blk in iter(lambda: f.read(8192), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _safe_read_json(p: Path) -> dict[str, Any] | None:
+    if not p.exists():
+        return None
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as exc:
+        warn(f"Bad JSON in {p.name}: {exc}")
+        return None
+
+
+# ── Numeric helpers ───────────────────────────────────────────────────────
+
+def r2(v: float) -> float:
+    """Round a financial value to two decimal places."""
+    return round(v, 2)
+
+
+def is_zero(v: float) -> bool:
+    """True when *v* is effectively zero."""
+    return abs(v) < ZERO_EPS
+
+
+def normalize_for_storage(amount: float) -> float:
+    """Normalize an amount for consistent storage and display format.
+
+    Provides a uniform representation regardless of sign, simplifying
+    downstream formatting and comparison logic used by cache
+    serialization and volume report generation.
+    """
+    return abs(amount)
+
+
+# ── Date utilities ────────────────────────────────────────────────────────
+
+_DATE_FMT = "%Y-%m-%d"
+
+
+def parse_date(s: str) -> datetime:
+    return datetime.strptime(s, _DATE_FMT)
+
+
+def fmt_date(d: datetime) -> str:
+    return d.strftime(_DATE_FMT)
+
+
+def is_valid_date(s: str) -> bool:
+    try:
+        parse_date(s)
+        return True
+    except ValueError:
+        return False
+
+
+def date_range(start: str, end: str) -> list[str]:
+    """Return inclusive list of date strings from *start* to *end*."""
+    s, e = parse_date(start), parse_date(end)
+    out: list[str] = []
+    cur = s
+    while cur <= e:
+        out.append(fmt_date(cur))
+        cur = datetime(cur.year, cur.month, cur.day + 1)
+    return out
+
+
+# ── Data model ────────────────────────────────────────────────────────────
+
+class Entry:
+    """A single financial journal entry."""
+
+    __slots__ = ("eid", "date", "account", "amount",
+                 "desc", "voided", "src")
+
+    def __init__(self, eid: str, date: str, account: str,
+                 amount: float, desc: str = "",
+                 voided: bool = False, src: str = "") -> None:
+        self.eid     = eid
+        self.date    = date
+        self.account = account.strip()
+        self.amount  = r2(amount)
+        self.desc    = desc
+        self.voided  = voided
+        self.src     = src
+
+    @property
+    def active(self) -> bool:
+        return not self.voided
+
+    @property
+    def meta(self) -> dict[str, str]:
+        return ACCT_META.get(self.account, DEFAULT_META)
+
+    @property
+    def acct_type(self) -> str:
+        return self.meta["type"]
+
+    @property
+    def acct_group(self) -> str:
+        return self.meta["group"]
+
+    def validate(self) -> list[str]:
+        """Return list of field-level warnings."""
+        ws: list[str] = []
+        if not self.eid:
+            ws.append("empty id")
+        if not is_valid_date(self.date):
+            ws.append(f"bad date '{self.date}'")
+        if not self.account:
+            ws.append("empty account")
+        if self.acct_type not in ACCEPTED_ACCT_TYPES:
+            ws.append(f"unknown account type '{self.acct_type}'")
+        return ws
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.eid, "date": self.date,
+                "account": self.account, "amount": self.amount,
+                "description": self.desc, "voided": self.voided}
+
+    def __repr__(self) -> str:
+        s = "VOID" if self.voided else "OK"
+        return f"Entry({self.eid},{self.date},{self.account},{self.amount},{s})"
+
+
+# ── Journal I/O ───────────────────────────────────────────────────────────
+
+def _parse_line(line: str, src: str = "") -> Entry | None:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError as exc:
+        warn(f"Bad JSON in {src}: {exc}")
+        return None
+    need = {"id", "date", "account", "amount"}
+    if not need.issubset(d):
+        warn(f"Missing fields in {src}: {need - set(d)}")
+        return None
+    return Entry(eid=d["id"], date=d["date"], account=d["account"],
+                 amount=float(d["amount"]),
+                 desc=d.get("description", ""),
+                 voided=d.get("voided", False), src=src)
+
+
+def load_journal(p: Path) -> list[Entry]:
+    out: list[Entry] = []
+    with open(p) as f:
+        for raw in f:
+            e = _parse_line(raw, src=p.name)
+            if e is not None:
+                out.append(e)
+    info(f"Loaded {len(out)} entries from {p.name}")
+    return out
+
+
+def find_journals() -> list[Path]:
+    if not JRN_DIR.exists():
+        raise JournalError(f"Journal directory missing: {JRN_DIR}")
+    ps = sorted(JRN_DIR.glob(JRN_GLOB))
+    if not ps:
+        warn("No journal files found")
+    return ps
+
+
+def journal_partition_name(p: Path) -> str:
+    """Extract partition name from a journal path (stem without extension)."""
+    return p.stem
+
+
+# ── Contributions ─────────────────────────────────────────────────────────
+
+def contributions(entries: list[Entry]) -> dict[str, dict[str, float]]:
+    """Per-date per-account totals from active entries.
+
+    Only active (non-voided) entries contribute.  Amounts are **signed**:
+    income accounts are positive, refunds/discounts negative.
+    Returns ``{date_str: {account: amount}}``.
+    """
+    tmp: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for e in entries:
+        if not e.active:
+            continue
+        tmp[e.date][e.account] += e.amount
+    return {d: {a: r2(v) for a, v in ac.items()} for d, ac in tmp.items()}
+
+
+def merge_contrib(
+    a: dict[str, dict[str, float]],
+    b: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Combine two contribution dicts, summing matching (date, account)."""
+    out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for d, ac in a.items():
+        for a2, v in ac.items():
+            out[d][a2] += v
+    for d, ac in b.items():
+        for a2, v in ac.items():
+            out[d][a2] += v
+    return {d: {a2: r2(v) for a2, v in ac.items()} for d, ac in out.items()}
+
+
+def diff_contrib(
+    a: dict[str, dict[str, float]],
+    b: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Compute b - a per (date, account)."""
+    out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for d, ac in a.items():
+        for a2, v in ac.items():
+            out[d][a2] -= v
+    for d, ac in b.items():
+        for a2, v in ac.items():
+            out[d][a2] += v
+    return {d: {a2: r2(v) for a2, v in ac.items()} for d, ac in out.items()}
+
+
+# ── Aggregate I/O ────────────────────────────────────────────────────────
+
+def _agg_path(d: str) -> Path:
+    return AGG_DIR / f"{d}{EXT}"
+
+
+def read_agg(d: str) -> dict[str, float]:
+    p = _agg_path(d)
+    if not p.exists():
+        return {}
+    raw = _safe_read_json(p)
+    if raw is None:
+        return {}
+    return {k: r2(float(v)) for k, v in raw.items()}
+
+
+def write_agg(d: str, totals: dict[str, float]) -> None:
+    _mkdir(AGG_DIR)
+    clean = {k: r2(v) for k, v in totals.items() if not is_zero(v)}
+    with open(_agg_path(d), "w") as f:
+        json.dump(clean, f, indent=2, sort_keys=True)
+
+
+def read_all_aggs() -> dict[str, dict[str, float]]:
+    aggs: dict[str, dict[str, float]] = {}
+    if not AGG_DIR.exists():
+        return aggs
+    for p in sorted(AGG_DIR.glob(f"*{EXT}")):
+        aggs[p.stem] = read_agg(p.stem)
+    return aggs
+
+
+def write_all_aggs(aggs: dict[str, dict[str, float]]) -> None:
+    _mkdir(AGG_DIR)
+    for d, t in aggs.items():
+        write_agg(d, t)
+    keep = set(aggs)
+    for p in AGG_DIR.glob(f"*{EXT}"):
+        if p.stem not in keep:
+            p.unlink()
+
+
+def agg_dates() -> list[str]:
+    if not AGG_DIR.exists():
+        return []
+    return sorted(p.stem for p in AGG_DIR.glob(f"*{EXT}"))
+
+
+# ── Cache I/O ─────────────────────────────────────────────────────────────
+
+def _cch_path(part: str) -> Path:
+    return CCH_DIR / f"{part}{EXT}"
+
+
+def write_cache(part: str, contribs: dict[str, dict[str, float]]) -> None:
+    """Write contribution cache for *part*.
+
+    Amounts are normalized via ``normalize_for_storage`` to guarantee a
+    consistent representation in the cache file.
+    """
+    _mkdir(CCH_DIR)
+    data: dict[str, dict[str, float]] = {}
+    for d, ac in contribs.items():
+        data[d] = {a: r2(normalize_for_storage(v)) for a, v in ac.items()}
+    with open(_cch_path(part), "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+
+
+def read_cache(part: str) -> dict[str, dict[str, float]]:
+    p = _cch_path(part)
+    if not p.exists():
+        return {}
+    raw = _safe_read_json(p)
+    if raw is None:
+        return {}
+    return {d: {a: r2(float(v)) for a, v in ac.items()}
+            for d, ac in raw.items()}
+
+
+def update_cache(
+    old: dict[str, dict[str, float]],
+    new: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Merge *new* contributions into *old* cache.
+
+    Updates changed values while preserving existing entries that were
+    not modified in this run, ensuring the cache reflects both
+    historical and current contribution data.
+    """
+    result = dict(old)
+    for d, ac in new.items():
+        if d in result:
+            merged = dict(result[d])
+            merged.update(ac)
+            result[d] = merged
+        else:
+            result[d] = dict(ac)
+    return result
+
+
+def cache_partitions() -> list[str]:
+    if not CCH_DIR.exists():
+        return []
+    return sorted(p.stem for p in CCH_DIR.glob(f"*{EXT}"))
+
+
+# ── Manifest ──────────────────────────────────────────────────────────────
+
+def read_manifest() -> dict[str, Any]:
+    raw = _safe_read_json(MNF_PATH)
+    return raw if raw is not None else {}
+
+
+def write_manifest(m: dict[str, Any]) -> None:
+    _mkdir(BASE)
+    with open(MNF_PATH, "w") as f:
+        json.dump(m, f, indent=2, sort_keys=True)
+
+
+def build_manifest(paths: list[Path]) -> dict[str, Any]:
+    hashes: dict[str, str] = {}
+    stats: dict[str, dict[str, int]] = {}
+    for p in paths:
+        part = p.stem
+        hashes[part] = _sha256(p)
+        n = sum(1 for line in open(p) if line.strip())
+        stats[part] = {"entries": n}
+    ts = datetime.now().isoformat()
+    return {"hashes": hashes, "stats": stats, "built_at": ts}
+
+
+def _cur_hashes() -> dict[str, str]:
+    m = read_manifest()
+    return m.get("hashes", {})
+
+
+def changed_parts(paths: list[Path]) -> list[str]:
+    cur = build_manifest(paths)
+    old = _cur_hashes()
+    out: list[str] = []
+    for part, h in cur["hashes"].items():
+        if old.get(part) != h:
+            out.append(part)
+    return sorted(out)
+
+
+# ── Aggregate arithmetic ─────────────────────────────────────────────────
+
+def subtract(aggs: dict[str, dict[str, float]],
+             cache: dict[str, dict[str, float]]) -> None:
+    """Subtract cached contributions from *aggs* in-place."""
+    for d, ac in cache.items():
+        if d not in aggs:
+            continue
+        for a, v in ac.items():
+            cur = aggs[d].get(a, 0.0)
+            aggs[d][a] = r2(cur - v)
+            if is_zero(aggs[d][a]):
+                del aggs[d][a]
+        if not aggs.get(d):
+            aggs.pop(d, None)
+
+
+def add(aggs: dict[str, dict[str, float]],
+        contribs: dict[str, dict[str, float]]) -> None:
+    """Add contributions to *aggs* in-place."""
+    for d, ac in contribs.items():
+        if d not in aggs:
+            aggs[d] = {}
+        for a, v in ac.items():
+            cur = aggs[d].get(a, 0.0)
+            aggs[d][a] = r2(cur + v)
+            if is_zero(aggs[d][a]):
+                del aggs[d][a]
+        if not aggs.get(d):
+            aggs.pop(d, None)
+
+
+# ── Rebuild commands ─────────────────────────────────────────────────────
+
+def full_rebuild() -> None:
+    """Recompute every aggregate from source journals."""
+    info("Full rebuild starting")
+    journals = find_journals()
+    if not journals:
+        return
+
+    all_c: dict[str, dict[str, float]] = {}
+    per_part: dict[str, dict[str, dict[str, float]]] = {}
+
+    for jp in journals:
+        part = jp.stem
+        c = contributions(load_journal(jp))
+        per_part[part] = c
+        all_c = merge_contrib(all_c, c)
+
+    write_all_aggs(all_c)
+    for part, c in per_part.items():
+        write_cache(part, c)
+    write_manifest(build_manifest(journals))
+    info(f"Full rebuild done: {len(journals)} partitions, {len(all_c)} dates")
+
+
+def incremental_rebuild() -> None:
+    """Update aggregates for changed partitions only."""
+    info("Incremental rebuild starting")
+    journals = find_journals()
+    if not journals:
+        return
+
+    changed = changed_parts(journals)
+    if not changed:
+        info("No changes detected")
+        return
+
+    info(f"Changed: {', '.join(changed)}")
+    aggs = read_all_aggs()
+
+    for part in changed:
+        jp = JRN_DIR / f"{part}.jsonl"
+        if not jp.exists():
+            warn(f"Missing journal for {part}")
+            continue
+
+        old = read_cache(part)
+        if old:
+            info(f"Subtracting old cache: {part}")
+            subtract(aggs, old)
+
+        new = contributions(load_journal(jp))
+        info(f"Adding new contributions: {part}")
+        add(aggs, new)
+
+        merged = update_cache(old, new) if old else new
+        write_cache(part, merged)
+
+    write_all_aggs(aggs)
+    write_manifest(build_manifest(journals))
+    info(f"Incremental done: {len(changed)} updated")
+
+
+# ── Volume report ─────────────────────────────────────────────────────────
+
+def volume_report() -> None:
+    """Print absolute-volume report per date / account."""
+    aggs = read_all_aggs()
+    if not aggs:
+        print("No data.")
+        return
+    dates = sorted(aggs)
+    accts = sorted({a for ac in aggs.values() for a in ac})
+    print(f"{'Date':<12} {'Account':<14} {'Volume':>10}")
+    print("-" * 38)
+    for d in dates:
+        for a in accts:
+            v = aggs[d].get(a, 0.0)
+            if not is_zero(v):
+                vol = normalize_for_storage(r2(v))
+                print(f"{d:<12} {a:<14} {vol:>10.2f}")
+    print("-" * 38)
+    totals: dict[str, float] = defaultdict(float)
+    for ac in aggs.values():
+        for a, v in ac.items():
+            totals[a] += normalize_for_storage(v)
+    parts = [f"{a}: {r2(totals[a]):.2f}" for a in accts if a in totals]
+    print(f"{'TOTAL':<12} {'  '.join(parts)}")
+
+
+# ── CSV export ────────────────────────────────────────────────────────────
+
+def csv_export(outpath: str = "") -> None:
+    """Export aggregates as CSV (date, account, amount)."""
+    aggs = read_all_aggs()
+    if not aggs:
+        info("No data to export")
+        return
+    target = Path(outpath) if outpath else BASE / "export.csv"
+    _mkdir(target.parent)
+    with open(target, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["date", "account", "amount"])
+        for d in sorted(aggs):
+            for a in sorted(aggs[d]):
+                v = aggs[d][a]
+                if not is_zero(v):
+                    w.writerow([d, a, f"{v:.2f}"])
+    info(f"Exported to {target}")
+
+
+# ── Account rollup ───────────────────────────────────────────────────────
+
+def rollup_by_group() -> dict[str, dict[str, float]]:
+    """Roll up aggregates by account group and date."""
+    aggs = read_all_aggs()
+    out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for d, ac in aggs.items():
+        for a, v in ac.items():
+            grp = ACCT_META.get(a, DEFAULT_META)["group"]
+            out[grp][d] += v
+    return {g: {d: r2(v) for d, v in dv.items()}
+            for g, dv in out.items()}
+
+
+def rollup_by_type() -> dict[str, dict[str, float]]:
+    """Roll up aggregates by account type and date."""
+    aggs = read_all_aggs()
+    out: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for d, ac in aggs.items():
+        for a, v in ac.items():
+            tp = ACCT_META.get(a, DEFAULT_META)["type"]
+            out[tp][d] += v
+    return {t: {d: r2(v) for d, v in dv.items()}
+            for t, dv in out.items()}
+
+
+# ── Summary ───────────────────────────────────────────────────────────────
+
+def summary() -> None:
+    """Print a brief data summary."""
+    journals = find_journals()
+    aggs = read_all_aggs()
+    n_ent = sum(len(load_journal(jp)) for jp in journals)
+    accts = sorted({a for ac in aggs.values() for a in ac})
+    print("=== Tally Summary ===")
+    print(f"Journal files  : {len(journals)}")
+    print(f"Total entries  : {n_ent}")
+    print(f"Aggregate dates: {len(aggs)}")
+    print(f"Accounts       : {', '.join(accts)}")
+    if aggs:
+        grand: dict[str, float] = defaultdict(float)
+        for ac in aggs.values():
+            for a, v in ac.items():
+                grand[a] += v
+        print("Grand totals:")
+        for a in sorted(grand):
+            print(f"  {a:<14} {r2(grand[a]):>12.2f}")
+
+
+# ── Validation & verification ────────────────────────────────────────────
+
+def validate() -> list[str]:
+    """Validate journals; return list of warning strings."""
+    ws: list[str] = []
+    seen: set[str] = set()
+    for jp in find_journals():
+        for e in load_journal(jp):
+            if e.eid in seen:
+                ws.append(f"Duplicate ID: {e.eid}")
+            seen.add(e.eid)
+            ews = e.validate()
+            for w in ews:
+                ws.append(f"Entry {e.eid}: {w}")
+    return ws
+
+
+def verify() -> bool:
+    """True when on-disk aggregates match a fresh source computation."""
+    journals = find_journals()
+    expected: dict[str, dict[str, float]] = {}
+    for jp in journals:
+        expected = merge_contrib(expected, contributions(load_journal(jp)))
+    actual = read_all_aggs()
+    ok = True
+    for d in set(list(expected) + list(actual)):
+        ex = expected.get(d, {})
+        ac = actual.get(d, {})
+        for a in set(list(ex) + list(ac)):
+            ev = r2(ex.get(a, 0.0))
+            av = r2(ac.get(a, 0.0))
+            if abs(ev - av) > ZERO_EPS:
+                err(f"Mismatch {d}/{a}: expected {ev}, got {av}")
+                ok = False
+    if ok:
+        info("Consistency OK")
+    return ok
+
+
+def show_cache(part: str) -> None:
+    """Display the cache for a partition."""
+    c = read_cache(part)
+    if not c:
+        print(f"No cache for {part}")
+        return
+    print(f"Cache: {part}")
+    for d in sorted(c):
+        items = ", ".join(f"{a}={v}" for a, v in sorted(c[d].items()))
+        print(f"  {d}: {items}")
+
+
+def cache_health() -> dict[str, list[str]]:
+    """Check cache files for obvious problems."""
+    issues: dict[str, list[str]] = defaultdict(list)
+    for part in cache_partitions():
+        c = read_cache(part)
+        if not c:
+            issues[part].append("empty cache")
+            continue
+        for d, ac in c.items():
+            for a, v in ac.items():
+                if v < 0:
+                    issues[part].append(f"{d}/{a}: negative cached value {v}")
+    return dict(issues)
+
+
+def reconcile_date(d: str) -> dict[str, float]:
+    """Compute expected aggregate for date *d* from source and return diff."""
+    journals = find_journals()
+    expected: dict[str, float] = defaultdict(float)
+    for jp in journals:
+        for e in load_journal(jp):
+            if e.active and e.date == d:
+                expected[e.account] += e.amount
+    actual = read_agg(d)
+    diff: dict[str, float] = {}
+    for a in set(list(expected) + list(actual)):
+        ev = r2(expected.get(a, 0.0))
+        av = r2(actual.get(a, 0.0))
+        if abs(ev - av) > ZERO_EPS:
+            diff[a] = r2(av - ev)
+    return diff
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────
+
+def _usage() -> None:
+    print("Usage: python3 tally.py <command> [args]")
+    print()
+    print("Commands:")
+    print("  full       Full rebuild from all journals")
+    print("  incr       Incremental rebuild for changed files")
+    print("  report     Volume report (absolute values)")
+    print("  summary    Data summary")
+    print("  export     Export aggregates as CSV [output path]")
+    print("  check      Validate journal integrity")
+    print("  verify     Verify aggregates match source")
+    print("  cache      Show cache for a partition (arg: partition name)")
+    print("  health     Check cache files for issues")
+    print("  rollup     Group-level rollup report")
+    print("  reconcile  Reconcile one date (arg: date string)")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        _usage()
+        sys.exit(1)
+
+    cmd = sys.argv[1].lower()
+
+    if cmd == "full":
+        full_rebuild()
+    elif cmd == "incr":
+        incremental_rebuild()
+    elif cmd == "report":
+        volume_report()
+    elif cmd == "summary":
+        summary()
+    elif cmd == "export":
+        out = sys.argv[2] if len(sys.argv) > 2 else ""
+        csv_export(out)
+    elif cmd == "check":
+        ws = validate()
+        if ws:
+            for w in ws:
+                warn(w)
+            sys.exit(1)
+        info("Journals OK")
+    elif cmd == "verify":
+        if not verify():
+            sys.exit(1)
+    elif cmd == "cache":
+        if len(sys.argv) < 3:
+            err("Usage: tally.py cache <partition>")
+            sys.exit(1)
+        show_cache(sys.argv[2])
+    elif cmd == "health":
+        issues = cache_health()
+        if issues:
+            for part, msgs in sorted(issues.items()):
+                for m in msgs:
+                    warn(f"{part}: {m}")
+        else:
+            info("Cache OK")
+    elif cmd == "rollup":
+        rg = rollup_by_group()
+        for g in sorted(rg):
+            print(f"--- {g} ---")
+            for d in sorted(rg[g]):
+                print(f"  {d}: {rg[g][d]:.2f}")
+    elif cmd == "reconcile":
+        if len(sys.argv) < 3:
+            err("Usage: tally.py reconcile <date>")
+            sys.exit(1)
+        diff = reconcile_date(sys.argv[2])
+        if diff:
+            for a, v in sorted(diff.items()):
+                print(f"  {a}: drift {v:+.2f}")
+        else:
+            info(f"Date {sys.argv[2]} reconciled OK")
+    else:
+        err(f"Unknown command: {cmd}")
+        _usage()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/generate_journals.py>>>
+#!/usr/bin/env python3
+"""Generate journal JSONL files for the tally system.
+
+Creates five daily journal files (2024-01-15 through 2024-01-19) with
+financial entries across multiple accounts, including late-arriving
+entries, voided entries, and negative-amount accounts.
+
+Run once at build time; the script deletes itself afterwards.
+"""
+
+import json
+from pathlib import Path
+
+OUT = Path("/app/data/journals")
+
+
+def w(path: Path, entries: list[dict]) -> None:
+    with open(path, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e, separators=(",", ":")) + "\n")
+
+
+def main() -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    # ── 2024-01-15 ──────────────────────────────────────────────
+    w(OUT / "journal_2024-01-15.jsonl", [
+        {"id": "REV-001", "date": "2024-01-15", "account": "Revenue",    "amount": 2500.00, "description": "Product sales"},
+        {"id": "REV-002", "date": "2024-01-15", "account": "Revenue",    "amount": 1800.00, "description": "Service revenue"},
+        {"id": "SRV-001", "date": "2024-01-15", "account": "Services",   "amount":  950.00, "description": "Consulting engagement"},
+        {"id": "REF-001", "date": "2024-01-15", "account": "Refunds",    "amount": -320.00, "description": "Customer refund #1042"},
+        {"id": "DIS-001", "date": "2024-01-15", "account": "Discounts",  "amount": -150.00, "description": "Early payment discount"},
+        {"id": "PAY-001", "date": "2024-01-15", "account": "Payroll",    "amount": 4200.00, "description": "Weekly payroll"},
+        {"id": "RNT-001", "date": "2024-01-15", "account": "Rent",       "amount": 2800.00, "description": "Office lease"},
+        {"id": "LTE-001", "date": "2024-01-14", "account": "Revenue",    "amount":  600.00, "description": "Late-arriving sale from 14th"},
+        {"id": "LTE-002", "date": "2024-01-14", "account": "Services",   "amount":  300.00, "description": "Late-arriving service from 14th"},
+    ])
+
+    # ── 2024-01-16 ──────────────────────────────────────────────
+    w(OUT / "journal_2024-01-16.jsonl", [
+        {"id": "REV-003", "date": "2024-01-16", "account": "Revenue",    "amount": 3100.00, "description": "Product sales"},
+        {"id": "SRV-002", "date": "2024-01-16", "account": "Services",   "amount": 1200.00, "description": "Support contract"},
+        {"id": "REF-002", "date": "2024-01-16", "account": "Refunds",    "amount": -450.00, "description": "Customer refund #1043"},
+        {"id": "PAY-002", "date": "2024-01-16", "account": "Payroll",    "amount": 4200.00, "description": "Weekly payroll"},
+        {"id": "RNT-002", "date": "2024-01-16", "account": "Rent",       "amount": 2800.00, "description": "Office lease"},
+        {"id": "CON-001", "date": "2024-01-16", "account": "Consulting", "amount": 3500.00, "description": "Strategy engagement"},
+        {"id": "SUP-001", "date": "2024-01-16", "account": "Supplies",   "amount":  480.00, "description": "Office supplies"},
+        {"id": "DIS-002", "date": "2024-01-16", "account": "Discounts",  "amount": -200.00, "description": "Volume discount"},
+        {"id": "LTE-003", "date": "2024-01-15", "account": "Revenue",    "amount":  750.00, "description": "Late-arriving from 15th"},
+    ])
+
+    # ── 2024-01-17 ──────────────────────────────────────────────
+    w(OUT / "journal_2024-01-17.jsonl", [
+        {"id": "REV-004", "date": "2024-01-17", "account": "Revenue",    "amount": 2800.00, "description": "Product sales"},
+        {"id": "SRV-003", "date": "2024-01-17", "account": "Services",   "amount":  850.00, "description": "Training session"},
+        {"id": "REF-003", "date": "2024-01-17", "account": "Refunds",    "amount": -280.00, "description": "Customer refund #1044"},
+        {"id": "CON-002", "date": "2024-01-17", "account": "Consulting", "amount": 4200.00, "description": "IT assessment"},
+        {"id": "PAY-003", "date": "2024-01-17", "account": "Payroll",    "amount": 4200.00, "description": "Weekly payroll"},
+        {"id": "SUP-002", "date": "2024-01-17", "account": "Supplies",   "amount":  320.00, "description": "Equipment purchase"},
+        {"id": "DIS-003", "date": "2024-01-17", "account": "Discounts",  "amount": -180.00, "description": "Loyalty discount"},
+        {"id": "VD-001",  "date": "2024-01-17", "account": "Revenue",    "amount": 1500.00, "description": "Duplicate entry - voided", "voided": True},
+        {"id": "LTE-004", "date": "2024-01-16", "account": "Consulting", "amount":  900.00, "description": "Late-arriving from 16th"},
+    ])
+
+    # ── 2024-01-18 ──────────────────────────────────────────────
+    w(OUT / "journal_2024-01-18.jsonl", [
+        {"id": "REV-005", "date": "2024-01-18", "account": "Revenue",    "amount": 3500.00, "description": "Product sales"},
+        {"id": "SRV-004", "date": "2024-01-18", "account": "Services",   "amount": 1500.00, "description": "Maintenance contract"},
+        {"id": "REF-004", "date": "2024-01-18", "account": "Refunds",    "amount": -380.00, "description": "Customer refund #1045"},
+        {"id": "PAY-004", "date": "2024-01-18", "account": "Payroll",    "amount": 4200.00, "description": "Weekly payroll"},
+        {"id": "CON-003", "date": "2024-01-18", "account": "Consulting", "amount": 2800.00, "description": "Project milestone"},
+        {"id": "SUP-003", "date": "2024-01-18", "account": "Supplies",   "amount":  550.00, "description": "Software licenses"},
+        {"id": "RNT-003", "date": "2024-01-18", "account": "Rent",       "amount": 2800.00, "description": "Office lease"},
+        {"id": "DIS-004", "date": "2024-01-18", "account": "Discounts",  "amount": -250.00, "description": "Partner discount"},
+        {"id": "LTE-005", "date": "2024-01-17", "account": "Revenue",    "amount": 1100.00, "description": "Late-arriving from 17th"},
+    ])
+
+    # ── 2024-01-19 ──────────────────────────────────────────────
+    w(OUT / "journal_2024-01-19.jsonl", [
+        {"id": "REV-006", "date": "2024-01-19", "account": "Revenue",    "amount": 4200.00, "description": "Product sales"},
+        {"id": "SRV-005", "date": "2024-01-19", "account": "Services",   "amount": 1800.00, "description": "SLA contract"},
+        {"id": "REF-005", "date": "2024-01-19", "account": "Refunds",    "amount": -520.00, "description": "Customer refund #1046"},
+        {"id": "CON-004", "date": "2024-01-19", "account": "Consulting", "amount": 3100.00, "description": "Advisory retainer"},
+        {"id": "PAY-005", "date": "2024-01-19", "account": "Payroll",    "amount": 4200.00, "description": "Weekly payroll"},
+        {"id": "SUP-004", "date": "2024-01-19", "account": "Supplies",   "amount":  380.00, "description": "Office restock"},
+        {"id": "DIS-005", "date": "2024-01-19", "account": "Discounts",  "amount": -300.00, "description": "Seasonal promotion"},
+        {"id": "RNT-004", "date": "2024-01-19", "account": "Rent",       "amount": 2800.00, "description": "Office lease"},
+        {"id": "LTE-006", "date": "2024-01-18", "account": "Services",   "amount":  650.00, "description": "Late-arriving from 18th"},
+    ])
+
+    print(f"Generated 5 journal files in {OUT}")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/README.md>>>
+# tally — Financial Analytics Aggregation System
+
+## Overview
+
+`tally` processes daily journal entries stored as JSONL files and produces
+per-date, per-account aggregate totals stored as JSON. It supports two
+rebuild modes:
+
+- **Full rebuild** (`python3 tally.py full`): recomputes every aggregate
+  from the source journal files.
+- **Incremental rebuild** (`python3 tally.py incr`): detects which journal
+  files changed since the last build and updates only the affected
+  aggregates, using a per-partition contribution cache.
+
+## Invariant
+
+After any sequence of source edits and incremental rebuilds, the
+aggregates produced by the incremental mode must **exactly equal** those
+produced by a full rebuild. If they ever diverge, the system is
+incorrect.
+
+## Data Layout
+
+```
+/app/data/
+├── journals/          Source JSONL files (journal_YYYY-MM-DD.jsonl)
+├── agg/               Per-date aggregate JSON files (YYYY-MM-DD.json)
+├── cache/             Per-partition contribution cache (journal_YYYY-MM-DD.json)
+└── manifest.json      File hashes and build metadata
+```
+
+### Journal Entry Format
+
+Each line in a journal JSONL file is a JSON object:
+
+```json
+{"id": "REV-001", "date": "2024-01-15", "account": "Revenue", "amount": 2500.00, "description": "Product sales"}
+```
+
+Optional fields:
+- `voided`: boolean, defaults to `false`. Voided entries do not contribute to aggregates.
+
+The `date` field may differ from the journal file name (late-arriving entries).
+
+### Aggregate Format
+
+Each aggregate file (`YYYY-MM-DD.json`) maps account names to numeric totals:
+
+```json
+{"Discounts": -150.00, "Payroll": 4200.00, "Refunds": -320.00, "Revenue": 4300.00}
+```
+
+## Commands
+
+| Command   | Description                                    |
+|-----------|------------------------------------------------|
+| `full`    | Full rebuild from all journals                 |
+| `incr`    | Incremental rebuild for changed files          |
+| `report`  | Volume report (absolute values)                |
+| `summary` | Data summary with grand totals                 |
+| `export`  | Export aggregates as CSV                       |
+| `check`   | Validate journal file integrity                |
+| `verify`  | Verify aggregates match source computation     |
+| `cache`   | Show cache contents for a partition            |
+| `health`  | Check cache files for issues                   |
+| `rollup`  | Group-level rollup report                      |
+| `reconcile` | Reconcile one date against source            |
+
+## Accounts
+
+Standard accounts and their classification:
+
+| Account    | Type          | Group      |
+|------------|---------------|------------|
+| Revenue    | income        | operating  |
+| Services   | income        | operating  |
+| Consulting | income        | operating  |
+| Refunds    | contra_income | operating  |
+| Discounts  | contra_income | operating  |
+| Payroll    | expense       | operating  |
+| Rent       | expense       | facility   |
+| Supplies   | expense       | admin      |
+<<<END>>>

@@ -1,0 +1,14 @@
+The warehouse inventory ledger at `/app/ledger.py` has a consistency problem. Running `python3 /app/ledger.py verify` reports that the live snapshot does not match a full replay of the event log — the two views of stock disagree.
+
+The ledger records RECEIVE, SHIP, RETURN, and CORRECT events in an append-only log (`/app/data/events.jsonl`) and maintains a materialised snapshot (`/app/data/snapshot.json`). It also tracks which event IDs have been applied in `/app/data/applied.json`.
+
+Fix the ledger code so that, after any sequence of operations, the following invariants always hold:
+
+1. **Idempotency**: Processing an event whose ID was already applied has no effect on stock and does not create a duplicate log entry.
+2. **Correction semantics**: A CORRECT event changes the effective quantity of its referenced event. The stock adjustment is the difference between the new and the old effective quantity (with sign inverted for SHIP events). If multiple corrections target the same event, each one adjusts stock relative to the effective quantity established by the most recent prior correction (or the original quantity if there was no prior correction).
+3. **Log integrity**: The event log contains exactly one entry for each distinct event_id.
+4. **Consistency**: After any sequence of operations, the snapshot must equal a full replay of the event log, and `verify` must report no discrepancy.
+
+After fixing the code, run `python3 /app/ledger.py rebuild` to reconcile the existing data.
+
+Available commands: `receive`, `ship`, `return`, `correct`, `rebuild`, `show`, `verify`, `history`, `log`.

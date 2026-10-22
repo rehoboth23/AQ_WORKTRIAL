@@ -1,0 +1,3 @@
+{"time": "2026-10-22T00:36:17", "event": "band_start", "task": "incremental-aggregate-cache-drift", "run_id": "incremental-aggregate-cache-drift-20261022-003617-2cbc"}
+{"time": "2026-10-22T00:51:12", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-incremental-aggregate-cache-drift-20261022-003617-2cbc-0", "requested": 5, "outcomes": ["pass", "pass", "invalid(CancelledError)", "pass", "pass"]}
+{"time": "2026-10-22T00:51:12", "event": "band_done", "task": "incremental-aggregate-cache-drift", "verdict": "too_easy", "passes": 4, "decision": "rejected"}

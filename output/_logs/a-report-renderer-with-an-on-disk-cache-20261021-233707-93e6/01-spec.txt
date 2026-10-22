@@ -1,0 +1,74 @@
+```json
+{
+  "name": "stale-cached-report-renderer",
+  "description": "Fix a report renderer whose on-disk cache serves stale output after changes to templates, reference data, or settings",
+  "difficulty": "medium",
+  "category": "debugging",
+  "tags": ["cache-invalidation", "file-dependencies", "conditional-loading", "report-generation"],
+  "expert_time_estimate_min": 25,
+  "junior_time_estimate_min": 80,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "ReportForge is a command-line tool that generates formatted HTML reports from CSV data. It caches rendered reports on disk to speed up repeated runs. Users report that after updating source files—product names in the catalog, exchange rates, formatting settings—the reports still show the old information. Deleting the /app/cache directory by hand fixes it temporarily, but the problem returns as soon as the cache is repopulated. The --fresh flag also works as a per-run workaround.",
+  "environment_setup": "The Dockerfile installs PyYAML and copies the ReportForge Python package to /app/reportgen/, along with templates (/app/templates/), CSV data (/app/data/), reference data (/app/refdata/products.json and rates.json), and config (/app/config/formatting.yml and overrides.yml). The cache lives in /app/cache/. Two bugs exist: (1) loader.py's get_dependency_paths() omits rates.json and overrides.yml from the dependency list passed to the cache, so changes to those files never invalidate cached reports; (2) cache.py's store() silently skips dependency files that don't exist on disk instead of recording them as missing, so creating a previously absent dependency file (like overrides.yml) after caching doesn't invalidate the entry. Both bugs are in the interaction between the dependency enumeration, the cache manifest, and the renderer's actual file reads.",
+  "instruction_summary": "Fix ReportForge so that after any change to any file that affects report output, re-running the same report command always produces output reflecting those changes. The cache should still work (identical inputs produce a cache hit, avoiding re-renders). Command: python3 -m reportgen <report_type> --data <csv_path> --from <start> --to <end>. Output is printed to stdout as HTML.",
+  "solution_outline": [
+    "Add os.path.join(REFDATA_DIR, 'rates.json') and os.path.join(CONFIG_DIR, 'overrides.yml') to the list returned by get_dependency_paths() in loader.py",
+    "In cache.py store(), record non-existent dependency files with a None sentinel value instead of silently skipping them",
+    "In cache.py lookup(), when a dep has a None sentinel (was missing when cached), invalidate the cache if the file now exists",
+    "Clear stale cache entries: rm -rf /app/cache/*"
+  ],
+  "test_plan": [
+    "test_exchange_rate_change: Run report, change rates.json (set EU→USD to 999.0), run again, verify output differs and reflects new rate",
+    "test_overrides_modification: Write overrides.yml with currency_symbol: £, run report, verify £ appears in output",
+    "test_overrides_created_after_cache: Delete overrides.yml, run report (caches without it), create overrides.yml with currency_symbol: £, run report, verify £ appears — catches partial fix that doesn't handle non-existent deps in store()",
+    "test_product_name_change: Change a product name in products.json, run report, verify new name in output",
+    "test_formatting_change: Change currency_symbol in formatting.yml to €, run report, verify € appears",
+    "test_template_change: Change template heading, run report, verify new heading in output",
+    "test_cache_hit_no_change: Run report twice without changes, verify identical output (cache still works)",
+    "test_different_data_file: Create a new CSV with different transactions, run report with it, verify output reflects new data"
+  ],
+  "anti_cheat": "Expected outputs are not stored anywhere in the image. Tests independently modify input files and verify the report output changes accordingly. A solution that hard-codes output or deletes the cache entirely would fail the cache-efficiency test. Tests use different modifications (different symbols, rates, names) so hard-coding specific values cannot pass.",
+  "failure_modes": "An agent may add rates.json to get_dependency_paths() but miss overrides.yml, passing most tests but failing the overrides tests. Alternatively, adding both files to deps but not fixing the non-existent-file handling in store() passes when overrides.yml already exists but fails when it is created from scratch after caching — the agent's natural re-test (modify an existing file) passes, hiding the sequence bug.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "reportgen/loader.py in get_dependency_paths()",
+      "what": "Returns only 4 of 6 dependency paths, omitting rates.json and overrides.yml",
+      "symptom": "Changing exchange rates or creating/modifying overrides has no effect on cached reports",
+      "how_discovered": "Trace the rendering pipeline in renderer.py, list every file loaded by loader.py functions, compare with what get_dependency_paths() returns",
+      "central": "true",
+      "wrong_fix": "Add rates.json to get_dependency_paths() but miss overrides.yml",
+      "counterexample": "Create overrides.yml with currency_symbol: £, run report → output still shows $",
+      "why_normal_case_passes": "Changing rates.json now correctly invalidates the cache; the agent's re-test (modify rates, run report) succeeds",
+      "caught_by_test": "test_overrides_modification writes overrides.yml and checks for £ in output"
+    },
+    {
+      "layer": "code",
+      "where": "reportgen/cache.py in Cache.store()",
+      "what": "Silently skips dependency files that don't exist at store time (the `if os.path.exists(dep_path)` guard), instead of recording them as missing. A file created later is invisible to the manifest, so the cache entry is served stale.",
+      "symptom": "If overrides.yml doesn't exist when a report is first cached, creating it later doesn't update the report",
+      "how_discovered": "Reason about the lifecycle: what happens if a tracked dependency is absent at cache-write time but appears later? Read store() and notice the exists guard drops the entry entirely rather than marking it missing.",
+      "central": "true",
+      "wrong_fix": "Add overrides.yml to get_dependency_paths() but don't fix store()'s handling of non-existent files",
+      "counterexample": "Delete overrides.yml, run report (cache entry written without overrides.yml in manifest), create overrides.yml with currency_symbol: £, run report → stale output still shows $",
+      "why_normal_case_passes": "If overrides.yml already exists when first cached, store() hashes it normally; modifying it changes the hash and correctly invalidates the cache. The agent's re-test (edit existing overrides.yml) passes.",
+      "caught_by_test": "test_overrides_created_after_cache deletes overrides.yml, caches a report, creates the file, re-runs, and checks for £"
+    }
+  ],
+  "hidden_edge_cases": [
+    "Creating a dependency file from nothing after a cache entry already exists (overrides.yml created post-cache)",
+    "Deleting a tracked dependency file and re-creating it with different content",
+    "An overrides.yml containing only YAML comments (parsed as None by safe_load) vs one that doesn't exist — both result in no overrides applied, but are different states for the cache manifest",
+    "Running with --fresh produces correct output but doesn't fix the cache invalidation for subsequent non-fresh runs"
+  ],
+  "why_not_textbook": "This is not a standard cache-invalidation pattern like HTTP ETags, CDN purge, or version-busting query strings. The specific interaction — an incomplete dependency enumeration function combined with a store function that silently drops missing files — is bespoke to this codebase. No well-known bug (Pillow ANTIALIAS, nginx trailing slash, etc.) covers it.",
+  "static_read": "Reading loader.py shows get_dependency_paths() returns fewer files than the loader's own load functions actually read, and reading cache.py shows the os.path.exists guard in store(). However, both look like reasonable defensive code — the dependency list appears to cover the 'important' files, and the exists guard looks like a graceful way to handle optional dependencies. The bug only manifests in the behavioral sequence of creating a file after caching.",
+  "crux": "A dependency file that doesn't exist when the cache entry is written must still be recorded in the manifest (as 'missing') so that its later creation invalidates the cache. The manifest must distinguish 'file not tracked at all' from 'file tracked but currently absent'.",
+  "challenge_kind": "cache_invalidation",
+  "sequence_invariant": "After any change to any file that affects report output, re-running the same report command always produces output reflecting those changes.",
+  "nameable_fix": "include all dependency file hashes in cache validation and handle missing files",
+  "self_check_blind_spot": "The agent modifies an existing file (e.g., rates.json or an already-present overrides.yml) and re-runs the report, which works correctly after adding the file to the deps list. The failing sequence — deleting the file, caching, then creating it — is not part of the agent's natural re-test because the visible symptom only mentions updates to existing files.",
+  "reference_in_environment": "None. No code in the environment correctly handles the missing-file sentinel case. The README lists all input files but does not state the cache-tracking rule.",
+  "interaction": "1. loader.py's get_dependency_paths() assembles the dependency list under the assumption it covers all files the renderer reads. 2. cache.py's store() writes the manifest from that list, skipping non-existent entries under the assumption that a missing file cannot change. 3. renderer.py reads rates.json and conditionally reads overrides.yml — files not in the dependency list. 4. loader.py's apply_overrides() only reads overrides.yml if it exists, so the file's absence is normal. Each component's local assumption is reasonable; the defect emerges only when they compose: an untracked or newly-created file changes without the cache noticing."
+}
+```

@@ -1,0 +1,99 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md: sees that verify shows snapshot ≠ replay, must fix so they always match after any sequence of operations. Requirements state each event applied exactly once, corrections establish new effective quantity, log has one entry per distinct event.",
+    "Agent explores /app/data/ — finds events.jsonl (8 entries), snapshot.json, applied.json. Runs `python3 /app/ledger.py verify` — sees a discrepancy.",
+    "Agent runs `python3 /app/ledger.py log` — notices a duplicate event_id entry in the log for a redelivered SHIP event.",
+    "Agent reads ledger.py (~400 lines). Finds process_event calls _persist(event) at the top for durability, then checks _is_applied(event_id). The _persist-first ordering looks intentional but means redeliveries write duplicate log entries before the dedup check rejects them.",
+    "Agent fixes process_event: moves the _is_applied check before _persist, so redeliveries are rejected before any log write.",
+    "Agent runs `python3 /app/ledger.py rebuild` then verify — discrepancy gone on existing data. Agent re-tests by issuing a new redelivery and verifying — passes.",
+    "Agent considers whether other bugs exist. Instruction.md says 'a correction establishes a new effective quantity; all stock calculations use the current effective quantity.' Agent reads apply_correction: it calls _get_ref_qty(ref_id) which returns the referenced event's recorded qty field. This looks correct in isolation — it's 'the event's quantity.'",
+    "Agent reasons about what happens with two corrections to the same event: first correction changes effective qty from 100→80, delta = 80−100 = −20 (correct). Second correction: _get_ref_qty still returns original 100, delta = 60−100 = −40 (wrong, should be 60−80 = −20). Bug confirmed.",
+    "Agent fixes _get_ref_qty to scan the log for all prior CORRECT events with matching ref_id and return the latest effective quantity. A plausible partial fix: scan for prior corrections but break after finding the first one, which works for two corrections but fails for three.",
+    "Agent tests with two corrections — passes. A thorough agent also tests three corrections and catches the partial fix; a less thorough agent may not.",
+    "Agent runs final rebuild + verify. If both bugs are fully fixed, all tests pass."
+  ],
+  "too_easy_because": [
+    "The process_event logging-before-dedup bug is fairly visible from reading the code flow, even with helper method abstraction. A strong agent spots ordering issues quickly.",
+    "The instruction_summary originally stated 'If the same event is corrected more than once, the latest correction determines its effective quantity' — this directly tells the agent to test multi-corrections, making the latent bug much easier to discover.",
+    "Requirement (1) originally said 'A redelivered event (same event_id) must be idempotent' — naming 'redelivered event' specifically guides the agent straight to the redelivery code path.",
+    "The nameable_fix ('compute correction delta from latest effective value; deduplicate before logging') is fairly mechanical once the bugs are identified — the domain reasoning required is modest."
+  ],
+  "spec": {
+    "name": "inventory-ledger-replay-drift",
+    "description": "Fix an event-sourced inventory ledger whose snapshot diverges from replaying the event log due to incorrect correction deltas and non-idempotent event logging.",
+    "difficulty": "hard",
+    "category": "debugging",
+    "tags": [
+      "event-sourcing",
+      "idempotency",
+      "corrections",
+      "data-integrity",
+      "python"
+    ],
+    "expert_time_estimate_min": 25.0,
+    "junior_time_estimate_min": 75.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "A warehouse runs an event-sourced inventory ledger (ledger.py) that records RECEIVE, SHIP, RETURN, and CORRECT events in an append-only JSONL log and maintains a materialized stock snapshot. The system supports late corrections (adjusting a past event's effective quantity) and may receive the same event_id more than once due to message redelivery. The warehouse operator just ran the verify command and discovered that the current snapshot does not match a replay of the full event log — the two views of inventory disagree. The operator needs the ledger fixed so they can trust it again.",
+    "environment_setup": "The Dockerfile builds a Python 3.12 environment with /app/ledger.py (~400 lines), a README, and a pre-populated /app/data/ directory containing events.jsonl (8 events including one redelivery that created a duplicate log entry), snapshot.json (the live handler's current stock), and applied.json (the set of processed event IDs). ledger.py structures event processing through helper methods: process_event calls _persist(event) at the top for durability before checking _is_applied(event_id), making the log-then-check order appear to be a deliberate durability-first design. The apply_correction method calls _get_ref_qty(ref_id) to look up the referenced event's quantity; _get_ref_qty returns the recorded qty field of the original event, which is locally correct but wrong when prior corrections have changed the effective quantity. The replay function (used by verify and rebuild) correctly tracks effective quantities across multiple corrections by building an adjustment map from the full log, serving as ground truth. The pre-loaded data contains a redelivery (triggering a visible discrepancy from the logging bug) but only single corrections (so the correction-delta bug is latent). A rebuild command deduplicates the log before replaying, which masks the log-duplicate issue after a rebuild but not for new redeliveries.",
+    "instruction_summary": "Fix /app/ledger.py so that after any sequence of operations the snapshot always matches a full replay of the event log. Requirements: (1) Each event is applied exactly once; processing an event that was already applied has no effect on stock or the log. (2) A correction establishes a new effective quantity for its referenced event; all stock calculations use the current effective quantity. (3) The event log contains exactly one entry for each distinct event. (4) After fixing the code, run `python3 /app/ledger.py rebuild` to reconcile the existing data. Data directory: /app/data/. Commands: receive, ship, return, correct, rebuild, show, verify, history, log.",
+    "solution_outline": [
+      "Fix _get_ref_qty to scan the entire event log for all prior CORRECT events with matching ref_id and return the latest effective quantity (the original qty updated by the most recent correction), instead of returning only the original event's qty.",
+      "Fix process_event to check _is_applied before calling _persist, so redelivered events are neither logged nor applied twice.",
+      "Run `python3 /app/ledger.py rebuild` to deduplicate the existing log and rebuild the snapshot from the clean event sequence."
+    ],
+    "test_plan": [
+      "test_two_corrections_same_event: Start fresh. RECEIVE A 100 (E1), SHIP A 30 (E2), CORRECT E1→80 (C1), CORRECT E1→60 (C2). Assert snapshot[A]=30 and verify reports no discrepancy.",
+      "test_three_corrections_same_event: Start fresh. RECEIVE A 100 (E1), CORRECT E1→80 (C1), CORRECT E1→60 (C2), CORRECT E1→70 (C3). Assert snapshot[A]=70 and verify passes. Catches partial fix that only finds the first prior correction.",
+      "test_redelivery_idempotent: Start fresh. RECEIVE A 100 (E1), SHIP A 30 (E2), redeliver SHIP A 30 (E2). Assert snapshot[A]=70, the log contains exactly 2 entries (no duplicate E2), and verify passes.",
+      "test_redelivery_after_correction: Start fresh. RECEIVE A 100 (E1), SHIP A 30 (E2), CORRECT E1→80 (C1), redeliver RECEIVE A 100 (E1). Assert snapshot[A]=50 and verify passes.",
+      "test_correction_of_ship_event: Start fresh. RECEIVE A 100 (E1), SHIP A 30 (E2), CORRECT E2→20 (C1), CORRECT E2→10 (C2). Assert snapshot[A]=90 and verify passes.",
+      "test_redelivery_of_correction: Start fresh. RECEIVE A 100 (E1), CORRECT E1→80 (C1), redeliver CORRECT E1→80 (C1). Assert snapshot[A]=80, log has exactly 2 entries (E1, C1 — no duplicate C1), and verify passes.",
+      "test_empty_state: Start fresh with no events. Assert snapshot is empty and verify passes.",
+      "test_rebuild_then_new_corrections: Start fresh. RECEIVE A 100 (E1), SHIP A 30 (E2), rebuild, then CORRECT E1→80 (C1), CORRECT E1→60 (C2). Assert snapshot[A]=30 and verify passes."
+    ],
+    "anti_cheat": "The expected stock values are not stored anywhere in the image; they must be computed from first principles. No .git history, backup files, or pristine copies exist. The replay function correctly handles multi-corrections by tracking effective values, so it serves as the ground truth for verify — but the agent must still fix the live handler to keep the snapshot in sync going forward. Tests start from a clean state and process fresh events, so hard-coding the pre-loaded snapshot values cannot pass.",
+    "failure_modes": "A capable agent may fix only the log-dedup bug (the visible discrepancy in the pre-loaded data) and run rebuild, making verify pass on existing data. They then fail to notice that the correction handler computes deltas from the wrong base, because the pre-loaded data has only single corrections. Alternatively, they may add dedup logic to the replay function instead of fixing the event logger, which masks the symptom but leaves the log corrupt. Either partial fix passes the agent's own re-test but fails hidden tests that exercise multi-corrections or check log integrity after new redeliveries.",
+    "faults": [
+      {
+        "layer": "code",
+        "where": "ledger.py — _get_ref_qty and apply_correction",
+        "what": "_get_ref_qty returns the original event's qty field without checking for prior CORRECT events that updated the effective quantity. apply_correction uses this as the base for computing the adjustment delta, so a second correction to the same event computes new_qty − original_qty instead of new_qty − latest_effective_qty.",
+        "symptom": "After two or more corrections to the same event, the snapshot stock is wrong. With a single correction the delta happens to be correct, so the bug is latent in common usage.",
+        "how_discovered": "The agent must trace through a multi-correction sequence: after a first correction changes the effective quantity, a second correction still computes its delta from the original recorded quantity. Reading _get_ref_qty alone looks correct (it returns the referenced event's qty); the bug only emerges when considering that corrections change what the 'current' quantity of an event means.",
+        "central": true,
+        "wrong_fix": "Modify _get_ref_qty to scan for prior corrections but stop at the first one found (e.g. using a break after finding the earliest correction). This returns the first correction's new_qty as the effective value, which happens to be correct for exactly two corrections but wrong for three or more.",
+        "counterexample": "RECEIVE A 100, CORRECT→80, CORRECT→60, CORRECT→70. The wrong fix computes adjustment 70−80=−10 (using first correction's 80) instead of 70−60=+10 (using latest effective 60), yielding snapshot A=50 instead of 70.",
+        "why_normal_case_passes": "With two corrections the first correction IS the latest prior correction, so the wrong fix gives the right delta. The agent's self-test likely uses only two corrections.",
+        "caught_by_test": "test_three_corrections_same_event applies three corrections and checks the final stock value."
+      },
+      {
+        "layer": "code",
+        "where": "ledger.py — process_event",
+        "what": "_persist(event) is called before the _is_applied dedup check, so a redelivered event is always written to the log even though the snapshot correctly skips it. The replay function processes every log entry without deduplication, so it double-counts redelivered RECEIVE/SHIP/RETURN events.",
+        "symptom": "Running verify on the pre-loaded data shows a discrepancy because the replay double-counts the redelivered SHIP event present in the log.",
+        "how_discovered": "Running verify shows a discrepancy from the pre-loaded data; inspecting the log reveals a duplicate entry. The _persist-first pattern in process_event looks like a durability design choice; the agent must reason that the log should only contain events that were actually applied, not merely persisted.",
+        "central": true,
+        "wrong_fix": "Add deduplication to the replay function (skip events whose event_id was already seen during replay) instead of preventing duplicates from entering the log. This makes verify pass but leaves the log containing duplicate entries, violating the log-integrity requirement.",
+        "counterexample": "Process a redelivery after the wrong fix. The log still gains a duplicate entry. The test reads the log file and finds two entries with the same event_id.",
+        "why_normal_case_passes": "With dedup in replay, verify reports no discrepancy. The agent's re-test (run verify) passes.",
+        "caught_by_test": "test_redelivery_idempotent reads the event log file and asserts that each event_id appears exactly once."
+      }
+    ],
+    "decoys": [],
+    "hidden_edge_cases": [
+      "Three corrections to the same event (catches partial fix that only finds the first prior correction)",
+      "Redelivery of a correction event itself (must be idempotent; log must not duplicate it)",
+      "Correcting a SHIP event twice (not just RECEIVE events)",
+      "Rebuild followed by new multi-corrections (effective-quantity tracking must survive rebuild)"
+    ],
+    "why_not_textbook": "The correction-delta bug is specific to this event-sourced domain: it arises from the interaction between incremental snapshot maintenance and the event log's role as ground truth. There is no well-known bug pattern name for 'compute correction delta from latest effective value rather than original recorded value.' The redelivery logging bug is a subtle ordering issue (persist-then-check vs. check-then-persist) that looks like a reasonable durability-first design choice, not a textbook concurrency flaw.",
+    "static_read": "Reading the code shows that _get_ref_qty returns the recorded qty of the referenced event and that process_event calls _persist before the dedup check. Each choice looks locally reasonable — _persist ensures durability before processing, and _get_ref_qty returns the referenced event's own quantity. The bugs only emerge when tracing through sequences: a second correction computes the delta from the original quantity instead of the current effective quantity, and a redelivery writes a duplicate to the log. The replay function correctly tracks effective values across corrections, providing the contrast that makes verify fail, but the agent must connect that contrast to the snapshot handler's logic rather than assume the replay is what needs fixing.",
+    "crux": "A correction's stock adjustment must be computed relative to the referenced event's latest effective quantity (which accounts for all prior corrections to that event), not relative to the original event's recorded quantity. Each correction supersedes the previous effective value, so the delta is new_qty minus whatever the event's effective quantity was just before this correction arrived. Separately, the event log must be guarded against duplicate entries from redeliveries — the idempotency check must precede the log append, not follow it.",
+    "challenge_kind": "retry_idempotency",
+    "sequence_invariant": "After processing any sequence of events (including late corrections and redeliveries), the snapshot must equal a full replay of the event log, and the log must contain no duplicate event_ids.",
+    "nameable_fix": "compute correction delta from latest effective value; check idempotency before logging",
+    "self_check_blind_spot": "The agent fixes the log-dedup bug (the visible discrepancy in the pre-loaded data), runs rebuild to clean up, and verify passes on the existing data. Since the pre-loaded data contains only single corrections (where the correction handler is correct), the agent does not test with multiple corrections to the same event and misses the latent correction-delta bug."
+  }
+}
+```
