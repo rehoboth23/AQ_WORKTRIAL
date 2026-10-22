@@ -424,7 +424,7 @@ def render() -> str:
         calib.append({"time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(b["mtime"])), "name": b["job"],
                       "verdict": b["verdict"], "passes": sum(t == "pass" for t in b["trials"]),
                       "note": "harbor job run outside the pipeline: " + " ".join(b["trials"])})
-    calib = sorted(calib, key=lambda r: str(r.get("time", "")))[-12:]
+    calib = sorted(calib, key=lambda r: str(r.get("time", "")))[-12:][::-1]  # newest first
     today = time.strftime("%Y-%m-%d")
     eval_cost = sum(r.get("cost_usd") or 0 for r in _jsonl(CALIBRATION_FILE) if str(r.get("time", "")).startswith(today))
     gen_tokens = 0
