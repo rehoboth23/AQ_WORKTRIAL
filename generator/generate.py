@@ -37,6 +37,7 @@ from checks import _read, run_all, run_harbor
 from config import (
     CANARY_LINE,
     GEN_REASONING,
+    GEN_REASONING_BUDGET,
     INSTRUCTION_REVIEW,
     LOGS_DIR,
     BONUS_REPAIR_ROUND,
@@ -61,10 +62,11 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
     re-paying). Replies are keyed by model + prompts; a resumed run gets the same prompts for
     every call that finished before the kill, so those replies come back free."""
     # Per-stage reasoning effort (config.GEN_REASONING), by the label's stage name.
-    effort = GEN_REASONING.get(re.split(r"[-_]", label, maxsplit=1)[0])
+    stage = re.split(r"[-_]", label, maxsplit=1)[0]
+    effort, budget = GEN_REASONING.get(stage), GEN_REASONING_BUDGET.get(stage) or None
     run = getattr(log, "__self__", None)
     if not isinstance(run, RunLog):
-        return llm.chat(system, user, parse, log, label, reasoning=effort)
+        return llm.chat(system, user, parse, log, label, reasoning=effort, reasoning_budget=budget)
     salt = f"\0{effort}" if effort else ""  # unset effort keeps the earlier cache keys valid
     key = hashlib.sha256(f"{MODEL}\0{system}\0{user}{salt}".encode("utf-8")).hexdigest()[:24]
     path = os.path.join(run.dir, "cache", f"{key}.txt")
@@ -78,7 +80,7 @@ def chat(system: str, user: str, parse, log=None, label: str = "call"):
         else:
             run.event("llm_cached", label=label, key=key)
             return parsed, text, {}
-    parsed, text, usage = llm.chat(system, user, parse, log, label, reasoning=effort)
+    parsed, text, usage = llm.chat(system, user, parse, log, label, reasoning=effort, reasoning_budget=budget)
     write_text_atomic(path, text)
     return parsed, text, usage
 

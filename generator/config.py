@@ -150,6 +150,12 @@ WAVE_POLL_SEC = float(os.environ.get("WAVE_POLL_SEC", "30"))
 # Optional glm-5.1 reasoning effort per stage (e.g. GEN_REASONING_SPEC=medium); unset = gateway default.
 GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
+# Hidden-reasoning token budget per stage (GEN_REASONING_BUDGET_FILES=20000; 0 = gateway default). The
+# file-writing calls hit the 32,768-token output cap with every token spent on reasoning and no files
+# written (five runs on 22 Oct, 10-15 minutes each); a budget leaves room for the visible reply.
+GEN_REASONING_BUDGET = {stage: int(os.environ.get(f"GEN_REASONING_BUDGET_{stage.upper()}")
+                                   or {"project": 16000, "files": 16000, "repair": 16000}.get(stage, 0))
+                        for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Spec attempts when the spec gate fails (each is one more spec call).
 MAX_SPEC_ATTEMPTS = _retry_limit("MAX_SPEC_ATTEMPTS", 2)
 # Generated-input tests: tests also compare the solution with a hidden reference on seeded

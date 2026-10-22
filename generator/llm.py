@@ -47,8 +47,18 @@ def _get_client() -> OpenAI:
     return _client
 
 
+def reasoning_body(effort: str | None, budget: int | None) -> dict:
+    """OpenRouter-style reasoning control: effort and/or a hidden-token budget; empty when neither is set."""
+    r = {}
+    if effort:
+        r["effort"] = effort
+    if budget:
+        r["max_tokens"] = int(budget)
+    return {"extra_body": {"reasoning": r}} if r else {}
+
+
 def chat(system: str, user: str, parse, log=None, label: str = "call", reasoning: str | None = None,
-         model: str | None = None):
+         model: str | None = None, reasoning_budget: int | None = None):
     """Call the model and return (parsed, raw_text, usage).
 
     `parse` turns the reply text into a value or raises ValueError; a parse
@@ -66,7 +76,7 @@ def chat(system: str, user: str, parse, log=None, label: str = "call", reasoning
             log(label, {"phase": "start", "attempt": attempt, "model": model, "reasoning": reasoning})
         try:
             # OpenRouter-style reasoning control; omitted entirely unless a stage sets it.
-            extra = {"extra_body": {"reasoning": {"effort": reasoning}}} if reasoning else {}
+            extra = reasoning_body(reasoning, reasoning_budget)
             resp = _get_client().chat.completions.create(
                 model=model,
                 messages=[
