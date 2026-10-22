@@ -110,6 +110,11 @@ CONFIRM_EVALS = int(os.environ.get("CONFIRM_EVALS", "1"))
 # Report-only flag: a too-easy task whose passing runs all took at most this many agent steps is
 # marked 'fast' in the record (the verdict is never changed by it).
 FAST_SOLVE_STEPS = int(os.environ.get("FAST_SOLVE_STEPS", "12"))
+# Batch waves: at most BAND_SLOTS band evals run at once across all copies of a batch (each is
+# 5 agent containers plus sidecars; 2 suits 8 GB of Docker memory, 4 suits 16 GB). Copies poll
+# every WAVE_POLL_SEC for a free slot or for a wave to finish.
+BAND_SLOTS = int(os.environ.get("BAND_SLOTS", "2"))
+WAVE_POLL_SEC = float(os.environ.get("WAVE_POLL_SEC", "30"))
 # Optional glm-5.1 reasoning effort per stage (e.g. GEN_REASONING_SPEC=medium); unset = gateway default.
 GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}

@@ -355,7 +355,8 @@ implementation, tests). It is UNFAIR if a rule is vague or ambiguous (two reason
 with different outputs), if a test would check something no rule states (an unstated format,
 a magic value), or if a test input cannot be produced deterministically.
 
-If it is too easy or unfair, rewrite the spec to fix every problem while keeping it fair,
+If results of earlier designs are given, a design that repeats a shape those results show was
+too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while keeping it fair,
 solvable, deterministic and on the same topic: add independent rules on new themes, sharpen
 vague rules, move test inputs away from the examples. Do not add hidden faults.
 
@@ -460,8 +461,37 @@ def mutants_user(faults: list, solve_sh: str) -> str:
             + "\n\nCorrect solution/solve.sh:\n" + solve_sh + "\n\nWrite the mutant scripts now.\n")
 
 
-def critic_user(spec: dict) -> str:
-    return "Task spec to review:\n\n" + json.dumps(spec, indent=2) + "\n"
+def critic_user(spec: dict, calibration: str = "") -> str:
+    return ("Task spec to review:\n\n" + json.dumps(spec, indent=2) + "\n"
+            + (f"\nResults of earlier designs under these rules:\n{calibration}\n" if calibration else ""))
+
+
+POSTMORTEM_SYSTEM = """\
+You write the lesson from one evaluated Terminal-Bench 2 task, for the designer of the next one.
+You get the design (rules or faults), the mutation check (which incomplete solutions the tests
+caught), and every agent run: pass or fail, steps, failed tests, and the triage reason.
+
+Say in 2-3 plain sentences WHY the task landed where it did: which rules or faults every run got
+right and how (read from the code, derived from the goal, tested itself), which ones caused
+failures, and what the next design should do differently (more independent rules on new themes,
+sharper hidden inputs, a different kind) or keep. Be concrete; name the rules or tests.
+
+Reply with ONE JSON object and nothing else:
+{"lesson": "2-3 sentences", "held": ["rules/faults every run got right"], "failed": ["rules/faults that caused failures"]}
+"""
+
+
+def postmortem_user(spec: dict, mutation: list, trials: list, triage: list) -> str:
+    design = {"name": spec.get("name"), "challenge_kind": spec.get("challenge_kind"),
+              "requirements": [{"id": r.get("id"), "rule": str(r.get("rule"))[:160], "theme": r.get("theme")}
+                               for r in spec.get("requirements") or [] if isinstance(r, dict)],
+              "faults": [str(f.get("what"))[:160] for f in spec.get("faults") or [] if isinstance(f, dict)]}
+    runs = [{"outcome": t.get("outcome"), "steps": t.get("episodes"), "failed_tests": t.get("failed_tests"),
+             "first_touched_fix_files_at_step": t.get("found_step")} for t in trials]
+    return ("Design:\n" + json.dumps(design, indent=1) + "\n\nMutation check (incomplete solutions vs the tests):\n"
+            + json.dumps([{k: m.get(k) for k in ("fault", "verdict")} for m in mutation or []])
+            + "\n\nAgent runs:\n" + json.dumps(runs, indent=1) + "\n\nTriage of failures:\n"
+            + json.dumps([{k: f.get(k) for k in ("trial", "fault", "category", "reason")} for f in triage or []], indent=1) + "\n")
 
 
 def spec_retry_user(topic: str, calibration: str, problems: list[str]) -> str:

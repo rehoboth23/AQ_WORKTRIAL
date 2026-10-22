@@ -35,6 +35,7 @@ from checks import CHILDREN, kill_tree
 from config import (
     BAND_HIGH,
     BAND_LOW,
+    BAND_SLOTS,
     CALIBRATION_FILE,
     CALIBRATION_WINDOW,
     CONFIRM_EVALS,
@@ -56,11 +57,14 @@ from config import (
     N_RUNS,
     REJECTED_DIR,
     REPORTS_DIR,
+    WAVE_POLL_SEC,
 )
 from difficulty import env_lines, solve_lines
 from evaluate import TRIAL_WALL_SEC, _collect, prior_band_jobs, run_band, triage
-from generate import RunLog, generate_task
+from generate import RunLog, chat, generate_task
+from llm import LLMError, parse_json_object
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
+import fcntl
 
 # The knob values a task was generated under, recorded with its verdict: the values in
 # difficulty.toml can change between runs.
@@ -124,7 +128,7 @@ def task_features(task_dir: str, spec: dict | None = None) -> dict:
 
 
 def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict | None = None,
-                  run_id: str | None = None, on_start=None) -> dict:
+                  run_id: str | None = None, on_start=None, mutation: list | None = None) -> dict:
     """Band-eval one task, triage it if learnable, then keep or reject it.
     Control-arm results are recorded but kept out of the calibration history.
     With the run_id of a killed eval, its finished trials are reused (evaluate.run_band)."""
@@ -168,9 +172,10 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
                                   "cost_usd": c.cost_usd, "seconds": c.seconds, "jobs": c.jobs})
         log.event("confirmation", task=meta["name"], results=[(c["verdict"], c["passes"]) for c in confirmations])
     confirmed = bool(confirmations) and all(c["verdict"] == "learnable" for c in confirmations)
+    pm = postmortem(spec, mutation, band, failures, log)
 
     record = {**meta, "arm": arm, "run_id": run_id, "features": features, "verdict": band.verdict,
-              "confirmations": confirmations, "confirmed": confirmed,
+              "confirmations": confirmations, "confirmed": confirmed, "lesson": pm.get("lesson", ""), "postmortem": pm,
               "passes": band.passes, "n_valid": band.n_valid, "n_invalid": band.n_invalid,
               "decision": decision, "why": why, "triage": failures, "band": band.to_dict(),
               "eval_model": EVAL_MODEL, "reasoning_effort": EVAL_REASONING_EFFORT}
@@ -195,13 +200,35 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
                         "design_version": DESIGN_VERSION,
                         "name": meta["name"], "description": meta["description"],
                         "difficulty": meta["difficulty"], "passes": band.passes, "n": N_RUNS,
-                        "challenge_kind": (spec or {}).get("challenge_kind"),
+                        "challenge_kind": (spec or {}).get("challenge_kind"), "lesson": pm.get("lesson", ""),
                         "verdict": band.verdict, "note": note, "features": features,
                         "median_steps": band.median_steps, "median_found_step": band.median_found_step,
                         "cost_usd": band.cost_usd})
     log.event("band_done", task=meta["name"], verdict=band.verdict, passes=band.passes,
               decision=decision)
     return record
+
+
+def _parse_postmortem(text: str) -> dict:
+    obj = parse_json_object(text)
+    if not str(obj.get("lesson") or "").strip():
+        raise ValueError("no lesson")
+    lst = lambda v: [str(x) for x in v] if isinstance(v, list) else []
+    return {"lesson": str(obj["lesson"]).strip(), "held": lst(obj.get("held")), "failed": lst(obj.get("failed"))}
+
+
+def postmortem(spec: dict | None, mutation: list | None, band, failures: list, log: RunLog) -> dict:
+    """One short glm call: why the task landed where it did, for the next design's calibration.
+    Best effort; an empty dict on a model error never changes the verdict."""
+    if band.verdict == "error" or not spec:
+        return {}
+    try:
+        pm, _, _ = chat(prompts.POSTMORTEM_SYSTEM, prompts.postmortem_user(spec, mutation or [], band.trials, failures),
+                        _parse_postmortem, log.llm, "postmortem")
+        return pm
+    except LLMError as e:
+        log.event("postmortem_error", error=str(e)[:200])
+        return {}
 
 
 # --- cost and time (Part 3) ---------------------------------------------------------------
@@ -304,6 +331,8 @@ def verdict_md(state: dict) -> str:
         lines.append(f"- confirmation eval {i}: {c['passes']}/{c['n_valid']} -> {c['verdict']}")
     if rec.get("confirmations"):
         lines.append(f"- **confirmed: {'yes' if rec.get('confirmed') else 'no'}** (every repeat eval must land 1-3/5)")
+    if rec.get("lesson"):
+        lines += ["", "## Lesson", "", rec["lesson"]]
     lines += ["", "## Evidence", "", f"- generation log: `{logs}` (events.jsonl, raw model replies, spec.json)"]
     for j in band.get("jobs") or []:
         lines.append(f"- harbor job: `{j}`")
@@ -395,12 +424,76 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
             spec = json.load(f)
     except FileNotFoundError:
         pass
-    rec = evaluate_task(gen["task_dir"], log, arm, spec, run_id=st["run_id"],
-                        on_start=lambda pid: ledger.update(topic, harbor_pid=pid))
+    mutation = ((gen.get("rounds") or [{}])[-1] or {}).get("mutation")
+    slot = _acquire_band_slot(ledger, topic)
+    try:
+        rec = evaluate_task(gen["task_dir"], log, arm, spec, run_id=st["run_id"],
+                            on_start=lambda pid: ledger.update(topic, harbor_pid=pid), mutation=mutation)
+    finally:
+        _release_band_slot(ledger, topic, slot)
     record = {**rec, "topic": topic, "stage": "eval", "gen_logs_dir": gen["logs_dir"]}
     st = ledger.set(topic, "done", why=record["decision"], record=record, harbor_pid=None)
     write_text_atomic(os.path.join(record["task_dir"], "VERDICT.md"), verdict_md(st))
     return record
+
+
+def _acquire_band_slot(ledger: Ledger, topic: str):
+    """Block until one of BAND_SLOTS slot locks is free (flock, released by the OS if the holder
+    dies). Generation and the one-container checks run outside the slots."""
+    os.makedirs(os.path.join(ledger.dir, "slots"), exist_ok=True)
+    waited = False
+    while True:
+        for n in range(BAND_SLOTS):
+            f = open(os.path.join(ledger.dir, "slots", f"{n}.lock"), "a")
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                f.close()
+                continue
+            ledger.audit("band_slot_acquired", topic=topic, slot=n, t=time.time(), waited=waited)
+            return n, f
+        if not waited:
+            ledger.audit("band_slot_wait", topic=topic, slots=BAND_SLOTS)
+            waited = True
+        time.sleep(WAVE_POLL_SEC)
+
+
+def _release_band_slot(ledger: Ledger, topic: str, slot) -> None:
+    n, f = slot
+    fcntl.flock(f, fcntl.LOCK_UN)
+    f.close()
+    ledger.audit("band_slot_released", topic=topic, slot=n, t=time.time())
+
+
+def wave_gate(ledger: Ledger, prev_topics: list[str], wave_no: int) -> dict:
+    """Wait until every topic of the previous wave is finished, then decide GO / NO-GO once per
+    batch (the first copy to decide writes the file; the others read it)."""
+    path = os.path.join(ledger.dir, f"wave{wave_no}_gate.json")
+    while not os.path.exists(path):
+        states = [ledger.get(t) for t in prev_topics]
+        if all(s["stage"] in ("done", "gen_failed") for s in states):
+            break
+        time.sleep(WAVE_POLL_SEC)
+    with file_lock(path + ".lock"):
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        recs = [s.get("record") or {} for s in states]
+        evaluated = [r for r in recs if r.get("verdict") in ("too_easy", "learnable", "too_hard")]
+        unfair = [r for r in recs if str(r.get("why", "")).startswith("unfair")]
+        if not evaluated:
+            decision, reason = "no-go", "no wave task reached a band eval"
+        elif len(unfair) >= 2:
+            decision, reason = "no-go", f"{len(unfair)} tasks were rejected as unfair"
+        elif all(r.get("verdict") == "too_easy" for r in evaluated):
+            decision, reason = "no-go", f"every evaluated task was too easy ({len(evaluated)} of {len(recs)})"
+        else:
+            decision, reason = "go", (f"{sum(r.get('verdict') == 'learnable' for r in evaluated)} learnable, "
+                                      f"{sum(r.get('verdict') == 'too_hard' for r in evaluated)} too hard of {len(evaluated)} evaluated")
+        gate = {"wave": wave_no, "decision": decision, "reason": reason, "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        write_json_atomic(path, gate)
+        ledger.audit("wave_gate", **gate)
+        return gate
 
 
 # --- report (Part 3) ------------------------------------------------------------------------
@@ -437,11 +530,13 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
 
     evaluated = [r["rec"] for r in rows if r["flags"]["evaluated"]]
     hist = {k: sum(1 for r in evaluated if r.get("passes") == k) for k in range(N_RUNS + 1)}
+    gates = [json.load(open(p, encoding="utf-8")) for p in sorted(glob.glob(os.path.join(ledger.dir, "wave*_gate.json")))] if ledger else []
     lines = [f"# Batch {batch_id}", "",
              f"Generator `{MODEL}`. Eval `{EVAL_MODEL}`, reasoning_effort={EVAL_REASONING_EFFORT}, "
              f"{N_RUNS} runs per task; learnable = {BAND_LOW}-{BAND_HIGH} passes.",
              f"Topics finished: {done} / {n}" + ("" if done == n else " (batch still running or was killed; "
-                                                    "`--resume` continues it)"), "",
+                                                    "`--resume` continues it)"),
+             *[f"Wave {g['wave']} gate: **{g['decision'].upper()}** ({g['reason']})" for g in gates], "",
              "## Funnel", "", "| stage | tasks | of topics |", "|---|---|---|"]
     for label, key in (("spec passed the difficulty gate", "spec_ok"), ("files written", "files_written"),
                        ("structural validation passed", "structural"),
@@ -514,6 +609,9 @@ def main() -> int:
     src.add_argument("--smoke", metavar="TASK_DIR",
                      help="run the eval agent once to check the eval config; no verdict, nothing moved")
     parser.add_argument("--limit", type=int, help="only the first N topics")
+    parser.add_argument("--waves", help="comma-separated wave sizes, e.g. 3,7: a later wave starts only if "
+                                        "the previous one passed the go/no-go gate (at least one learnable or "
+                                        "too-hard task, fewer than 2 unfair)")
     parser.add_argument("--batch-id", help="name for this batch (default: batch-<time>); an existing "
                                            "batch id resumes that batch")
     parser.add_argument("--control", action="store_true",
@@ -550,21 +648,36 @@ def main() -> int:
             topics = [l.strip() for l in f if l.strip() and not l.lstrip().startswith("#")]
         ledger.save_topics(topics[: args.limit])
     topics = ledger.stored_topics()[: args.limit]
-    ledger.audit("batch_start", batch=batch_id, topics=len(topics), control=args.control)
+    sizes = [int(x) for x in args.waves.split(",")] if args.waves else [len(topics)]
+    waves, start = [], 0
+    for size in sizes:
+        waves.append(topics[start:start + size])
+        start += size
+    if start < len(topics):
+        waves.append(topics[start:])
+    ledger.audit("batch_start", batch=batch_id, topics=len(topics), waves=[len(w) for w in waves], control=args.control)
     skipped = []
-    for topic in topics:
-        if not ledger.try_lock(topic):  # another copy is working on it
-            ledger.audit("skipped_locked", topic=topic)
-            skipped.append(topic)
-            continue
-        try:
-            process_topic(topic, ledger, log, args.control)
-        finally:
-            ledger.unlock(topic)
-        write_report(batch_id, ledger)  # refreshed after every topic, so a kill loses nothing
-    ledger.audit("batch_end", batch=batch_id, skipped_locked=len(skipped))
+    stopped = ""
+    for w, wave in enumerate(waves, 1):
+        if w > 1:
+            gate = wave_gate(ledger, waves[w - 2], w)
+            if gate["decision"] != "go":
+                stopped = f"wave {w} not started: {gate['reason']}"
+                break
+        for topic in wave:
+            if not ledger.try_lock(topic):  # another copy is working on it
+                ledger.audit("skipped_locked", topic=topic)
+                skipped.append(topic)
+                continue
+            try:
+                process_topic(topic, ledger, log, args.control)
+            finally:
+                ledger.unlock(topic)
+            write_report(batch_id, ledger)  # refreshed after every topic, so a kill loses nothing
+    ledger.audit("batch_end", batch=batch_id, skipped_locked=len(skipped), stopped=stopped)
     report = write_report(batch_id, ledger)
-    print(f"Report: {report}" + (f" ({len(skipped)} topics were being processed by another copy)" if skipped else ""))
+    print(f"Report: {report}" + (f" ({len(skipped)} topics were being processed by another copy)" if skipped else "")
+          + (f"; {stopped}" if stopped else ""))
     return 0
 
 

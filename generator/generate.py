@@ -227,7 +227,7 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log)
 
     if SPEC_CRITIC:
         try:
-            critic, _, _ = chat(prompts.CRITIC_SYSTEM, prompts.critic_user(spec), parse_critic, log.llm, "critic")
+            critic, _, _ = chat(prompts.CRITIC_SYSTEM, prompts.critic_user(spec, calibration), parse_critic, log.llm, "critic")
             log.write_json("critic.json", critic)
             revised_problems = difficulty.spec_gate(critic["spec"])
             log.event("critic", too_easy_because=critic["too_easy_because"], revised_gate=revised_problems)
