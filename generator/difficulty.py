@@ -17,33 +17,10 @@ import posixpath
 import re
 import statistics
 
-from config import (
-    CRITIC_FOUND_WITHIN,
-    DISCOVERY,
-    MAX_FAULTS,
-    MAX_RULES,
-    MAX_DECISIONS,
-    MAX_KNOWLEDGE,
-    MAX_OBSTACLES,
-    MAX_SITES,
-    MIN_DECISIONS,
-    MIN_KNOWLEDGE,
-    MIN_OBSTACLES,
-    MIN_PRESERVED,
-    MIN_RULES,
-    MIN_SITES,
-    MIN_THEMES,
-    MAX_LEAKED_LITERALS,
-    MIN_FAULT_LAYERS,
-    MIN_FAULTS,
-)
+from config import MAX_CHECKS, MAX_LEAKED_LITERALS, MIN_CHECKS
 
-LAYERS = {"build", "code", "config", "data", "runtime"}
 # Problem shapes where the reference agent failed fairly (behaviour over a sequence); "other" is
 # allowed but must still name a sequence invariant.
-CHALLENGE_KINDS = {"incremental_state", "resume_after_interruption", "retry_idempotency",
-                   "ordering_and_duplicates", "cache_invalidation", "format_migration",
-                   "streaming_boundaries", "other"}
 
 
 def _words(text) -> set[str]:
@@ -53,45 +30,6 @@ def _words(text) -> set[str]:
 def _similar(a: set[str], b: set[str], threshold: float = 0.8) -> bool:
     """Two defect descriptions sharing most of their words describe the same bug."""
     return bool(a and b) and len(a & b) / len(a | b) >= threshold
-
-
-def discovery_eval(spec: dict) -> dict:
-    """Grade the critic's estimate of WHEN the agent finds each fault.
-
-    Gaps are the steps between consecutive discoveries. Rejected as too easy if the first fault
-    is found before CRITIC_FOUND_WITHIN or any gap is below min_gap (two faults falling to the
-    same look). Otherwise graded by the median gap; above too_hard_above it is only flagged.
-    """
-    d = DISCOVERY
-    steps = []
-    for f in spec.get("faults") or []:
-        try:
-            steps.append(float((f or {}).get("discovered_at_step")))
-        except (TypeError, ValueError):
-            return {"grade": "unknown", "problem": "every fault needs a numeric `discovered_at_step` "
-                    "(the agent step at which it would be found)"}
-    if len(steps) < 2:
-        return {"grade": "unknown", "problem": "need at least 2 faults with `discovered_at_step`"}
-    steps.sort()
-    gaps = [b - a for a, b in zip(steps, steps[1:])]
-    median, smallest = statistics.median(gaps), min(gaps)
-    horizon = steps[-1]
-    out = {"first": steps[0], "median_gap": median, "min_gap": smallest, "horizon": horizon,
-           "timeout_risk": horizon > d["timeout_risk_steps"], "problem": ""}
-    if steps[0] < CRITIC_FOUND_WITHIN or smallest < d["min_gap"]:
-        out["grade"] = "too_easy"
-        out["problem"] = (f"discovery too fast: first fault at step {steps[0]:g} (needs >= {CRITIC_FOUND_WITHIN}), "
-                          f"smallest gap between finds {smallest:g} (needs >= {d['min_gap']}); "
-                          "faults must be found one at a time, spaced out")
-    elif median > d["too_hard_above"]:
-        out["grade"] = "too_hard"
-    elif median >= d["very_hard_gap"]:
-        out["grade"] = "very_hard"
-    elif median >= d["hard_gap"]:
-        out["grade"] = "hard"
-    else:
-        out["grade"] = "moderate"
-    return out
 
 
 # Spec/eval vocabulary that must never appear in what the solving agent sees (instruction.md and
@@ -120,266 +58,57 @@ def meta_leaks(files: dict[str, str]) -> list[str]:
     return hits
 
 
-SPEC_KINDS = {"build_from_spec", "exact_data_transform", "large_corpus_migration"}
-
-
-def spec_gate_spec(spec: dict) -> list[str]:
-    """Specification tasks: enough independent, precisely stated rules over several themes, a
-    hidden input per rule, and no oracle in the environment."""
-    rules = spec.get("requirements") or []
-    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
-        return ["`requirements` must be a list of requirement objects"]
-    problems = []
-    if not str(spec.get("spec_document") or "").strip():
-        problems.append("needs `spec_document`: the path under environment/ of the document that states every rule "
-                        "(instruction.md names it and does not list the rules)")
-    if len(rules) < MIN_RULES:
-        problems.append(f"needs at least {MIN_RULES} independent requirements, has {len(rules)}")
-    if len(rules) > MAX_RULES:
-        problems.append(f"has {len(rules)} requirements; at most {MAX_RULES}")
-    incomplete = [str(r.get("id") or i) for i, r in enumerate(rules)
-                  if not all(str(r.get(k) or "").strip() for k in ("rule", "default_behaviour", "hidden_test_input"))]
-    if incomplete:
-        problems.append("every requirement needs `rule`, `default_behaviour` (what the agent gets without it) and "
-                        f"`hidden_test_input` (the input its test uses); missing on {', '.join(incomplete[:6])}")
-    texts = [_words(r.get("rule", "")) for r in rules]
-    dupes = [(rules[i].get("id") or i, rules[j].get("id") or j) for i in range(len(texts))
-             for j in range(i + 1, len(texts)) if _similar(texts[i], texts[j])]
-    if dupes:
-        problems.append("requirements must be different rules, not one rule restated: " + ", ".join(f"{a}~{b}" for a, b in dupes[:4]))
-    themes = {str(r.get("theme") or "").strip().lower() for r in rules} - {"", "other"}
-    if len(themes) < MIN_THEMES:
-        problems.append(f"rules must span at least {MIN_THEMES} distinct themes (formatting, arithmetic, ordering, "
-                        f"unicode_width, structure, input_tolerance, error_handling, edge_inputs); found {sorted(themes) or 'none'}")
-    if rules and max(sum(1 for r in rules if str(r.get("theme") or "").lower() == t) for t in themes | {""}) > len(rules) // 2:
-        problems.append("more than half the rules share one theme; once the agent gets the theme it gets them all")
-    kind = str(spec.get("challenge_kind") or "").strip().lower()
-    if kind not in SPEC_KINDS:
-        problems.append(f"`challenge_kind` must be one of {sorted(SPEC_KINDS)} (specification tasks; hidden-fault "
-                        "tasks are not generated any more)")
-    preserved = spec.get("preserved_behaviours") or []
-    if len([b for b in preserved if isinstance(b, dict) and str(b.get("behaviour") or "").strip()]) < MIN_PRESERVED:
-        problems.append(f"needs at least {MIN_PRESERVED} `preserved_behaviours` (existing behaviours the instruction does not "
-                        "enumerate, each with a hidden_test_input), so a rewrite from the rules alone fails")
-    for key, why in (("self_check_blind_spot", "which rules an agent is likely to forget or misread, and why"),
-                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)"),
-                     ("reference_in_environment", "what in the environment already produces the correct output (must be none)")):
-        if not str(spec.get(key) or "").strip():
-            problems.append(f"needs `{key}`: {why}")
-    for key, what in (("runnable_reference", "run a reference that computes the correct answer"),
-                      ("reference_in_environment", "read the correct output or a reference implementation")):
-        v = str(spec.get(key) or "").strip()
-        if v and not re.match(r"(?i)[\s*-]*none\b", v):
-            problems.append(f"the agent can {what} ({v[:160]}); remove it from the environment")
-    return problems
-
-
-def spec_gate_fault(spec: dict) -> list[str]:
-    """Hidden-fault genre (retired as the default; kept for mixed batches)."""
-    faults = spec.get("faults") or []
-    if not isinstance(faults, list):
-        return ["`faults` must be a list of fault objects"]
-    problems = []
-    if len(faults) < MIN_FAULTS:
-        problems.append(f"needs at least {MIN_FAULTS} different faults, has {len(faults)}")
-    layers = {str(f.get("layer", "")).lower() for f in faults if isinstance(f, dict)} & LAYERS
-    if len(layers) < MIN_FAULT_LAYERS:
-        problems.append(f"faults must span at least {MIN_FAULT_LAYERS} layers of "
-                        f"{sorted(LAYERS)}, found {sorted(layers) or 'none'}")
-    # "One fault repeated" means the same KIND of bug fixed in several places (e.g. one sed in
-    # four files), not several different bugs that happen to share a file or view.
-    whats = [_words(f.get("what", "")) for f in faults if isinstance(f, dict)]
-    if any(_similar(a, b) for i, a in enumerate(whats) for b in whats[i + 1:]):
-        problems.append("faults must be different bugs, not the same fix repeated in several places")
-    if not spec.get("hidden_edge_cases"):
-        problems.append("needs at least one hidden edge case the tests check")
-    if len(faults) > MAX_FAULTS:
-        problems.append(f"has {len(faults)} faults; at most {MAX_FAULTS} (more faults make a longer "
-                        "proofreading list, not a harder task)")
-    trap_keys = ("wrong_fix", "counterexample", "caught_by_test")
-    traps = [f for f in faults if isinstance(f, dict) and all(str(f.get(k) or "").strip() for k in trap_keys)]
-    if len(traps) < min(2, len(faults)):
-        problems.append("at least 2 central faults need `wrong_fix` (the plausible incomplete fix a strong "
-                        "agent tries first), `counterexample` (the exact input or sequence on which it is "
-                        "wrong) and `caught_by_test` (the hidden test that runs it)")
-    kind = str(spec.get("challenge_kind") or "").strip().lower()
-    if kind not in CHALLENGE_KINDS:
-        problems.append(f"`challenge_kind` must be one of {sorted(CHALLENGE_KINDS)}; build the task around "
-                        "a defect that shows only over a sequence of runs or events, not a named technique")
-    for key, why in (("static_read", "what reading the code alone reveals, and why it is not enough"),
-                     ("crux", "the domain insight the complete fix depends on"),
-                     ("sequence_invariant", "the invariant over sequences that instruction.md states"),
-                     ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
-                     ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it"),
-                     ("reference_in_environment", "what in the environment already computes the correct handling (must be none)"),
-                     ("interaction", "the components or runs whose interaction causes the defect, each correct on its own"),
-                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)")):
-        if not str(spec.get(key) or "").strip():
-            problems.append(f"needs `{key}`: {why}")
-    runnable = str(spec.get("runnable_reference") or "").strip()
-    if runnable and not re.match(r"(?i)[\s*-]*none\b", runnable):
-        problems.append(f"the agent can run a reference that computes the correct answer ({runnable[:160]}) and "
-                        "fuzz its fix against it; remove it, or make it share the flaw")
-    ref = str(spec.get("reference_in_environment") or "").strip()
-    if ref and not re.match(r"(?i)[\s*-]*none\b", ref):  # "none", "- none" (a list reply), "None: ..."
-        problems.append("the environment already contains the correct handling of the tricky case "
-                        f"({ref[:160]}); the agent would copy it. Make the reference path share the flaw, "
-                        "or make the reference a stated behaviour, not working code")
-    return problems
-
-
-def spec_gate_judgement(spec: dict) -> list[str]:
-    """Judgement genre: one stated property, several violating sites with distinct mechanisms,
-    no oracle or reference."""
-    sites = spec.get("sites") or []
-    if not isinstance(sites, list) or not all(isinstance(x, dict) for x in sites):
-        return ["`sites` must be a list of site objects"]
-    problems = []
-    if not (MIN_SITES <= len(sites) <= MAX_SITES):
-        problems.append(f"needs {MIN_SITES} to {MAX_SITES} sites that violate the property, has {len(sites)}")
-    incomplete = [str(i) for i, x in enumerate(sites)
-                  if not all(str(x.get(k) or "").strip() for k in ("where", "mechanism", "differs_from_other_sites", "hidden_test_input"))]
-    if incomplete:
-        problems.append("every site needs `where`, `mechanism`, `differs_from_other_sites` and `hidden_test_input`; missing on " + ", ".join(incomplete[:5]))
-    mechs = [_words(x.get("mechanism", "")) for x in sites]
-    same = [(i, j) for i in range(len(mechs)) for j in range(i + 1, len(mechs)) if _similar(mechs[i], mechs[j], 0.6)]
-    if same:
-        problems.append("sites must differ in mechanism (one search must not find two): " + ", ".join(f"{i}~{j}" for i, j in same[:4]))
-    preserved = spec.get("preserved_behaviours") or []
-    if len([b for b in preserved if isinstance(b, dict) and str(b.get("behaviour") or "").strip()]) < MIN_PRESERVED:
-        problems.append(f"needs at least {MIN_PRESERVED} `preserved_behaviours` with a hidden_test_input each")
-    if str(spec.get("challenge_kind") or "").strip().lower() != "property_completeness":
-        problems.append("`challenge_kind` must be property_completeness for this genre")
-    for key, why in (("property", "the one property instruction.md states"), ("reported_symptom", "the one symptom instruction.md reports"),
-                     ("partial_fix", "the fix an agent makes first and which checks it passes"),
-                     ("self_check_blind_spot", "why the agent's own re-test passes after the partial fix"),
-                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)"),
-                     ("reference_in_environment", "what already handles the property correctly (must be none)")):
-        if not str(spec.get(key) or "").strip():
-            problems.append(f"needs `{key}`: {why}")
-    for key in ("runnable_reference", "reference_in_environment"):
-        v = str(spec.get(key) or "").strip()
-        if v and not re.match(r"(?i)[\s*-]*none\b", v):
-            problems.append(f"`{key}` must be none ({v[:120]})")
-    return problems
-
-
-_STAGES = {"dependencies", "build_config", "compile_abi", "environment", "stale_state", "service", "long_running", "logic"}
-
-
-def spec_gate_longroad(spec: dict) -> list[str]:
-    """Long-road genre: a chain of real obstacles between a stated failing state and an exact end
-    state, at least one silent (a wrong value), with shortcuts blocked by tests."""
-    obs = spec.get("obstacles") or []
-    if not isinstance(obs, list) or not all(isinstance(o, dict) for o in obs):
-        return ["`obstacles` must be a list of obstacle objects"]
-    problems = []
-    if not (MIN_OBSTACLES <= len(obs) <= MAX_OBSTACLES):
-        problems.append(f"needs {MIN_OBSTACLES} to {MAX_OBSTACLES} obstacles, has {len(obs)}")
-    keys = ("stage", "symptom", "cause", "revealed_by", "fix", "hidden_test")
-    incomplete = [str(i) for i, o in enumerate(obs) if not all(str(o.get(k) or "").strip() for k in keys)]
-    if incomplete:
-        problems.append("every obstacle needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
-    stages = {str(o.get("stage") or "").strip().lower() for o in obs}
-    if len(stages & _STAGES) < 3:
-        problems.append(f"obstacles must span at least 3 different stages of {sorted(_STAGES)}, has {sorted(stages)}")
-    if "logic" not in stages:
-        problems.append("needs a silent `logic` obstacle: the command succeeds but an end-state value is wrong")
-    chained = [o for o in obs if str(o.get("revealed_by") or "").strip().lower() not in ("", "start", "none")]
-    if len(chained) < max(2, len(obs) // 2):
-        problems.append("at least half the obstacles must be revealed only by fixing an earlier one (`revealed_by`)")
-    if len([e for e in spec.get("end_state") or [] if str(e).strip()]) < 2:
-        problems.append("needs at least 2 exact `end_state` conditions")
-    guards = [g for g in spec.get("shortcut_guards") or [] if isinstance(g, dict) and str(g.get("hidden_test") or "").strip()]
-    if not guards:
-        problems.append("needs `shortcut_guards`: each way to fake the end state and the test that blocks it")
-    for key, why in (("failing_state", "the command the user runs and what goes wrong"),
-                     ("offline", "how every package the build needs is already in the image")):
-        if not str(spec.get(key) or "").strip():
-            problems.append(f"needs `{key}`: {why}")
-    v = str(spec.get("reference_in_environment") or "").strip()
-    if v and not re.match(r"(?i)[\s*-]*none\b", v):
-        problems.append(f"`reference_in_environment` must be none ({v[:120]})")
-    if str(spec.get("challenge_kind") or "").strip().lower() != "long_road":
-        problems.append("`challenge_kind` must be long_road for this genre")
-    return problems
-
-
 VERIFIER_PACKAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==[A-Za-z0-9.+!-]+")
 
 
-def spec_gate_domain(spec: dict) -> list[str]:
-    """Domain genre: knowledge points of a named standard, checked against an independent
-    reference that only the verifier has."""
-    pts = spec.get("knowledge_points") or []
-    if not isinstance(pts, list) or not all(isinstance(p, dict) for p in pts):
-        return ["`knowledge_points` must be a list of objects"]
+def knob_gate(spec: dict) -> list[str]:
+    """Every recipe: 2 to 4 difficulty knobs, each with the fairness condition that makes it fair."""
+    knobs = spec.get("knobs") or []
+    if not isinstance(knobs, list) or not all(isinstance(k, dict) for k in knobs):
+        return ["`knobs` must be a list of knob objects"]
     problems = []
-    if not (MIN_KNOWLEDGE <= len(pts) <= MAX_KNOWLEDGE):
-        problems.append(f"needs {MIN_KNOWLEDGE} to {MAX_KNOWLEDGE} knowledge points, has {len(pts)}")
-    keys = ("detail", "standard_ref", "common_mistake", "hidden_test_input", "probe_question", "probe_answer")
-    incomplete = [str(i) for i, p in enumerate(pts) if not all(str(p.get(k) or "").strip() for k in keys)]
+    if not 2 <= len(knobs) <= 4:
+        problems.append(f"needs 2 to 4 difficulty `knobs`, has {len(knobs)}")
+    unfair = [str(k.get("knob") or i) for i, k in enumerate(knobs)
+              if not str(k.get("knob") or "").strip() or not str(k.get("fairness") or "").strip()]
+    if unfair:
+        problems.append("every knob needs `knob` and its `fairness` condition; missing on " + ", ".join(unfair[:4]))
+    return problems
+
+
+_APT_NAME = re.compile(r"[a-z0-9][a-z0-9.+-]+")
+
+
+def spec_gate(spec: dict, genre: str = "") -> list[str]:
+    """The design gate (one recipe for every topic): enough independent checks, each tied to a
+    sentence the agent can see and evaluated on inputs it never sees; ground truth computed by code;
+    2 to 4 difficulty knobs with their fairness conditions."""
+    checks = spec.get("checks") or []
+    if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
+        return ["`checks` must be a list of check objects"] + knob_gate(spec)
+    problems = []
+    if not MIN_CHECKS <= len(checks) <= MAX_CHECKS:
+        problems.append(f"needs {MIN_CHECKS} to {MAX_CHECKS} independent `checks`, has {len(checks)}")
+    keys = ("requirement", "assumed_instead", "hidden_test_input", "why_missed")
+    incomplete = [str(i) for i, c in enumerate(checks) if not all(str(c.get(k) or "").strip() for k in keys)]
     if incomplete:
-        problems.append("every knowledge point needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
-    if not [s for s in spec.get("standards") or [] if str(s).strip()]:
-        problems.append("needs `standards`: each standard instruction.md names, with version / RFC / code page")
-    pkgs = [str(p).strip() for p in spec.get("verifier_packages") or [] if str(p).strip()]
-    bad = [p for p in pkgs if not VERIFIER_PACKAGE.fullmatch(p)]
+        problems.append("every check needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
+    words = [_words(c.get("requirement", "")) for c in checks]
+    same = [(i, j) for i in range(len(words)) for j in range(i + 1, len(words)) if _similar(words[i], words[j], 0.8)]
+    if same:
+        problems.append("checks must be independent, not one requirement restated: " + ", ".join(f"{i}~{j}" for i, j in same[:4]))
+    for key, why in (("shape", "the kind of work the topic names"),
+                     ("hidden_evaluation", "what the tests check that the agent cannot fully reproduce"),
+                     ("ground_truth", "how the tests compute every expected value with code")):
+        if not str(spec.get(key) or "").strip():
+            problems.append(f"needs `{key}`: {why}")
+    bad = [p for p in spec.get("verifier_packages") or [] if not VERIFIER_PACKAGE.fullmatch(str(p).strip())]
     if bad:
         problems.append(f"`verifier_packages` must be exact name==version pins: {bad[:3]}")
-    if not str(spec.get("reference_check") or "").strip():
-        problems.append("needs `reference_check`: how the tests compute expected values independently of solve.sh")
-    elif not pkgs and not re.search(r"(?i)test vector|appendix|published", str(spec.get("reference_check"))):
-        problems.append("expected values need an independent reference: a verifier-only package in `verifier_packages` "
-                        "or published test vectors from the standard")
-    v = str(spec.get("reference_in_environment") or "").strip()
-    if not v or not re.match(r"(?i)[\s*-]*none\b", v):
-        problems.append(f"`reference_in_environment` must be none ({v[:120]})")
-    if str(spec.get("challenge_kind") or "").strip().lower() != "domain_knowledge":
-        problems.append("`challenge_kind` must be domain_knowledge for this genre")
-    return problems
-
-
-_BLACK_BOX = {"calculator", "file_writer", "validator", "protocol_service", "scheduler", "codec", "rules_engine"}
-_ARTIFACT = {"library", "cli", "server", "parser", "config"}
-
-
-def spec_gate_execref(spec: dict) -> list[str]:
-    """Executable-reference genre: a compiled black box with enough observable decision points,
-    every hidden input kind shown in the sample."""
-    pts = spec.get("decision_points") or []
-    if not isinstance(pts, list) or not all(isinstance(p, dict) for p in pts):
-        return ["`decision_points` must be a list of objects"]
-    problems = []
-    if not (MIN_DECISIONS <= len(pts) <= MAX_DECISIONS):
-        problems.append(f"needs {MIN_DECISIONS} to {MAX_DECISIONS} decision points, has {len(pts)}")
-    keys = ("behaviour", "assumed_instead", "input_kind", "observe")
-    incomplete = [str(i) for i, p in enumerate(pts) if not all(str(p.get(k) or "").strip() for k in keys)]
-    if incomplete:
-        problems.append("every decision point needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
-    kinds = [str(k).strip() for k in spec.get("input_kinds") or [] if str(k).strip()]
-    if len(kinds) < 3:
-        problems.append("needs at least 3 `input_kinds` shown in the sample file")
-    if str(spec.get("black_box_kind") or "").strip().lower() not in _BLACK_BOX:
-        problems.append(f"`black_box_kind` must be one of {sorted(_BLACK_BOX)}")
-    if str(spec.get("artifact_kind") or "").strip().lower() not in _ARTIFACT:
-        problems.append(f"`artifact_kind` must be one of {sorted(_ARTIFACT)}")
-    if str(spec.get("reference_language") or "").strip().lower() != "c":
-        problems.append("`reference_language` must be c (compiled in a build stage, stripped binary shipped)")
-    for key in ("reference_binary", "sample_file"):
-        if not str(spec.get(key) or "").strip().startswith("/"):
-            problems.append(f"`{key}` must be an absolute path in the image")
-    for key in ("interface", "shortcut_guard"):
-        if not str(spec.get(key) or "").strip():
-            problems.append(f"needs `{key}`")
-    if str(spec.get("challenge_kind") or "").strip().lower() != "executable_reference":
-        problems.append("`challenge_kind` must be executable_reference for this genre")
-    return problems
-
-
-def spec_gate(spec: dict, genre: str = "spec") -> list[str]:
-    return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement,
-            "long_road": spec_gate_longroad, "domain": spec_gate_domain, "exec_ref": spec_gate_execref}[genre](spec)
+    bad = [p for p in spec.get("verifier_apt") or [] if not _APT_NAME.fullmatch(str(p).strip())]
+    if bad:
+        problems.append(f"`verifier_apt` must be Debian package names: {bad[:3]}")
+    return problems + knob_gate(spec)
 
 
 _SPEC_DOC_EXTS = (".md", ".rst", ".txt", ".adoc")
@@ -719,12 +448,12 @@ def rule_coverage(instruction: str, spec: dict | None) -> list[str]:
     check a rule the agent was never told (unfair by construction)."""
     missing = []
     inst = _words(instruction)
-    for i, r in enumerate((spec or {}).get("requirements") or []):
+    for i, r in enumerate((spec or {}).get("checks") or []):
         if not isinstance(r, dict):
             continue
-        words = {w for w in _words(r.get("rule", "")) if len(w) > 3 and w not in _COMMON}
+        words = {w for w in _words(r.get("requirement", "")) if len(w) > 3 and w not in _COMMON}
         if len(words) >= 3 and len(words & inst) < len(words) * 0.5:
-            missing.append(f"{r.get('id') or i}: {str(r.get('rule'))[:90]}")
+            missing.append(f"check {i}: {str(r.get('requirement'))[:90]}")
     return missing
 
 
@@ -739,7 +468,7 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
         problems.append(f"the spec document `{want}` is not among the files; ship it under environment/ "
                         "and name it in instruction.md")
     allowed = _doc_names(docs)
-    exec_ref = str((spec or {}).get("challenge_kind") or "").lower() == "executable_reference"
+    exec_ref = bool(str((spec or {}).get("reference_binary") or "").strip())  # a reference that IS the spec
     build_only = set()
     if exec_ref:  # the reference binary and the sample are the task's interface
         for key in ("reference_binary", "sample_file"):

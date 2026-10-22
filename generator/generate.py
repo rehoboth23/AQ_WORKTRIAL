@@ -40,11 +40,7 @@ from config import (
     INSTRUCTION_REVIEW,
     LOGS_DIR,
     MAX_REPAIR_ROUNDS,
-    DIAL_HIGH,
-    DIAL_LOW,
     MAX_SPEC_ATTEMPTS,
-    PROBE,
-    PROBE_ROUNDS,
     MODEL,
     MUTATION_CHECK,
     OUTPUT_DIR,
@@ -52,7 +48,6 @@ from config import (
     TASK_ORG,
 )
 import llm
-import probe
 from ledger import reserve_dir, write_text_atomic
 from llm import LLMError, parse_file_blocks, parse_json_object
 
@@ -126,58 +121,24 @@ class Spec(BaseModel):
     test_plan: list[str] | str = ""
     anti_cheat: str = ""
     failure_modes: str = ""
-    # Difficulty profile (prompts.DIFFICULTY_SPEC_FIELDS), checked by difficulty.spec_gate().
-    faults: list[dict] = Field(default_factory=list)  # hidden-fault genre (retired)
-    requirements: list[dict] = Field(default_factory=list)
-    themes: list[str] = Field(default_factory=list)
-    starter: str = ""
-    spec_document: str = ""
-    # Judgement genre
-    property: str = ""
-    reported_symptom: str = ""
-    sites: list[dict] = Field(default_factory=list)
-    partial_fix: str = ""
+    # Design fields (prompts.DIFFICULTY_SPEC_FIELDS), checked by difficulty.spec_gate().
+    shape: str = ""
+    hidden_evaluation: str = ""
+    checks: list[dict] = Field(default_factory=list)
     preserved_behaviours: list[dict] = Field(default_factory=list)
-    decoys: list[dict | str] = Field(default_factory=list)
-    hidden_edge_cases: list[dict | str] = Field(default_factory=list)
-    why_not_textbook: str = ""
-    static_read: str = ""
-    crux: str = ""
-    challenge_kind: str = ""
-    sequence_invariant: str = ""
-    nameable_fix: str = ""
-    self_check_blind_spot: str = ""
-    reference_in_environment: str = ""
-    interaction: str = ""
-    runnable_reference: str = ""
-    # Long-road genre
-    failing_state: str = ""
-    end_state: list[str] | str = Field(default_factory=list)
-    obstacles: list[dict] = Field(default_factory=list)
-    shortcut_guards: list[dict] = Field(default_factory=list)
-    offline: str = ""
-    # Domain genre
-    domain: str = ""
-    standards: list[str] = Field(default_factory=list)
-    knowledge_points: list[dict] = Field(default_factory=list)
+    ground_truth: str = ""
     verifier_packages: list[str] = Field(default_factory=list)
-    reference_check: str = ""
-    # Executable-reference genre
-    black_box_kind: str = ""
-    artifact_kind: str = ""
-    reference_language: str = ""
-    reference_binary: str = ""
-    interface: str = ""
+    verifier_apt: list[str] = Field(default_factory=list)
+    reference_in_environment: str = ""
+    reference_binary: str = ""          # set when a reference program IS the specification
     sample_file: str = ""
-    input_kinds: list[str] = Field(default_factory=list)
-    decision_points: list[dict] = Field(default_factory=list)
-    shortcut_guard: str = ""
+    spec_document: str = ""             # a document instruction.md names as the specification
+    knobs: list[dict] = Field(default_factory=list)
+    crux: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
-                     "failure_modes", "why_not_textbook", "static_read", "crux", "challenge_kind", "starter",
-                     "property", "reported_symptom", "partial_fix",
-                     "sequence_invariant", "nameable_fix", "self_check_blind_spot", "reference_in_environment", "interaction", "runnable_reference",
+                     "failure_modes", "crux", "shape", "hidden_evaluation", "ground_truth", "reference_in_environment",
                      "base_image", "category",
                      mode="before")
     @classmethod
@@ -190,21 +151,12 @@ class Spec(BaseModel):
             return json.dumps(v)
         return v
 
-    @field_validator("tags", "themes", mode="before")
+    @field_validator("tags", "verifier_packages", "verifier_apt", mode="before")
     @classmethod
     def _str_list(cls, v):
         if isinstance(v, str):
             return [v]
         return [x if isinstance(x, str) else json.dumps(x) for x in (v or [])]
-
-    @field_validator("decoys", "hidden_edge_cases", mode="before")
-    @classmethod
-    def _dict_list(cls, v):
-        """Keep structured entries ({"where": ..., "why_innocent": ...}) as dicts; the files
-        prompt reads them better than a JSON string."""
-        if isinstance(v, (str, dict)):
-            return [v]
-        return [x if isinstance(x, (str, dict)) else json.dumps(x) for x in (v or [])]
 
     @field_validator("expected_agent_steps", mode="before")
     @classmethod
@@ -231,7 +183,7 @@ def parse_spec(text: str) -> dict:
 
 def parse_critic(text: str) -> dict:
     obj = parse_json_object(text)
-    if not isinstance(obj.get("spec"), dict) and ("faults" in obj or "requirements" in obj or "sites" in obj) and "name" in obj:
+    if not isinstance(obj.get("spec"), dict) and "checks" in obj and "name" in obj:
         # glm-5.1 sometimes writes the walkthrough as prose and returns the revised spec bare;
         # keep it rather than throw away a 40k-token reply.
         obj = {"walkthrough": [text[:text.find("{")].strip()[:4000]], "too_easy_because": [], "spec": obj}
@@ -274,49 +226,7 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
     problems = difficulty.spec_gate(spec, genre)
     if problems:
         raise SpecRejected("spec failed the difficulty gate: " + "; ".join(problems))
-    if PROBE and genre == "domain":
-        spec = dial_spec(spec, topic, calibration, systems, log, genre)
     return spec
-
-
-def dial_spec(spec: dict, topic: str, calibration: str, systems: dict, log, genre: str) -> dict:
-    """Measure how often the EVAL model knows each knowledge point (probe.py) and, while the
-    predicted pass rate is outside [DIAL_LOW, DIAL_HIGH], send the spec back with the rates."""
-    best = None
-    for rnd in range(PROBE_ROUNDS + 1):
-        pts = spec.get("knowledge_points") or []
-        results = probe.probe_points(pts, log=log.llm)
-        pred = probe.predicted_pass(results)
-        log.event("probe", round=rnd, predicted_pass=round(pred, 3),
-                  points=[{"detail": str(p.get("detail"))[:80], "rate": r["rate"], "answers": r["answers"]}
-                          for p, r in zip(pts, results)])
-        dist = 0 if DIAL_LOW <= pred <= DIAL_HIGH else min(abs(pred - DIAL_LOW), abs(pred - DIAL_HIGH))
-        if best is None or dist < best[0]:
-            best = (dist, spec, pred)
-        if dist == 0 or rnd == PROBE_ROUNDS:
-            break
-        table = "\n".join(f"- point {i} ({str(p.get('detail'))[:70]}): answered right {r['rate']:.0%} of the time"
-                           for i, (p, r) in enumerate(zip(pts, results)) if r["rate"] is not None)
-        if pred > DIAL_HIGH:
-            ask = (f"The evaluated model knows these details too well: predicted pass rate {pred:.0%} (target "
-                   f"{DIAL_LOW:.0%}-{DIAL_HIGH:.0%}). Replace the points it gets right 100% of the time with "
-                   f"details of the same standard it gets wrong more often, or add such points.")
-        else:
-            ask = (f"Too many details the evaluated model rarely knows: predicted pass rate {pred:.0%} (target "
-                   f"{DIAL_LOW:.0%}-{DIAL_HIGH:.0%}). Drop or replace the points with the lowest rates.")
-        try:
-            new, _, _ = chat(systems["spec"], prompts.spec_retry_user(topic, calibration, [ask, "Measured rates:\n" + table,
-                             "Return the full revised spec JSON, same topic, every rule of the genre still met."]),
-                             parse_spec, log.llm, f"spec-dial{rnd}")
-        except LLMError as e:
-            log.event("probe_error", error=str(e)[:300])
-            break
-        if difficulty.spec_gate(new, genre):
-            log.event("probe_redesign_rejected", problems=difficulty.spec_gate(new, genre))
-            break
-        spec = new
-    log.event("probe_final", predicted_pass=round(best[2], 3))
-    return best[1]
 
 
 def parse_review(text: str) -> dict:
@@ -358,48 +268,25 @@ def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | N
 
 
 def mutation_items(spec: dict) -> list[dict]:
-    """What the mutation check drops one at a time: a requirement (the mutant produces its default
-    behaviour) or, for old hidden-fault specs, a fault's wrong_fix. One shape for both."""
+    """What the mutation check tries one at a time: a check done the way a reasonable implementer
+    would assume, a preserved behaviour dropped, a difficulty knob ignored. The hidden tests must
+    fail each one."""
     items = []
-    for r in spec.get("requirements") or []:
-        if isinstance(r, dict) and str(r.get("rule") or "").strip():
-            items.append({"where": r.get("id"), "what": r.get("rule"),
-                          "wrong_fix": "produce the default behaviour instead: " + str(r.get("default_behaviour") or ""),
-                          "counterexample": r.get("hidden_test_input"), "caught_by_test": r.get("id")})
-    for f in spec.get("faults") or []:
-        if isinstance(f, dict) and f.get("wrong_fix"):
-            items.append(f)
-    for i, b in enumerate(spec.get("preserved_behaviours") or []):
-        if isinstance(b, dict) and str(b.get("behaviour") or "").strip():
-            items.append({"where": f"preserved {i}", "what": "existing behaviour: " + str(b.get("behaviour")),
-                          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
-                          "counterexample": b.get("hidden_test_input"), "caught_by_test": f"preserved {i}"})
-    for i, x in enumerate(spec.get("sites") or []):
-        if isinstance(x, dict) and str(x.get("mechanism") or "").strip():
-            items.append({"where": x.get("where"), "what": f"site {i}: {x.get('mechanism')}",
-                          "wrong_fix": "fix every other site but leave this one as it is",
-                          "counterexample": x.get("hidden_test_input"), "caught_by_test": f"site {i}"})
-    for i, o in enumerate(spec.get("obstacles") or []):
-        if isinstance(o, dict) and str(o.get("cause") or "").strip():
-            items.append({"where": o.get("stage"), "what": f"obstacle {i}: {o.get('cause')}",
-                          "wrong_fix": "repair every other obstacle but leave this one unfixed (if a later step cannot run "
-                                       "because of it, work around it the cheapest way that skips its real repair)",
-                          "counterexample": o.get("symptom"), "caught_by_test": o.get("hidden_test")})
-    for i, d in enumerate(spec.get("decision_points") or []):
-        if isinstance(d, dict) and str(d.get("behaviour") or "").strip():
-            items.append({"where": d.get("input_kind"), "what": f"decision point {i}: {d.get('behaviour')}",
-                          "wrong_fix": "behave as a reasonable implementer would assume instead: " + str(d.get("assumed_instead") or ""),
-                          "counterexample": d.get("observe"), "caught_by_test": f"decision point {i}"})
-    for i, k in enumerate(spec.get("knowledge_points") or []):
-        if isinstance(k, dict) and str(k.get("detail") or "").strip():
-            items.append({"where": k.get("standard_ref"), "what": f"knowledge point {i}: {k.get('detail')}",
-                          "wrong_fix": "make the common mistake instead: " + str(k.get("common_mistake") or ""),
-                          "counterexample": k.get("hidden_test_input"), "caught_by_test": f"knowledge point {i}"})
-    for i, g in enumerate(spec.get("shortcut_guards") or []):
-        if isinstance(g, dict) and str(g.get("shortcut") or "").strip():
-            items.append({"where": f"shortcut {i}", "what": f"shortcut: {g.get('shortcut')}",
-                          "wrong_fix": "take this shortcut instead of the real repair: " + str(g.get("shortcut")),
-                          "counterexample": g.get("shortcut"), "caught_by_test": g.get("hidden_test")})
+    for i, c in enumerate(spec.get("checks") or []):
+        if isinstance(c, dict) and str(c.get("requirement") or "").strip():
+            items.append({"where": f"check {i}", "what": "requirement: " + str(c.get("requirement")),
+                          "wrong_fix": "do what a reasonable implementer would assume instead: " + str(c.get("assumed_instead") or ""),
+                          "counterexample": c.get("hidden_test_input"), "caught_by_test": f"check {i}"})
+    for i, p in enumerate(spec.get("preserved_behaviours") or []):
+        if isinstance(p, dict) and str(p.get("behaviour") or "").strip():
+            items.append({"where": f"preserved {i}", "what": "existing behaviour: " + str(p.get("behaviour")),
+                          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the requirements alone)",
+                          "counterexample": p.get("hidden_test_input"), "caught_by_test": f"preserved {i}"})
+    for i, k in enumerate(spec.get("knobs") or []):
+        if isinstance(k, dict) and str(k.get("knob") or "").strip():
+            items.append({"where": k.get("where"), "what": f"knob {i}: {k.get('knob')}",
+                          "wrong_fix": "a solution that ignores this difficulty knob: " + str(k.get("knob")),
+                          "counterexample": k.get("fairness"), "caught_by_test": f"knob {i}"})
     return items
 
 
@@ -586,15 +473,15 @@ def task_toml(spec: dict, task_name: str) -> str:
 
 
 def test_sh(spec: dict) -> str:
-    """TEST_SH plus the verifier-only reference packages a domain task's tests import (exact pins;
-    they are never installed in the image, so the agent cannot use them)."""
+    """TEST_SH plus what the tests need that the agent's image must not have: pinned pip packages
+    (a reference library) and Debian packages (e.g. gcc to compile a pristine reference)."""
     pkgs = [str(p).strip() for p in spec.get("verifier_packages") or []
             if difficulty.VERIFIER_PACKAGE.fullmatch(str(p).strip())]
     extra = "".join(f"  --with {p} \\\n" for p in pkgs)
     sh = TEST_SH.replace("  --with pytest-json-ctrf==0.3.5 \\\n", "  --with pytest-json-ctrf==0.3.5 \\\n" + extra)
-    if str(spec.get("challenge_kind") or "").lower() == "executable_reference":
-        # the tests compile the pristine reference from tests/reference.c
-        sh = sh.replace("apt-get install -y curl", "apt-get install -y curl gcc libc6-dev")
+    apt = [str(p).strip() for p in spec.get("verifier_apt") or [] if difficulty._APT_NAME.fullmatch(str(p).strip())]
+    if apt:
+        sh = sh.replace("apt-get install -y curl", "apt-get install -y curl " + " ".join(apt))
     return sh
 
 

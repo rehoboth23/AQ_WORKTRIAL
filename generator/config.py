@@ -56,8 +56,7 @@ MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
 DIFFICULTY_FILE = os.environ.get(
     "DIFFICULTY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "difficulty.toml"))
 _DIFFICULTY_DEFAULTS = {
-    "knobs": {"min_rules": 12, "max_rules": 20, "min_themes": 4, "min_sites": 3, "max_sites": 6, "min_obstacles": 4, "max_obstacles": 8, "min_knowledge": 4, "max_knowledge": 10, "min_decisions": 8, "max_decisions": 15, "min_preserved": 3, "min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
-              "max_leaked_literals": 1, "critic_found_within": 3},
+    "knobs": {"min_checks": 8, "max_checks": 20, "max_leaked_literals": 1},
     "discovery": {"min_gap": 2, "hard_gap": 4, "very_hard_gap": 7, "too_hard_above": 9,
                   "timeout_risk_steps": 60},
 }
@@ -86,23 +85,9 @@ def _knob(name: str) -> int:
     return int(env) if env is not None else int(DIFFICULTY["knobs"][name])
 
 
-MIN_RULES = _knob("min_rules")                       # stated requirements in a specification task
-MAX_RULES = _knob("max_rules")
-MIN_THEMES = _knob("min_themes")                     # distinct themes the rules must span
-MIN_SITES = _knob("min_sites")                       # judgement genre: violating sites with distinct mechanisms
-MAX_SITES = _knob("max_sites")
-MIN_OBSTACLES = _knob("min_obstacles")               # long_road genre: chained obstacles on the way to the end state
-MAX_OBSTACLES = _knob("max_obstacles")
-MIN_KNOWLEDGE = _knob("min_knowledge")               # domain genre: standard details the task turns on
-MAX_KNOWLEDGE = _knob("max_knowledge")
-MIN_DECISIONS = _knob("min_decisions")               # exec_ref genre: decision points of the black box
-MAX_DECISIONS = _knob("max_decisions")
-MIN_PRESERVED = _knob("min_preserved")               # existing behaviours regression-tested (spec, judgement)
-MIN_FAULTS = _knob("min_faults")                     # (hidden-fault genre, retired; kept for old records)
-MAX_FAULTS = _knob("max_faults")                     # cap: more faults = longer proofreading, not harder
-MIN_FAULT_LAYERS = _knob("min_fault_layers")         # build/code/config/data/runtime
+MIN_CHECKS = _knob("min_checks")                     # independent hidden checks a task makes
+MAX_CHECKS = _knob("max_checks")
 MAX_LEAKED_LITERALS = _knob("max_leaked_literals")   # test literals allowed in instruction.md
-CRITIC_FOUND_WITHIN = _knob("critic_found_within")   # critic: fault found within N commands = too easy
 DISCOVERY = DIFFICULTY["discovery"]                   # gap bands for the critic's discovery estimates
 # A glm-5.1 red-team pass that hardens the spec before files are written ("0" to disable).
 SPEC_CRITIC = os.environ.get("SPEC_CRITIC", "1") == "1"
@@ -139,26 +124,16 @@ GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Spec attempts when the spec gate fails (each is one more spec call).
 MAX_SPEC_ATTEMPTS = int(os.environ.get("MAX_SPEC_ATTEMPTS", "2"))
-# Knowledge probe + difficulty dial (domain genre): before any files are written, ask the EVAL
-# model each knowledge point's short probe question PROBE_RUNS times. The product of the
-# per-point success rates predicts the pass rate; outside [DIAL_LOW, DIAL_HIGH] the spec goes
-# back to the author with the measured rates, at most PROBE_ROUNDS times.
-PROBE = os.environ.get("PROBE", "1") == "1"
 # Generated-input tests: tests also compare the solution with a hidden reference on seeded
 # generated inputs. Off by default: on the Markdown task it found three ambiguities the fixed
 # tests missed but added no difficulty (correct agent tools matched on all 1,500 inputs).
 FUZZ_TESTS = os.environ.get("FUZZ_TESTS", "0") == "1"
-PROBE_RUNS = int(os.environ.get("PROBE_RUNS", "5"))
-PROBE_ROUNDS = int(os.environ.get("PROBE_ROUNDS", "2"))
-DIAL_LOW = float(os.environ.get("DIAL_LOW", "0.2"))
-DIAL_HIGH = float(os.environ.get("DIAL_HIGH", "0.6"))
-PROBE_MODEL = os.environ.get("PROBE_MODEL", EVAL_MODEL.split("/", 1)[1] if EVAL_MODEL.startswith("openrouter/") else EVAL_MODEL)
 # How many recent band verdicts are fed back into the spec prompt.
 CALIBRATION_WINDOW = int(os.environ.get("CALIBRATION_WINDOW", "8"))
 # Tag for the task-design rules in prompts.py. History lines record it, and the spec prompt is
 # shown only lines from the current design, so examples from older rules (e.g. 7-fault tasks
 # with step-count notes) never steer a new design. Bump it when the design rules change.
-DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-22-spec")
+DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-22-single-recipe")
 
 # --- Paths -----------------------------------------------------------------
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))

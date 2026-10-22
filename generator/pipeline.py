@@ -40,7 +40,6 @@ from config import (
     CALIBRATION_WINDOW,
     CONFIRM_EVALS,
     DESIGN_VERSION,
-    CRITIC_FOUND_WITHIN,
     EVAL_MODEL,
     EVAL_PRICE_IN_PER_M,
     EVAL_PRICE_OUT_PER_M,
@@ -49,10 +48,9 @@ from config import (
     GEN_PRICE_IN_PER_M,
     GEN_PRICE_OUT_PER_M,
     LOGS_DIR,
-    MAX_RULES,
+    MAX_CHECKS,
     MAX_LEAKED_LITERALS,
-    MIN_RULES,
-    MIN_THEMES,
+    MIN_CHECKS,
     MODEL,
     N_RUNS,
     REJECTED_DIR,
@@ -70,8 +68,7 @@ import fcntl
 # difficulty.toml can change between runs.
 ORPHAN_POLL_SEC = float(os.environ.get("ORPHAN_POLL_SEC", "15"))  # resume: check an adopted harbor job
 
-KNOBS = {"min_rules": MIN_RULES, "max_rules": MAX_RULES, "min_themes": MIN_THEMES,
-         "max_leaked_literals": MAX_LEAKED_LITERALS, "critic_found_within": CRITIC_FOUND_WITHIN}
+KNOBS = {"min_checks": MIN_CHECKS, "max_checks": MAX_CHECKS, "max_leaked_literals": MAX_LEAKED_LITERALS}
 
 
 def load_history() -> list[dict]:

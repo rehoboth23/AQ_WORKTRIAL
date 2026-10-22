@@ -14,9 +14,7 @@ import os
 import re
 
 from config import FUZZ_TESTS
-from config import MAX_DECISIONS, MIN_DECISIONS
-from config import (MAX_FAULTS, MAX_KNOWLEDGE, MAX_OBSTACLES, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_KNOWLEDGE,
-                    MIN_OBSTACLES, MIN_RULES, MIN_SITES, MIN_THEMES)
+from config import MAX_CHECKS, MIN_CHECKS
 
 # Paths the model is allowed to write. Anything else in a reply is dropped.
 MODEL_FILES = ("instruction.md", "environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py")
@@ -58,73 +56,51 @@ How the task is run (Harbor / Terminal-Bench 2):
 # The difficulty lever, kept separate so a control run can leave it out
 # (see CONTROL_SYSTEMS below and pipeline.py --control).
 DIFFICULTY_RULE = f"""\
-- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
-  writes its own end-to-end tests) should solve the task only SOMETIMES (roughly 1-3 times in 5).
-  Measured on ~20 tasks: every HIDDEN-FAULT task (find and fix planted bugs) was solved 4-5/5,
-  in 10-35 steps, whatever was hidden, because the agent finds discrete faults by reading and
-  tests every case it thinks of; a runnable oracle (a verify command, a full rebuild to compare
-  against) makes it trivial. Do not design hidden-fault tasks. Design SPECIFICATION tasks:
-  * The task is to BUILD or TRANSFORM to a long, explicit specification: {MIN_RULES} to {MAX_RULES}
-    independent requirements, each stated precisely in the SPEC DOCUMENT, each DIFFERENT from what a
-    programmer would produce by default (the default rounding, sort, padding, date form, error
-    handling, line endings...), each checked by a hidden test input that differs from any example.
-    Passing needs ALL of them right; the agent only tests the rules it remembers and reads
-    correctly. Difficulty comes from breadth and precision, never from hiding anything.
-  * The rules live in a SPEC DOCUMENT shipped in the environment (e.g. docs/STYLE.md, a house
-    style guide, a data contract, an import spec), written the way a real team writes one: prose
-    in sections, with the reason for a rule where a team would give one, related rules grouped
-    by topic, and some rules stated as exceptions in a later section ("...except in numeric
-    columns, see Numbers"). instruction.md states the goal, names the document as the
-    specification to follow, gives the interface (command, inputs, output) and the "keep
-    everything working" rule; it does NOT list the rules. A numbered checklist in instruction.md
-    lets the agent tick rules off one by one (a 15-rule checklist was solved 5/5); reading,
-    extracting and reconciling a real document is the work. Every rule must still be stated
-    precisely and unambiguously in the document: an expert reading it must derive every test.
-  * Kinds: build_from_spec (write or finish a CLI, parser, renderer or report generator to the
-    rules), exact_data_transform (normalise a messy dataset to an exact output format; many
-    format traps), large_corpus_migration (apply a rule set across dozens of files; partial
-    completion fails).
-  * Independent themes: the rules must span at least {MIN_THEMES} distinct themes (formatting,
-    rounding/arithmetic, ordering and grouping, text width and Unicode, structure such as
-    pagination or sections, input tolerance, error handling and exit codes, edge inputs). A set of
-    rules that all follow ONE theme was solved 4/4: once the agent gets the theme, it gets them
-    all. Each rule must be checkable on its own.
-  * A SUBSTANTIAL working starter (several hundred lines: options, formats, edge handling, a
-    second command or mode) that the instruction does not enumerate, plus one stated rule:
-    "everything the tool does today must keep working". Hidden regression tests check that
-    existing behaviour, so a rewrite from the rules alone drops features and fails, while a
-    careful change must first understand the code. (A 120-line starter was rewritten from
-    scratch by every run and added no difficulty.) No comment in the starter mentions the rules.
-  * No oracle: no sample of the expected output, no verify/check/diff/self-test command, no
-    reference implementation, no tests, no backup or original in the image, and nothing the agent
-    can run to get the correct answer and compare against. The agent has no network access.
-  * Hidden inputs, not hidden rules: tests use inputs that differ from every example in
-    instruction.md and the spec document, with non-round values and boundaries (exactly-at-the-limit lengths, values
-    that round differently under the default, empty groups, the last record, a page boundary).
-    Every assertion follows from a stated rule; exact textual forms are tested exactly only
-    because the rule states that form. Never get difficulty from ambiguity or trick wording:
-    an expert reading instruction.md and the spec document must be able to derive every test.
-  * No reference copies of the answer anywhere in the environment (git history, an installed
-    original, .orig/.bak files, a second implementation).
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests, writes its own
+  tests, and runs any reference it is given) should solve the task only SOMETIMES (roughly 1-3
+  times in 5). Measured on many tasks: whatever it can READ (code, a rule list, planted faults),
+  already KNOWS (standards, formats) or RUN to compare against, it checks and gets right, even when
+  that takes 80 steps. So difficulty must come from what the agent cannot fully check before it
+  finishes: an evaluation it cannot reproduce in full.
+  * The task is a realistic piece of work in the shape the topic names (rule induction from
+    examples, a model or estimate scored on held-out data, a live system changed under load, a
+    procedure carried out over local services, trace or concurrency debugging, a domain pipeline
+    with field conventions, a port with behavioural parity, cryptanalysis from source, a
+    performance target). A realistic environment: a project, services, data, documents; never a
+    puzzle.
+  * HIDDEN EVALUATION: the tests check {MIN_CHECKS} to {MAX_CHECKS} independent CHECKS on inputs the agent never
+    sees: held-out data or examples, a load generator, hidden edge cases, inputs drawn from several
+    seeds. Each check follows from a sentence of instruction.md, a document it names, or a fact
+    visible in the environment; each differs from what a reasonable implementer assumes by default.
+    Passing needs all of them; the agent tests what it thinks of.
+  * Ground truth never comes from your own reasoning: every expected value is computed by code the
+    tests run (a pristine reference kept in tests/, a package installed only for the verifier, or
+    the seeded generator that made the data), so a detail you misremember cannot make the solution
+    and the tests wrong together. The oracle (solution/solve.sh) must pass every check.
+  * Nothing in the environment gives the answer away: no expected outputs, no reference
+    implementation, no verify command, no backup or original of the correct code, no .git with the
+    fix. The one exception is a reference program that IS the specification (a legacy binary to
+    match); the tests then compile or copy their own pristine copy and hide the environment's one.
+  * Fair: an expert reading instruction.md and the environment can derive every check. Every
+    exception to a general rule is named in instruction.md; where two behaviours are both
+    reasonable (reject vs sanitise, round before vs after) instruction.md states which is required.
+    Existing behaviour must keep working ("everything the tool does today must keep working",
+    checked by hidden regression tests). Deterministic and offline: no clocks, randomness or
+    network in what the tests check; every package the solution needs is in the image.
 """
 
-# Extra spec fields that make the model commit to a difficulty profile. Checked in code by
-# difficulty.spec_gate(); left out for the control arm together with DIFFICULTY_RULE.
 DIFFICULTY_SPEC_FIELDS = """,
-  "challenge_kind": "build_from_spec|exact_data_transform|large_corpus_migration",
-  "spec_document": "path under environment/ of the document that states every rule, e.g. environment/docs/STYLE.md",
-  "requirements": [{"id": "R1", "rule": "the rule, precisely as the spec document states it",
-                    "theme": "formatting|arithmetic|ordering|unicode_width|structure|input_tolerance|error_handling|edge_inputs|other",
-                    "default_behaviour": "what a programmer produces without this rule",
-                    "hidden_test_input": "the input the test uses; differs from every example in instruction.md",
-                    "boundary": "the non-round value or edge the test includes"}],
-  "themes": ["the distinct themes the rules cover"],
-  "starter": "what the shipped starter code does (works, with default behaviours), its size and modes",
-  "preserved_behaviours": [{"behaviour": "an existing behaviour the instruction does not enumerate but 'keep everything working' covers",
-                            "hidden_test_input": "the input whose output must stay the same"}],
-  "self_check_blind_spot": "which rules an agent is likely to forget or misread, and why",
-  "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against (verify command, sample output, reference implementation); must be none",
-  "reference_in_environment": "any code, doc or data in the environment that already produces or states the correct output; must be none"
+  "shape": "the kind of work, in the topic's words (e.g. rule induction from examples, live migration under load)",
+  "hidden_evaluation": "what the tests check that the agent cannot fully reproduce, and how (held-out data, load generator, seeds)",
+  "checks": [{"requirement": "the instruction.md (or named document) sentence the check follows from",
+              "assumed_instead": "what a reasonable implementer would do without reading it carefully",
+              "hidden_test_input": "the input or scenario the hidden test uses",
+              "why_missed": "why a careful agent's own testing might not cover it"}],
+  "preserved_behaviours": [{"behaviour": "an existing behaviour that must keep working", "hidden_test_input": "the input whose output must stay the same"}],
+  "ground_truth": "how the tests compute every expected value (reference in tests/, verifier-only package, seeded generator)",
+  "verifier_packages": ["pip packages the tests need, as name==version (installed only for the verifier); may be empty"],
+  "verifier_apt": ["Debian packages the tests need (e.g. gcc to compile a pristine reference); may be empty"],
+  "reference_in_environment": "none, or the reference program that IS the specification and how the tests hide it"
 """
 
 QUALITY_RULES = """\
@@ -380,99 +356,92 @@ nothing before or after:
 
 CRITIC_SYSTEM = f"""\
 You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, and writes its own end-to-end tests; every
-hidden-fault task fell to it 4-5 times in 5.
+it reads files, greps, runs builds and tests, writes its own end-to-end tests, and probes any
+reference it may run; it solved every task whose correctness it could check by itself.
 
 {DIFFICULTY_RULE}
-Given a task spec (JSON), walk through how that agent would solve it: which rules it would get
-right on the first pass, which it would misread or forget, and what it would test itself. The
-spec is TOO EASY if it has fewer than {MIN_RULES} requirements, if the rules cover fewer than
-{MIN_THEMES} themes or mostly follow one theme, if any rule matches the default behaviour (no
-deviation to get wrong), if several rules are the same rule restated, if the hidden test inputs
-are covered by examples in instruction.md, or if anything in the environment or instruction
-gives the agent an oracle (expected output, a verify/check/diff command, a reference
-implementation, tests), or if the starter is small enough that rewriting it from the rules is
-cheaper than changing it (fewer than about 3 preserved behaviours). It is UNFAIR if a rule is vague or ambiguous (two reasonable readings
-with different outputs), if a test would check something no rule states (an unstated format,
-a magic value), or if a test input cannot be produced deterministically.
+Given a task spec (JSON), walk through how that agent would solve it: which checks it would get
+right on its own, which it would verify with its own tests, and which it would likely miss. The
+spec is TOO EASY if it has fewer than {MIN_CHECKS} checks, if the agent could reproduce the hidden
+evaluation (all hidden inputs are guessable from the examples, a reference answers every case), if
+most checks match what a programmer does by default, if several checks are one check restated, or
+if anything in the environment or instruction gives the answer away. It is UNFAIR if a check does
+not follow from instruction.md, a named document or the environment, if two reasonable readings
+give different results, if an expected value comes from the designer's reasoning instead of code
+the tests run, or if anything depends on timing, randomness or the network.
 
 If results of earlier designs are given, a design that repeats a shape those results show was
-too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while keeping it fair,
-solvable, deterministic and on the same topic: add independent rules on new themes, sharpen
-vague rules, move test inputs away from the examples. Do not add hidden faults.
+too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
+keeping it fair, solvable, deterministic and on the same topic.
 
 The revised spec must keep every key of the original AND include these design keys, filled in:
 {{{DIFFICULTY_SPEC_FIELDS.lstrip(",")}
 }}
 
 Reply with ONE JSON object and nothing else:
-{{"walkthrough": ["how the agent would approach the ORIGINAL spec, rule by rule"],
+{{"walkthrough": ["how the agent would approach the ORIGINAL spec, check by check"],
   "too_easy_because": ["problems found, empty if none"],
   "spec": {{...the full spec, revised if needed, with every key of the original...}}}}
 """
 
 
 INSTRUCTION_REVIEW_SYSTEM = """\
-You review instruction.md of a Terminal-Bench 2 specification task before it is built. The agent
-solving the task sees only instruction.md and the environment. The rules ARE the workload, so
-every requirement must be stated precisely, either in instruction.md or in the spec document it
-names (given below when there is one); the difficulty is breadth, not hiding. A rule stated only
-in the spec document is fine: do NOT move it into instruction.md.
+You review instruction.md of a Terminal-Bench 2 task before it is built. The agent solving the
+task sees only instruction.md and the environment (including any document instruction.md names,
+given below). Every check the hidden tests make must follow from instruction.md, a named document
+or the environment; the hidden INPUTS must stay hidden.
 
-Check, against the requirement list and tests/test_outputs.py given to you:
-  1. MISSING RULE: a requirement the tests check that neither instruction.md nor the spec document
-     states, or states so vaguely that two reasonable readings give different outputs, or that
-     two passages of the document contradict.
-  2. LEAKED ANSWER: expected output pasted beyond trivial examples, a sample that covers the
-     hidden test inputs, or a hint of what the tests check.
-  3. ORACLE: any instruction to run a command whose output signals completion ("run verify until
-     it reports OK", "compare with the sample") or a pointer to a reference implementation.
-  4. UNSTATED FORMAT: a test requires an exact textual form (spelling, spacing, trailing slash,
-     key order) that no rule states; report it as "UNSTATED FORMAT: <test> requires <form>".
-Also make sure the interface is stated: the command to run, input paths and columns, output
-path or stream, exit codes.
+Check, against the list of checks and tests/test_outputs.py given to you:
+  1. MISSING RULE: a check the tests make that nothing the agent can see states, or states so
+     vaguely that two reasonable readings give different results, or that two passages contradict
+     (a general rule and an exception instruction.md does not name).
+  2. LEAKED ANSWER: expected output beyond trivial examples, a sample that covers the hidden
+     inputs, or a hint of which cases the tests probe.
+  3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
+     reference implementation (unless the reference IS the specification the task asks to match).
+  4. UNSTATED FORMAT: a test requires an exact textual form no sentence states; report it as
+     "UNSTATED FORMAT: <test> requires <form>".
+Also make sure the interface is stated: the command or entry point, inputs, outputs, exit codes.
 
 If nothing violates this, reply exactly:
 VERDICT: clean
 
 Otherwise reply:
 VERDICT: leaks
-- <the problem> -> <which requirement or test it concerns>
+- <the problem> -> <which check or test it concerns>
 <<<FILE instruction.md>>>
 ...the full rewritten instruction.md...
 <<<END>>>
 
-The rewrite keeps the problem statement and the rules, adds the missing or sharpened rules,
-removes leaked outputs and oracle pointers, and stays in the same voice. When the problem is in
-the spec document, return the rewritten document as a second block under its own path (e.g.
-<<<FILE environment/docs/STYLE.md>>>) and keep its prose style. For an UNSTATED
-FORMAT, add the form as a rule only if it is a genuine part of the house style; otherwise the test
-is the problem and must be reported.
+The rewrite keeps the problem statement, adds the missing or sharpened requirements, removes
+leaked outputs and oracle pointers, and stays in the same voice. When the problem is in a named
+document, return the rewritten document as a second block under its own path (e.g.
+<<<FILE environment/docs/STYLE.md>>>). For an UNSTATED FORMAT, add the form only if it is a
+genuine part of the requirement; otherwise the test is the problem and must be reported.
 """
 
 
-def instruction_review_user(instruction: str, requirements: list, tests: str, crux: str = "", genre: str = "spec",
+def instruction_review_user(instruction: str, checks: list, tests: str, crux: str = "", genre: str = "",
                             docs: dict[str, str] | None = None) -> str:
-    head = ("Requirements the tests check (each must be stated in instruction.md or the spec document):\n" if genre == "spec"
-            else "Hidden faults / sites (never reveal these):\n")
-    doc_text = "".join(f"\n\nSpec document {path} (shipped in the environment):\n{body[:12000]}"
+    doc_text = "".join(f"\n\nDocument {path} (shipped in the environment):\n{body[:12000]}"
                        for path, body in (docs or {}).items())
-    return (head + json.dumps(requirements, indent=2)
+    return ("Checks the hidden tests make (each must follow from what the agent can see; never reveal their inputs):\n"
+            + json.dumps(checks, indent=2)
             + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
             + doc_text + "\n\ninstruction.md to review:\n" + instruction)
 
 
 MUTANT_SYSTEM = """\
-You write deliberately INCOMPLETE solutions for a Terminal-Bench 2 specification task, to check
-that its tests catch a solution that misses one rule. You get the task's requirements (each with
-the default behaviour a programmer would produce without it) and the correct solution/solve.sh.
+You write deliberately INCOMPLETE solutions for a Terminal-Bench 2 task, to check that its hidden
+tests catch a plausible partial solution. You get the task's items (each with `wrong_fix`, the
+plausible incomplete behaviour, and a `counterexample`) and the correct solution/solve.sh.
 
-For each listed requirement, write a complete alternative solve script that does everything the
-correct solve.sh does, EXCEPT that for this one requirement it produces the DEFAULT behaviour
-instead. Keep every other rule implemented, so the only difference is that one rule. The script
-must run without errors (bash, `set -euo pipefail`).
+For each item, write a complete alternative solve script that does everything the correct
+solve.sh does, EXCEPT that for this one item it does `wrong_fix` instead. Keep every other step
+identical, so the only difference is that one item. The script must run without errors (bash,
+`set -euo pipefail`) and must not break unrelated things.
 
-Reply with one block per requirement, nothing before or after, named by the requirement's index:
+Reply with one block per item, nothing before or after, named by the item's index:
 <<<FILE mutants/0.sh>>>
 ...complete script...
 <<<END>>>
@@ -559,654 +528,6 @@ CONTROL_SYSTEMS = {k: v.replace(DIFFICULTY_RULE, "").replace(DIFFICULTY_SPEC_FIE
 assert all(DIFFICULTY_RULE not in v and DIFFICULTY_SPEC_FIELDS not in v for v in CONTROL_SYSTEMS.values())
 
 
-# ---------------------------------------------------------------------------------------------
-# Other genres, chosen per topic with a [genre] tag on the topic line. "spec" (above) is the
-# default. "hidden_fault" is the retired bug-hunt genre (every such task scored 4-5/5), kept so a
-# batch can sprinkle a few in and measure them. "judgement" is the shape of the one fair failure.
-
-DIFFICULTY_RULE_FAULT = f"""\
-- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well)
-  should solve it only SOMETIMES (roughly 1-3 times in 5). Every earlier task was solved 4-5/5:
-  the agent found the faults by reading and their fixes were named techniques. Adding more
-  faults, more code or more steps did not change that; the SHAPE of the problem does:
-  * Where difficulty comes from (measured on the reference agent): it solves anything whose fix
-    an expert can NAME in a few words ("normalize to NFC everywhere", "parameterize the query"),
-    even with no hints, and it finds every inconsistency between code paths by reading. Build the
-    task around a defect that shows only in BEHAVIOUR OVER A SEQUENCE (a second run after an edit,
-    a resume after interruption, a retry after a partial write, late or duplicate events), where
-    each function is locally correct.
-    - NO SINGLE FUNCTION, read against the goal, reveals the fault. A task whose bug can be read off
-      one function (a delta computed from the wrong baseline, a check placed after a write) was
-      solved 4-5/5 in ~10 steps even with no hints and no reference code. The defect must live in
-      the INTERACTION: state written by one component or run and read by another under a different
-      assumption (a manifest that omits an input the renderer uses, a checkpoint that saves the
-      cursor but not the dedup set, a cache key built in one module and looked up in another).
-      Each side is correct on its own; only tracing the data across them shows the bug.
-    To stay fair:
-    - instruction.md STATES the invariant over sequences ("a resumed run produces exactly what an
-      uninterrupted run would", "after any edit, an incremental build equals a clean build").
-      Tests choose which sequences to try; those may stay hidden. Hidden inputs, never hidden rules.
-      Pick them where partial fixes break, not where an agent would first look: non-round values,
-      boundaries (first and last item, exactly on a tie), the crash path, twice in a row. A test
-      that only uses the obvious values (50, 100) is no stronger than the agent's own re-test.
-    - Every condition a test uses can be produced deterministically with something in the
-      environment (a documented flag, a fake clock, a scripted input order, a crash-injection
-      setting). No races, timing or sleeps.
-    - The required end result is unambiguous. The difficulty is in reasoning out every sequence
-      that breaks it, not in guessing what the result should be.
-  * Symptom, not location: instruction.md describes what the user sees and the exact goal and
-    success criteria, never which file, component or mechanism is at fault. Bad: "inspect
-    /app/migrate_v2.sh", "the libraries disagree on the Vec3 type". Good: "the monthly totals in
-    report.csv are wrong since the last deploy; make them correct".
-    Give REQUIREMENTS (what must be true) and SYMPTOMS (what the user sees), never a DIAGNOSIS
-    (why it is broken). Example for an inventory report:
-      requirement: "stock_report.csv must list every warehouse with its total units on hand"
-      symptom:     "two warehouses are missing and several totals are lower than the counts
-                    in the inventory system"
-      diagnosis (forbidden): "the join drops warehouses whose IDs have trailing spaces, and
-                    returned items are subtracted twice"
-  * ONE central challenge with {MIN_FAULTS} to {MAX_FAULTS} DIFFERENT faults that all serve it: interacting
-    requirements, where fixing one exposes the next. No unrelated faults to pad the count (a
-    typo in a wrapper script, a wrong interpreter path, a function that is never called, a wrong
-    config path): they add steps, not difficulty. Not one fault repeated in several files.
-  * Indirect symptoms: wrong numbers, silent data issues, failures only on some inputs.
-    Errors must not name the faulty file or symbol.
-  * Realistic size: a real project as big as the scenario needs, with no line target. No padding and no decoy modules: ordinary, correct code around the faults is
-    enough. Never label code "legacy", "unused" or "not loaded". Generate bulky data at build time.
-  * Domain knowledge, not proofreading: each faulty spot must read as correct code to someone who
-    does not know what correct code in this domain must do. Comments, docstrings and the README
-    describe what the code DOES; they never state the rule the code breaks, never call a setting
-    a workaround, never flag a line.
-  * Partial fixes fail: the complete fix spans several places. For each central fault (at least 2) there is a
-    plausible but incomplete fix (fix it at one entry point but not the others, handle the
-    common form but not the rare one) that passes the obvious checks, and a test the agent
-    cannot see that catches it. The agent's own re-test must not catch the partial fix: after
-    the obvious fix, re-running the scenario instruction.md describes works. The counterexample
-    uses a different sequence, timing or input (run it twice, interrupt it midway, apply the
-    change after the first pass) that the agent only tries if it reasons about the whole lifecycle.
-  * No reference copies: the environment must not contain the answer elsewhere. No .git
-    history, no pristine installed copy or vendored original of the faulty code, no backup or
-    .orig files, no project tests that name or pin the fault. The agent has no network access.
-    This includes the task's OWN code: if the invariant compares two paths (live vs replay,
-    incremental vs full rebuild, fast vs slow), the reference path must NOT already handle the
-    tricky case correctly, or the agent just copies its logic across. Either both paths share the
-    flawed reasoning, or the reference is a stated behaviour the agent must reason out. README
-    and docs describe usage and data formats; they may restate the stated invariant, never the
-    case-level semantics a fault breaks.
-  * No independent check: the agent must not be able to RUN something that computes the right
-    answer and compare its output against it (a `verify` command, a full rebuild next to the
-    incremental path, a replay, an import/export round-trip). Agents used such a reference to test
-    their way to every hidden case (a shipped `verify`; fuzzing incremental output against a full
-    rebuild). The agent may still check its work by reasoning, small hand-worked examples, and
-    the stated rules; it just gets no oracle for free.
-  * Hidden edge cases: tests also check cases the visible symptom doesn't show (empty input,
-    NULLs, timezones, duplicates), each a CONSEQUENCE of the stated goal that an expert would
-    derive, not a separately listed requirement. Don't paste expected outputs into
-    instruction.md; state the rule that produces them.
-  * Goal, not checklist: instruction.md states the outcome at the level a user would (the
-    invariant, "after any sequence of operations the snapshot equals a replay of the log"), never
-    the list of cases and steps that achieve it. Every `wrong_fix` must stay a trap: never add a
-    sentence whose only purpose is to warn against one ("if an event is corrected twice, use the
-    latest correction"). Never name the fix or the crux.
-  * A problem, not a guide: spend instruction.md's detail on the DELIVERABLE (output paths,
-    formats, the rules that define correct results, constraints grading needs; use placeholders
-    like <count>, not the expected values). Never: a numbered symptom per fault, how many things
-    are wrong, the categories of faults ("currency, timezone and refund handling"), where answers
-    or rules are documented, what the tests check, a command to check progress, "only change X"
-    scope limits, or exact expected outputs beyond trivial ones.
-  * Bespoke, not textbook: no famous bugs (Pillow ANTIALIAS, nginx trailing slash, INSERT
-    without column list). Use domain logic specific to this scenario.
-  * Never get difficulty from ambiguity, trick wording or hidden requirements: every test must
-    follow from instruction.md plus what the agent can discover in the environment.
-"""
-
-
-DIFFICULTY_SPEC_FIELDS_FAULT = """,
-  "faults": [{"layer": "build|code|config|data|runtime", "where": "file or component",
-              "what": "the defect", "symptom": "what the agent observes",
-              "how_discovered": "what the agent must do to find it",
-              "central": "true if this fault is part of the central challenge",
-              "wrong_fix": "central faults: the plausible but incomplete fix a strong agent would try first",
-              "counterexample": "the exact input or sequence of operations on which wrong_fix gives a wrong result",
-              "why_normal_case_passes": "why the obvious checks do not reveal wrong_fix",
-              "caught_by_test": "the hidden test that runs the counterexample and fails wrong_fix"}],
-  "hidden_edge_cases": ["cases the tests check that the visible symptom does not show"],
-  "why_not_textbook": "why this cannot be solved from memory of a well-known bug",
-  "static_read": "what reading the code alone reveals, and why that is not enough to fix everything",
-  "crux": "the domain insight the complete fix depends on",
-  "challenge_kind": "incremental_state|resume_after_interruption|retry_idempotency|ordering_and_duplicates|cache_invalidation|format_migration|streaming_boundaries|other",
-  "sequence_invariant": "the invariant over sequences, as instruction.md states it",
-  "nameable_fix": "the shortest phrase an expert would use for the whole fix",
-  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
-  "reference_in_environment": "any code, doc or data in the environment that already computes or states the correct handling of the tricky case; must be none",
-  "interaction": "the components or runs whose interaction causes the central defect (at least 2), and why each looks correct on its own",
-  "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against (verify command, full rebuild, replay, round-trip); must be none"
-"""
-
-
-CRITIC_SYSTEM_FAULT = f"""\
-You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, and re-tests its own fixes; every earlier task fell
-to it 4-5 times in 5.
-
-{DIFFICULTY_RULE_FAULT}
-Given a task spec (JSON), walk through how that agent would solve it, step by step, starting
-from instruction.md and the environment. For each fault, note what reveals it and what the
-agent must reason out to fix it completely. The spec is too easy if reading the code is enough
-to find and fix a central fault, if an error message names a faulty file or symbol, if instruction.md would name
-the faulty location, if any fault is a well-known textbook bug, if there are fewer than
-{MIN_FAULTS} or more than {MAX_FAULTS} faults, if any fault is filler unrelated to the central challenge, if any comment, docstring or README line
-states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, if the
-environment holds a reference copy of the correct code (git history, an installed original,
-backups, project tests naming the fault), if `nameable_fix` alone is enough to solve it (the fix
-is a named technique applied mechanically), if a fault's counterexample is the same scenario
-instruction.md describes (the agent's own re-test would catch it), or if the environment already
-contains correct logic for the tricky case that the agent can copy (e.g. a correct replay or
-full-rebuild path that the invariant compares against), or if any central fault can be found and
-fixed by reading ONE function against the goal (the defect must live in the interaction between
-components or runs, with each side correct on its own), or if the agent can run something that
-computes the correct answer and compare against it (a verify command, a full rebuild, a replay,
-a round-trip). It is UNFAIR if the sequence
-invariant is not stated in instruction.md, or a test's condition cannot be produced
-deterministically with something in the environment.
-
-If it is too easy or unfair, rewrite the spec to fix every problem while keeping it fair,
-solvable, deterministic and on the same topic. Do not make it harder by adding faults, code or
-steps; change what the agent has to reason about.
-
-The revised spec must keep every key of the original AND include these difficulty-profile
-keys, filled in (add them if the original lacks them):
-{{{DIFFICULTY_SPEC_FIELDS_FAULT.lstrip(",")}
-}}
-
-Reply with ONE JSON object and nothing else:
-{{"walkthrough": ["step-by-step solve of the ORIGINAL spec"],
-  "too_easy_because": ["problems found, empty if none"],
-  "spec": {{...the full spec, revised if needed, with every key of the original...}}}}
-"""
-
-
-
-INSTRUCTION_REVIEW_SYSTEM_FAULT = """\
-You review instruction.md of a Terminal-Bench 2 task before it is built. The agent solving the
-task sees only instruction.md and the environment; the faults below are hidden from it.
-
-A good instruction states a PROBLEM in user terms plus the DELIVERABLE: output paths, formats,
-the rules that define correct results, and constraints the grading needs. It must NOT guide the
-agent. Flag and remove any of these:
-  1. diagnosis: WHY something is broken or WHERE (file, component, setting, mechanism)
-  2. a numbered or bulleted symptom per fault (reveals how many problems and where each lives)
-  3. the number of problems, or the categories of faults ("currency, timezone, refund handling")
-  4. pointers to where answers or rules live ("see docs/", "inspect migrate.sh")
-  5. what the tests or verification check
-  6. a command to check progress ("run pytest to check")
-  7. scope narrowing ("only change the Makefile") unless the tests require it
-  8. exact expected outputs or values beyond trivial ones (state the rule; use placeholders)
-  9. the fix or the crux itself (the technique, rule or insight that solves it; it is given below)
- 10. a requirement whose only purpose is to warn against a fault's `wrong_fix` (e.g. "if an event
-     is corrected twice, use the latest correction" when the trap is handling repeated corrections)
-Also check tests/test_outputs.py the other way round: if a test requires an exact textual form
-(a specific spelling, trailing slash, number of "../", key order, whitespace) that instruction.md
-does not state, report it as "UNSTATED FORMAT: <test> requires <form>" in the leak list. Do not
-rewrite the tests; the instruction may only be extended with that requirement if it is a real
-rule of the deliverable, otherwise the test is the problem and must be reported.
-Example for an inventory report:
-  ok:        "stock_report.csv is wrong: some warehouses are missing and totals don't match the
-             inventory system. It must list every warehouse with its total units on hand."
-  forbidden: "1. two warehouses are missing (the join drops IDs with trailing spaces) 2. returns
-             are double-counted. Check docs/rules.md; expected total for WH-7 is 1,204."
-
-Check every sentence against the hidden faults and this list. If nothing violates it, reply exactly:
-VERDICT: clean
-
-Otherwise reply:
-VERDICT: leaks
-- <the leaking sentence> -> <which fault it reveals>
-<<<FILE instruction.md>>>
-...the full rewritten instruction.md...
-<<<END>>>
-
-The rewrite must keep the goal (the invariant), the interface (paths, commands, ports, output
-formats) and any rule the tests rely on that an expert could NOT derive from the goal, domain
-knowledge and the environment. Consequences of the goal that an expert would work out (repeated
-corrections, existing data, the crash path) are removed, not kept. It should read as one problem
-statement plus the deliverable spec, in the same voice; it may be shorter.
-"""
-
-
-
-MUTANT_SYSTEM_FAULT = """\
-You write deliberately INCOMPLETE solutions for a Terminal-Bench 2 task, to check that its
-tests catch plausible partial fixes. You get the task's faults (each with `wrong_fix`, the
-plausible incomplete fix, and its `counterexample`) and the correct solution/solve.sh.
-
-For each fault, write a complete alternative solve script that does everything the correct
-solve.sh does, EXCEPT that for this one fault it applies `wrong_fix` instead of the correct fix.
-Keep every other step identical, so the only difference is that one fault's partial fix. The
-script must run without errors (bash, `set -euo pipefail`); it must not break unrelated things.
-
-Reply with one block per fault, nothing before or after, named by the fault's index:
-<<<FILE mutants/0.sh>>>
-...complete script...
-<<<END>>>
-"""
-
-
-
-DIFFICULTY_RULE_JUDGEMENT = f"""\
-- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
-  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). The only
-  fair failures measured so far came from a task where the agent had to JUDGE whether its fix was
-  complete: a stated property that must hold everywhere, violated at several places that differ
-  in mechanism, with no tests and no oracle; the agent fixed the obvious site, re-tested the
-  reported symptom, and decided the rest was unnecessary. Build that shape:
-  * ONE stated property that must hold everywhere ("no user-supplied value can put a line break
-    into a response header", "every monetary amount is rounded the same way at every boundary",
-    "no path derived from input can leave the base directory", "every record is durable before
-    its index entry"). instruction.md states the property, ONE reported symptom (the obvious
-    site), and the interface. It never lists the sites, their count, or their mechanisms.
-  * A realistic codebase (several modules, a real-looking library or service) that violates the
-    property at {MIN_SITES} to {MAX_SITES} SITES which differ in MECHANISM: value vs name, direct
-    vs through a helper, one site using a different library or API, one site reached only through
-    a second entry point, one site in data already stored. Fixing one site and grepping for the
-    same pattern must NOT reveal the others; knowing the domain must.
-  * A partial fix (the obvious site) makes the reported symptom disappear and passes every
-    check the agent would naturally run. Hidden tests probe each site with its own input.
-  * No tests, no verify/check command, no reference copy, no .git, no upstream original (a
-    library installed with pip is modified in place and its pristine copy removed), no comment
-    that marks a site. The agent has no network access.
-  * Fair: every site is a violation of the STATED property that an expert in the domain would
-    recognise from the property plus reading the code; tests check behaviour through the public
-    interface, never a particular patch. Where two fixes are both valid (reject a violating value
-    with an error, or sanitise it and answer normally; round before or after a conversion),
-    instruction.md states which one is required, with the exact observable result; a test must
-    never pin one of two valid behaviours the instruction left open. (A correct fix that rejected
-    CRLF input with a 400 failed tests that expected the value sanitised and the header present.)
-  * The codebase is substantial and its existing behaviour matters: instruction.md says
-    everything the service does today must keep working, and hidden regression tests check it,
-    so "rewrite the affected module" is not a shortcut.
-  * Where the difficulty must come from: the agent CAN check each site itself (the property is
-    precise, so it can write its own probe for any site it suspects). The task measures whether
-    it looks everywhere and probes everything before deciding it is done; it never depends on
-    the agent guessing an intent, a format or a choice. So the property is PRECISE: for any line
-    of code an expert can say whether it violates it. If any behaviour that must be kept looks
-    like a violation (exchange rates applied at a published precision, an escape that is
-    intentionally left in), instruction.md names that exception itself; a docstring that
-    contradicts instruction.md's general rule makes the task unfair. (Two correct runs followed
-    "rates are exact as written" and failed a test that expected a documented 6-figure rate.)
-  * A helper that already enforces the property correctly is an answer key when the violating
-    sites are simply the calls that bypass it ("use round_money everywhere" fixed every site of a
-    billing task, 5/5). If such a helper exists, at least half the sites must call it and still
-    violate the property (wrong input, wrong context, wrong boundary), so swapping the helper in
-    is not the fix.
-"""
-
-DIFFICULTY_SPEC_FIELDS_JUDGEMENT = """,
-  "challenge_kind": "property_completeness",
-  "property": "the one property, as instruction.md states it",
-  "reported_symptom": "the one symptom instruction.md reports (the obvious site)",
-  "sites": [{"where": "file and function", "mechanism": "how this site violates the property",
-             "differs_from_other_sites": "why fixing another site and searching for its pattern does not reveal this one",
-             "hidden_test_input": "the input the hidden test sends through the public interface"}],
-  "partial_fix": "the fix an agent makes first, and which checks it passes",
-  "preserved_behaviours": [{"behaviour": "an existing behaviour that must keep working while the property is enforced",
-                            "hidden_test_input": "the input whose output must stay the same"}],
-  "self_check_blind_spot": "why the agent's own re-test passes after the partial fix",
-  "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against; must be none",
-  "reference_in_environment": "any code, doc or data in the environment that already handles the property correctly or states the sites; must be none"
-"""
-
-CRITIC_SYSTEM_JUDGEMENT = """\
-You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, and writes its own tests; it fails mainly when it
-must judge whether a fix is complete with nothing to check against.
-
-__RULE__
-Given a task spec (JSON), walk through how that agent would solve it: which site it finds from
-the symptom, what it would grep for next, which sites that search reveals, and what it would
-test. The spec is TOO EASY if two sites share a mechanism (one search finds both), if
-instruction.md lists or counts the sites, if a comment or docstring marks a site, if there are
-fewer than __MIN_SITES__ sites, if any test, oracle or reference copy exists, or if the fix is a
-named technique applied in one place. It is also TOO EASY if a correct helper for the property
-exists and the sites are mostly calls that bypass it. It is UNFAIR if a site does not violate the stated
-property as an expert would read it, if a hidden test checks a particular patch rather than
-behaviour through the public interface, or if any preserved behaviour, docstring or test
-contradicts instruction.md's general statement of the property without instruction.md naming
-that exception.
-
-If results of earlier designs are given, a design that repeats a shape those results show was
-too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
-keeping it fair, solvable, deterministic and on the same topic.
-
-The revised spec must keep every key of the original AND include these design keys, filled in:
-{__FIELDS__
-}
-
-Reply with ONE JSON object and nothing else:
-{"walkthrough": ["how the agent would approach the ORIGINAL spec, site by site"],
-  "too_easy_because": ["problems found, empty if none"],
-  "spec": {...the full spec, revised if needed, with every key of the original...}}
-"""
-
-CRITIC_SYSTEM_JUDGEMENT = (CRITIC_SYSTEM_JUDGEMENT.replace("__RULE__", DIFFICULTY_RULE_JUDGEMENT)
-                           .replace("__MIN_SITES__", str(MIN_SITES))
-                           .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_JUDGEMENT.lstrip(",")))
-
-
-# ---------------------------------------------------------------- long_road genre
-DIFFICULTY_RULE_LONGROAD = f"""\
-- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
-  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). Tasks where
-  the agent only had to find and fix a few planted bugs were solved 4-5/5: each fix was one quick
-  edit. Here the difficulty is the ROAD to a clearly stated end state, the way real build and ops
-  work goes: no single fix, errors that change as you fix them, and failures that cascade.
-  * instruction.md describes the environment ("a repo that builds X / a service that does Y"), the
-    FAILING STATE (the command the user runs and what goes wrong: it fails, hangs, or prints a wrong
-    value) and the END STATE, stated exactly and observably (the command succeeds from a clean
-    state, the file exists, these values follow this stated rule). It never lists the obstacles,
-    their number, or the fixes.
-  * Between the failing state and the end state lie {MIN_OBSTACLES} to {MAX_OBSTACLES} OBSTACLES, each a real failure
-    mode an expert recognises: offline dependency resolution (a pin the local wheelhouse/mirror
-    cannot satisfy), build backend or config not supported by the available tool version, a
-    compiler or ABI change (an API removed in the installed language version), environment
-    configuration (missing locale/tz data/certificate/env var/PATH entry, permissions), stale state
-    (a lock or pid file left by a crashed run, a stale cache or build dir, a half-applied
-    migration), a service that must be started or is misconfigured, a long-running step that must
-    be made to finish, and a final LOGIC obstacle that produces a wrong value rather than an error.
-  * Chained: most obstacles are only REVEALED by fixing an earlier one (the build error hides the
-    import error, which hides the hang, which hides the wrong value). At least one obstacle is
-    SILENT: the command succeeds but an end-state value is wrong, found only by checking the output
-    against the rule instruction.md states. Errors are realistic and sometimes cryptic (an
-    undefined symbol at import, a resolver message, a hang with one log line); no message names
-    its own fix.
-  * NOT VISIBLE IN THE SOURCE: the agent reads every file before it runs anything. A hand-built
-    task whose six obstacles were all readable mistakes (a version pin next to the wheelhouse
-    listing, a removed C API call, a lock check, a UTC conversion) was fixed in ONE batch of edits
-    in 8 steps, 3/3: reading the repo revealed the whole chain. At most one obstacle may be a
-    readable code mistake. The rest must live where reading the project does not show them and
-    only running does: system and runtime state (a service's own config or data directory, a
-    stale socket or cache outside the repo, file permissions or ownership, a filled disk quota,
-    an installed library whose behaviour differs from its documentation, a dependency's
-    transitive pin that only the resolver reveals, data whose problem shows only at a volume or
-    in records past the first screenful, a process that only fails under its real workload).
-  * Shortcuts are closed: the end state includes what must be KEPT (the C extension stays a C
-    extension, the data files are unchanged, the service runs on the given port), and a hidden
-    test checks each, so deleting the hard part or hard-coding the output fails.
-  * Fair: everything needed is already on the machine (the agent has NO network: vendor every
-    package and wheel in the Dockerfile; the Dockerfile may delete things to create an obstacle,
-    such as tz data, but never in a way the agent cannot repair offline). Each obstacle shows
-    itself through an error, a hang, or a stated end-state condition the agent can check. The
-    end state is exact; a wrong value is wrong only by a rule instruction.md states. Hidden tests
-    check only the stated end state (run from a clean state) and the stated things to keep, never
-    a particular fix: any repair that reaches the end state passes. Deterministic: no clocks,
-    randomness or timing races in what the tests check.
-  * The environment is a realistic project (package, Makefile or build script, data, README), not
-    a puzzle; comments never mark an obstacle. No tests, no reference copy, no .git history that
-    contains the fix.
-"""
-
-DIFFICULTY_SPEC_FIELDS_LONGROAD = """,
-  "challenge_kind": "long_road",
-  "failing_state": "the command instruction.md says the user runs, and what goes wrong now",
-  "end_state": ["each exact, observable condition instruction.md states for done"],
-  "obstacles": [{"stage": "dependencies|build_config|compile_abi|environment|stale_state|service|long_running|logic",
-                 "symptom": "exactly what the agent sees (error text, hang, wrong value)",
-                 "cause": "what is actually wrong",
-                 "revealed_by": "which earlier obstacle's fix exposes this one, or 'start' for the first",
-                 "fix": "one valid repair (others may exist)",
-                 "hidden_test": "which end-state test fails while this obstacle remains"}],
-  "shortcut_guards": [{"shortcut": "a way to reach a fake end state (delete the extension, hard-code the output, edit the data)",
-                       "hidden_test": "the test that fails it"}],
-  "offline": "how every package the build needs is already in the image (no network)",
-  "reference_in_environment": "any code, doc or history in the environment that contains the fixes; must be none"
-"""
-
-CRITIC_SYSTEM_LONGROAD = """\
-You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, reads error messages carefully, and writes its own
-tests. It struggles with long chains where each fix reveals a new failure, with cryptic errors,
-with hangs, and with a final wrong value it must notice by checking the output against a rule.
-
-__RULE__
-Given a task spec (JSON), walk through how that agent would solve it: what it runs first, what it
-sees, which obstacle it fixes, what that reveals, and whether it would notice the silent one. The
-spec is TOO EASY if fewer than __MIN_OBSTACLES__ obstacles, if most obstacles are visible at once
-(not chained), if an error message names its own fix, if there is no silent wrong-value obstacle,
-if the agent could reach the end state by a shortcut no test blocks, if the obstacles are one
-kind repeated, or if more than one obstacle is visible by reading the project's files (the agent
-reads everything first and fixes all readable mistakes in one pass). It is UNFAIR if any obstacle needs the network or something not on the machine, if
-a fix is undiscoverable from the symptoms, if the end state is not exact, if a test checks a
-particular fix or anything instruction.md does not state, or if anything is nondeterministic.
-
-If results of earlier designs are given, a design that repeats a shape those results show was
-too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
-keeping it fair, solvable, deterministic and on the same topic.
-
-The revised spec must keep every key of the original AND include these design keys, filled in:
-{__FIELDS__
-}
-
-Reply with ONE JSON object and nothing else:
-{"walkthrough": ["how the agent would approach the ORIGINAL spec, obstacle by obstacle"],
-  "too_easy_because": ["problems found, empty if none"],
-  "spec": {...the full spec, revised if needed, with every key of the original...}}
-"""
-CRITIC_SYSTEM_LONGROAD = (CRITIC_SYSTEM_LONGROAD.replace("__RULE__", DIFFICULTY_RULE_LONGROAD)
-                          .replace("__MIN_OBSTACLES__", str(MIN_OBSTACLES))
-                          .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_LONGROAD.lstrip(",")))
-
-
-# ---------------------------------------------------------------- domain genre
-DIFFICULTY_RULE_DOMAIN = f"""\
-- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
-  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). It checks
-  its work well against anything it can run, so here the difficulty is KNOWLEDGE it must bring:
-  the exact details of a niche but public, standardised domain, where a generalist gets one
-  detail wrong and its own tests (built on the same misunderstanding) do not notice.
-  * Domains: legacy data (COBOL copybooks, packed decimal COMP-3, zoned decimal sign overpunch,
-    EBCDIC code pages, fixed-width mainframe records), bioinformatics (SAM/BAM flags and CIGAR,
-    VCF normalisation, 0- vs 1-based and half-open coordinates, FASTQ quality encodings, codon
-    tables), cryptography and encodings (RFC key derivation, MAC and padding schemes, ASN.1/DER,
-    base32/base58 checks), finance conventions (day-count conventions, business-day rules),
-    geodesy and time (datum transforms, GPS week/leap seconds, ISO week dates), telecom and
-    binary protocols (TLV, BCD, CRC variants with exact parameters).
-  * The task is a realistic job in that domain (convert, validate, repair or report on real-
-    shaped data) that turns on {MIN_KNOWLEDGE} to {MAX_KNOWLEDGE} KNOWLEDGE POINTS: exact details fixed by
-    the named standard that a generalist commonly gets wrong (which nibble holds the sign and
-    which sign codes exist, which CIGAR ops consume the reference, inclusive vs exclusive ends,
-    the CRC's reflection and final XOR). The data exercises every point, including the rare
-    cases (negative packed values, soft clips, the last base of a contig).
-  * instruction.md names the standard(s) precisely (name, version or RFC number, code page) and
-    fixes every option the standard leaves open; it never explains the details: knowing them is
-    the work. Everything else (interface, paths, output layout) is stated exactly.
-  * No reference in the environment: no library, tool or table that implements the standard
-    (do not install pysam, samtools, cryptography, a codec package, an EBCDIC table), no worked
-    conversion of the real data, no tests. Standard-library features that ship with the base
-    image are allowed only if knowing to use them correctly is itself a knowledge point.
-  * Ground truth must NOT come from your own understanding: you may misremember a detail too,
-    and then the solution and the tests would be wrong together. The hidden tests compute every
-    expected value with an independent REFERENCE: a well-known library installed only for the
-    verifier (list it in `verifier_packages` as name==version; it is added to the test runner,
-    never to the image) or published test vectors from the standard itself. test_outputs.py may
-    import those packages. solve.sh must not use them (the agent will not have them).
-  * Fair: an expert in the domain derives every expected value from the named standard plus
-    instruction.md. No trick data, nothing undiscoverable; a test fails only on a wrong detail.
-  * Each knowledge point carries a PROBE: a short, self-contained question (give the input bytes
-    or values; ask for one exact output) and its exact answer. Before any files are written, the
-    evaluated model is asked each probe several times; points it always gets right add nothing
-    and must be replaced, and the product of the measured rates must land the task in band.
-"""
-
-DIFFICULTY_SPEC_FIELDS_DOMAIN = """,
-  "challenge_kind": "domain_knowledge",
-  "domain": "the field, e.g. mainframe data, bioinformatics, cryptography",
-  "standards": ["each standard instruction.md names, with version / RFC / code page"],
-  "knowledge_points": [{"detail": "the exact rule the standard fixes",
-                        "standard_ref": "where the standard says it",
-                        "common_mistake": "what a generalist does instead",
-                        "hidden_test_input": "the data the test uses to catch the mistake",
-                        "probe_question": "a short self-contained question whose answer shows whether someone knows this detail (give the bytes/values; ask for one exact value)",
-                        "probe_answer": "the exact expected answer, e.g. -1234.5 or 0x29B1; alternatives separated by ||"}],
-  "verifier_packages": ["reference library the tests use, as name==version (installed only for the verifier)"],
-  "reference_check": "how each expected value is computed independently of solve.sh (which package / test vectors)",
-  "reference_in_environment": "any library, tool, table or worked example in the environment that implements the standard; must be none"
-"""
-
-CRITIC_SYSTEM_DOMAIN = """\
-You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, and writes its own tests. It knows mainstream
-programming well; it is weakest on exact details of niche standards, and its own tests share its
-misunderstandings.
-
-__RULE__
-Given a task spec (JSON), walk through how that agent would solve it: which details it would get
-right from general knowledge, which it would likely get wrong, and whether anything in the
-environment would correct it. The spec is TOO EASY if fewer than __MIN_KNOWLEDGE__ knowledge points, if the
-points are common knowledge (UTF-8, ISO 8601 basics, JSON), if a library, tool or worked example
-in the environment implements the standard, if the data never exercises the rare cases, or if
-the instruction explains the details. It is UNFAIR if the standard is not named precisely, if it
-leaves an option the instruction does not fix, if an expected value comes from the generator's
-own code instead of an independent reference (a verifier-only package or published vectors), or
-if a test checks anything the named standard plus instruction.md does not determine.
-
-If results of earlier designs are given, a design that repeats a shape those results show was
-too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
-keeping it fair, solvable, deterministic and on the same topic.
-
-The revised spec must keep every key of the original AND include these design keys, filled in:
-{__FIELDS__
-}
-
-Reply with ONE JSON object and nothing else:
-{"walkthrough": ["how the agent would approach the ORIGINAL spec, point by point"],
-  "too_easy_because": ["problems found, empty if none"],
-  "spec": {...the full spec, revised if needed, with every key of the original...}}
-"""
-CRITIC_SYSTEM_DOMAIN = (CRITIC_SYSTEM_DOMAIN.replace("__RULE__", DIFFICULTY_RULE_DOMAIN)
-                        .replace("__MIN_KNOWLEDGE__", str(MIN_KNOWLEDGE))
-                        .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_DOMAIN.lstrip(",")))
-
-
-# ---------------------------------------------------------------- exec_ref genre
-DIFFICULTY_RULE_EXECREF = f"""\
-- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
-  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). It solves
-  anything it can read or already knows, so here THE SPECIFICATION IS A PROGRAM IT CAN RUN BUT NOT
-  READ: it must probe the program's behaviour systematically and decide when it has found every
-  corner. Runs differ by how thoroughly they probe, not by knowledge.
-  * The black box: a small REFERENCE program written in C (150-400 lines, standard library only)
-    of one kind: calculator, file_writer, validator, protocol_service, scheduler, codec or
-    rules_engine. The Dockerfile compiles it in a build stage (gcc) and the final image holds only
-    the stripped binary (`strip`), installed at `reference_binary`. Its source is never in the
-    environment, and no comment, message or `strings` output names a rule.
-  * {MIN_DECISIONS} to {MAX_DECISIONS} DECISION POINTS: behaviours a careful implementer gets wrong unless they probe:
-    a rounding step and where it happens, a tie-break, a boundary (inclusive or exclusive), a cap
-    or floor, the order two rules apply in, an error case and its exact message and exit code, a
-    byte-layout choice, state carried between records or calls. Each is observable by running the
-    binary on inputs the agent can write, and each differs from what a reasonable programmer
-    would assume. No single probe reveals several points.
-  * The agent builds an equivalent ARTIFACT with an exact interface (a Python library function, a
-    CLI, a server on a port, a parser, a config) that must behave exactly like the reference on
-    any input of the kinds shown in the shipped SAMPLE input file. The sample contains at least one
-    input of every kind the hidden tests use; the hidden tests use only those kinds.
-  * instruction.md states the goal, the artifact's interface, the comparison ("exactly the same
-    output and exit status as <reference_binary> for any input of the kinds in <sample>"), that
-    the artifact must not run the binary or any external program, and that the binary will not
-    be available when the artifact is checked. It never names or hints at a decision point.
-  * Tests (they never trust the environment): tests/ holds a pristine copy of the reference
-    source (tests/reference.c) and a seeded, deterministic input generator (tests/gen_cases.py,
-    stdlib random, fixed seed, about 500 inputs drawn only from the sample's kinds). The tests
-    compile tests/reference.c with gcc (the verifier installs it), hide the environment's binary
-    (rename it) before running the artifact, run reference and artifact on every generated input
-    and on the sample, and fail on the first differences, printing input, both outputs and exit
-    codes. solution/solve.sh writes the artifact itself (the oracle); it must match the reference
-    on every generated input, which is what proves the task solvable.
-  * Fair: everything that decides the output is observable by running the binary on inputs of the
-    sample's kinds; nothing depends on timing, randomness, locale or the clock; byte-for-byte
-    comparisons are stated in instruction.md.
-"""
-
-DIFFICULTY_SPEC_FIELDS_EXECREF = """,
-  "challenge_kind": "executable_reference",
-  "black_box_kind": "calculator|file_writer|validator|protocol_service|scheduler|codec|rules_engine",
-  "artifact_kind": "library|cli|server|parser|config",
-  "reference_language": "c",
-  "reference_binary": "absolute path of the stripped binary in the image, e.g. /usr/local/bin/feecalc",
-  "interface": "exactly how the reference and the artifact are invoked and what they output",
-  "sample_file": "absolute path of the shipped sample input in the image",
-  "input_kinds": ["each kind of input in the sample that the hidden inputs are drawn from"],
-  "decision_points": [{"behaviour": "what the reference does",
-                       "assumed_instead": "what a reasonable implementer would do without probing",
-                       "input_kind": "which input kind triggers it (one of input_kinds)",
-                       "observe": "an input the agent can run to see it"}],
-  "shortcut_guard": "how the tests stop the artifact from calling the binary"
-"""
-
-CRITIC_SYSTEM_EXECREF = """\
-You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, and writes its own tests; given a runnable program
-it probes it, but tends to stop probing once its own examples match.
-
-__RULE__
-Given a task spec (JSON), walk through how that agent would probe the binary: which decision
-points its first probes reveal, which it would only find by trying an unusual input, and which
-it would likely miss. The spec is TOO EASY if fewer than __MIN_DECISIONS__ decision points, if a point is
-visible without probing (in `strings` output, an error message, the sample's obvious reading),
-if one probe reveals several points, or if most points match what a programmer assumes anyway.
-It is UNFAIR if a point cannot be observed from inputs of the sample's kinds, if hidden inputs
-need a kind the sample never shows, or if anything depends on timing, randomness or locale.
-
-If results of earlier designs are given, a design that repeats a black_box_kind and domain those
-results show was too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every
-problem while keeping it fair, solvable, deterministic and on the same topic.
-
-The revised spec must keep every key of the original AND include these design keys, filled in:
-{__FIELDS__
-}
-
-Reply with ONE JSON object and nothing else:
-{"walkthrough": ["how the agent would probe the ORIGINAL design, point by point"],
-  "too_easy_because": ["problems found, empty if none"],
-  "spec": {...the full spec, revised if needed, with every key of the original...}}
-"""
-CRITIC_SYSTEM_EXECREF = (CRITIC_SYSTEM_EXECREF.replace("__RULE__", DIFFICULTY_RULE_EXECREF)
-                         .replace("__MIN_DECISIONS__", str(MIN_DECISIONS))
-                         .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_EXECREF.lstrip(",")))
-
-
-GENRES = {
-    "spec": {"rule": DIFFICULTY_RULE, "fields": DIFFICULTY_SPEC_FIELDS, "critic": CRITIC_SYSTEM,
-             "review": INSTRUCTION_REVIEW_SYSTEM, "mutants": MUTANT_SYSTEM},
-    "hidden_fault": {"rule": DIFFICULTY_RULE_FAULT, "fields": DIFFICULTY_SPEC_FIELDS_FAULT, "critic": CRITIC_SYSTEM_FAULT,
-                     "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
-    "judgement": {"rule": DIFFICULTY_RULE_JUDGEMENT, "fields": DIFFICULTY_SPEC_FIELDS_JUDGEMENT, "critic": CRITIC_SYSTEM_JUDGEMENT,
-                  "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
-    "long_road": {"rule": DIFFICULTY_RULE_LONGROAD, "fields": DIFFICULTY_SPEC_FIELDS_LONGROAD, "critic": CRITIC_SYSTEM_LONGROAD,
-                  "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
-    "domain": {"rule": DIFFICULTY_RULE_DOMAIN, "fields": DIFFICULTY_SPEC_FIELDS_DOMAIN, "critic": CRITIC_SYSTEM_DOMAIN,
-               "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
-    "exec_ref": {"rule": DIFFICULTY_RULE_EXECREF, "fields": DIFFICULTY_SPEC_FIELDS_EXECREF, "critic": CRITIC_SYSTEM_EXECREF,
-                 "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
-}
-
-
-# One recipe for every topic (2026-10-22): the specification is a runnable reference program.
-# The other recipes stay in GENRES for comparison runs; set TOPIC_TAGS=1 to honour [tags] again.
-DEFAULT_GENRE = "exec_ref"
-
-
-def split_topic(line: str) -> tuple[str, str]:
-    """'a fee calculator ...' -> ('exec_ref', 'a fee calculator ...'). A leading [tag] is stripped;
-    it only selects that recipe when TOPIC_TAGS=1."""
-    m = re.match(r"\s*\[(\w+)\]\s*(.*)", line, re.S)
-    if m:
-        tag, text = m.group(1).lower(), m.group(2).strip()
-        if os.environ.get("TOPIC_TAGS") == "1" and tag in GENRES:
-            return tag, text
-        return DEFAULT_GENRE, text
-    return DEFAULT_GENRE, line.strip()
-
-
 FUZZ_RULE = """
 Generated-input test (required): besides the fixed tests, tests/ holds a copy of the reference
 solution (e.g. tests/reference_tool.py, never shipped in the environment) and a seeded,
@@ -1219,14 +540,61 @@ name), or settle them in instruction.md first.
 """
 
 
-def systems_for(genre: str = "spec", control: bool = False) -> dict:
-    """The stage prompts for a genre: the spec-genre texts with the design rule and spec fields
-    swapped (they are embedded verbatim), plus that genre's critic, reviewer and mutant prompts.
-    control=True strips the design rule and fields (the A/B control arm)."""
-    g = GENRES[genre]
-    out = {k: v.replace(DIFFICULTY_RULE, "" if control else g["rule"]).replace(DIFFICULTY_SPEC_FIELDS, "" if control else g["fields"])
+DIFFICULTY_KNOBS = """
+- DIFFICULTY KNOBS (pick 2 to 4 that suit the topic, list them under `knobs`; each needs its fairness
+  condition, or the design is unfair). Careful agents fail on these because doing the work right is
+  costly, not because anything is hidden:
+  * Drift during the episode: data or a service changes after a stated trigger (the Nth request, a
+    record arriving at a stated cutoff). Fair only if instruction.md says the world changes and states
+    the final-state rule. Triggers are event-based, never wall-clock.
+  * Contradicting sources with a stated precedence (a stale README vs the current procedure vs the live
+    schema). Fair only if the precedence rule is written in the environment.
+  * Stale local tests: a shipped test suite wrong in 1-2 places (an exception to "no tests in the
+    environment"). Fair only if instruction.md says the specification wins over local tests and the
+    correct behaviour is stated.
+  * Preservation constraints: immutable records, files that must not change, required CLI flags or DOM
+    hooks, byte-identical messages, placed away from the edit site; each stated once, each checked by a
+    hidden test.
+  * Hidden-edge coverage: any visible example or check covers only the common path (an exception to "no
+    oracle" for that path only); every hidden edge case is a sentence of the specification.
+  * Convention traps (units, 0- vs 1-based indexes, local vs UTC, decimal separators), each documented in
+    a data file or README in the environment.
+  * Transient service faults: a local service fails a fixed, seeded share of calls (5-30%) or is slow;
+    the procedure document states the retry and idempotency policy; faults are deterministic per run.
+  * Resource ceilings: a memory or size limit the naive approach exceeds, stated in instruction.md and
+    enforced the same way when grading.
+  * Irreversible, audited steps: submissions are final and the audit trail is graded, not only the end
+    state; instruction.md says so.
+  * Noisy convenient source vs a stated authoritative source (OCR text vs the structured record); which
+    source wins is stated.
+  * Varied hidden draws: the tests generate hidden inputs from several seeds, so a slightly wrong
+    solution fails on some draws; the oracle passes every draw.
+  Never combine knobs into a trick: each must be discoverable from the environment by a careful expert.
+  A design that uses no knob is TOO EASY; a knob without its fairness condition is UNFAIR.
+"""
+
+KNOB_FIELD = """,
+  "knobs": [{"knob": "one of the difficulty knobs", "where": "where it lives in the task",
+             "fairness": "how its fairness condition is met (the sentence or file that states it)"}]
+"""
+
+
+def split_topic(line: str) -> tuple[str, str]:
+    """One recipe for every topic: a leading [tag] from older topic lists is stripped and ignored.
+    Returns (label, topic); the label is kept in records for compatibility."""
+    m = re.match(r"\s*\[\w+\]\s*(.*)", line, re.S)
+    return "task", (m.group(1) if m else line).strip()
+
+
+def systems_for(genre: str = "", control: bool = False) -> dict:
+    """The stage prompts: the design rule plus the difficulty knobs, and the spec fields plus the
+    knob field, everywhere they are embedded (spec stage and critic). control=True strips both."""
+    rule = DIFFICULTY_RULE + DIFFICULTY_KNOBS
+    fields = DIFFICULTY_SPEC_FIELDS.rstrip("\n") + KNOB_FIELD
+    out = {k: v.replace(DIFFICULTY_RULE, "" if control else rule).replace(DIFFICULTY_SPEC_FIELDS, "" if control else fields)
            for k, v in SYSTEMS.items()}
-    out.update(critic=g["critic"], review=g["review"], mutants=g["mutants"])
+    critic = CRITIC_SYSTEM.replace(DIFFICULTY_RULE, rule).replace(DIFFICULTY_SPEC_FIELDS.lstrip(","), fields.lstrip(","))
+    out.update(critic=critic, review=INSTRUCTION_REVIEW_SYSTEM, mutants=MUTANT_SYSTEM)
     if FUZZ_TESTS and not control:
         out.update(files=out["files"] + FUZZ_RULE, repair=out["repair"] + FUZZ_RULE)
     return out

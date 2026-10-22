@@ -5,33 +5,12 @@
 # agents first diagnosed a fault at step 3-6, with 2-8 steps between later diagnoses.
 
 [knobs]
-# Specification tasks (2026-10-22): the agent must satisfy every stated rule; difficulty comes
-# from breadth (min_rules..max_rules independent rules over min_themes themes), not hidden faults.
-min_rules = 12
-max_rules = 20
-min_themes = 4
-# Judgement genre: sites violating the stated property, each with a distinct mechanism.
-min_sites = 3
-max_sites = 6
-min_obstacles = 4
-max_obstacles = 8
-min_knowledge = 4
-max_knowledge = 10
-min_decisions = 8
-max_decisions = 15
-# Existing behaviours the instruction does not enumerate but hidden regression tests check.
-min_preserved = 3
-# Hidden-fault genre knobs, retired (every such task scored 4-5/5); kept so old records parse.
-# One central challenge with a few faults that all serve it (2026-10-21): a 5-fault quota
-# produced filler bugs (wrong interpreter path, main() never called) that add steps, not
-# difficulty; 7 faults in 4 layers still scored 4/4. Layers are no longer required.
-min_faults = 2
-max_faults = 4
-min_fault_layers = 1
-# No size floors (environment lines or solve.sh lines): size was never a difficulty lever, and
-# the floors only made glm pad the code or the fix.
+# One recipe for every topic (2026-10-22): a task makes min_checks..max_checks independent hidden
+# checks, each following from a sentence the agent can see.
+min_checks = 8
+max_checks = 20
+# Test literals allowed to appear in instruction.md (computed-looking values only).
 max_leaked_literals = 1
-critic_found_within = 3
 
 # Spacing between the critic's estimated fault discoveries (agent steps). Any gap < min_gap,
 # or a first find before critic_found_within, is too easy and rejected. The median gap grades

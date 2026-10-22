@@ -256,14 +256,9 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
             try:
                 sp = json.load(open(spec_path))
                 layers = sorted({str(x.get("layer")) for x in sp.get("faults") or [] if isinstance(x, dict)})
-                rules = sp.get("requirements") or []
-                themes = sorted({str(r.get("theme")) for r in rules if isinstance(r, dict)})
-                design = (f"{sp.get('name')}: {sp.get('challenge_kind') or 'no challenge kind'}, "
-                          + (f"{len(rules)} rules over {len(themes)} themes" if rules
-                             else f"{len(sp.get('sites') or [])} sites" if sp.get("sites")
-                             else f"{len(sp.get('obstacles') or [])} obstacles" if sp.get("obstacles")
-                             else f"{len(sp.get('decision_points') or [])} decision points" if sp.get("decision_points")
-                             else f"{len(sp.get('faults') or [])} faults in {layers or '-'}"))
+                checks = sp.get("checks") or []
+                design = (f"{sp.get('name')}: {sp.get('shape') or 'no shape'}, {len(checks)} checks, "
+                          f"{len(sp.get('knobs') or [])} knobs")
             except (json.JSONDecodeError, OSError):
                 pass
         # Every model call this run has made, across all stages (each attempt logs a start;
