@@ -39,6 +39,11 @@ How the task is run (Harbor / Terminal-Bench 2):
   is. If a service is needed, the agent (and solve.sh) start it; tests may start it too.
 - Commands can print nothing on success (e.g. `sqlite3 -json` on zero rows). Test helpers must
   handle empty output instead of crashing on it.
+- The agent may leave its own server or daemon running when it finishes (a `kill` of a shell job
+  does not always kill the child). A test that starts a service must first stop anything already
+  listening on that port (walk /proc/net/tcp and /proc/*/fd, or try a bind) and FAIL LOUDLY if
+  the port cannot be bound, never silently talk to a stale server. (Two correct fixes failed this
+  way once: the fixture deleted the database and then queried the agent's orphaned server.)
 - A task passes when every test passes. The unsolved container (no agent action) must FAIL
   at least one test, and the oracle-solved container must pass ALL tests.
 """
