@@ -113,6 +113,14 @@ def adjust_task(task_dir: str, spec: dict, band, review: dict, run_id: str, log,
         if plan.get("give_up"):
             history.append({**rec, "result": "gave_up", "reason": plan["give_up"]}); break
         changed = {p: b for p, b in raw.items() if p.startswith(TASK_FILES) and not p.endswith(("task.toml", "test.sh"))}
+        # Only test CODE may change under tests/: expected outputs and fixtures must come from code the
+        # tests run, never from the model (it misremembered mawk's integer printing on the first real run).
+        rejected = sorted(p for p in changed if p.startswith("tests/") and not p.endswith(".py"))
+        changed = {p: b for p, b in changed.items() if p not in rejected}
+        if rejected:
+            rec["rejected_data_edits"] = rejected
+        if not changed:
+            history.append({**rec, "result": "no_allowed_edits"}); break
         snap = os.path.join(log.dir, "adjust", f"v{k - 1}")
         if not os.path.isdir(snap):
             shutil.copytree(task_dir, snap)

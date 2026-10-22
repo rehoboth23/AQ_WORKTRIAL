@@ -534,7 +534,11 @@ Modes:
   contradiction, the unstated choice, the vacuous rule). Nothing else.
 Never: delete a requirement sentence a check depends on, create contradictions, require an unstated
 format, add clocks/randomness/network, weaken a test only to pass, put expected values in the
-environment, or pad for size. At most two edits. If no fair edit can move the result, give up.
+environment, or pad for size. NEVER write an expected output yourself (you may misremember how the
+reference behaves): a new hidden case must get its expected value from code the tests run (the
+reference, the seeded generator). Only test CODE under tests/ may change; data files there (expected
+outputs, fixtures) are not yours to edit. At most two edits. If no fair edit can move the result,
+give up.
 
 Reply with a block <<<FILE adjust.json>>> containing ONE JSON object
 {{"diagnosis": "why the task landed where it did", "give_up": "" or "reason",
@@ -552,7 +556,13 @@ then one block per changed file with its FULL new content, e.g.
 
 def adjust_user(mode: str, spec: dict, files: dict[str, str], evidence: dict) -> str:
     design = {k: spec.get(k) for k in ("name", "shape", "hidden_evaluation", "checks", "knobs", "ground_truth")}
-    shown = "".join(f"\n<<<FILE {p}>>>\n{b[:20000]}\n<<<END>>>" for p, b in sorted(files.items()))
+    code_ext = (".py", ".sh", ".md", ".c", ".h", ".go", ".rs", ".js", ".ts", ".toml", ".cfg", ".ini", ".awk", ".sql", ".f", ".f77")
+    def shown_in_full(p, b):  # code and docs in full; data files and big files by name only
+        return (p.endswith(code_ext) or p.endswith("Dockerfile")) and len(b) <= 30000
+    shown = "".join(f"\n<<<FILE {p}>>>\n{b}\n<<<END>>>" for p, b in sorted(files.items()) if shown_in_full(p, b))
+    listed = [f"{p} ({len(b)} chars)" for p, b in sorted(files.items()) if not shown_in_full(p, b)]
+    shown += ("\n\nOther files (not shown; data or large): " + ", ".join(listed[:60])
+              + (f" ... and {len(listed) - 60} more" if len(listed) > 60 else "")) if listed else ""
     return (f"Mode: {mode}\n\nDesign:\n{json.dumps(design, indent=1)[:12000]}\n\nBand evidence:\n"
             + json.dumps(evidence, indent=1)[:30000] + "\n\nTask files:" + shown + "\n")
 
