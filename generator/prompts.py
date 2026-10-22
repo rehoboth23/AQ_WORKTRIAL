@@ -781,7 +781,11 @@ DIFFICULTY_RULE_JUDGEMENT = f"""\
     that marks a site. The agent has no network access.
   * Fair: every site is a violation of the STATED property that an expert in the domain would
     recognise from the property plus reading the code; tests check behaviour through the public
-    interface, never a particular patch.
+    interface, never a particular patch. Where two fixes are both valid (reject a violating value
+    with an error, or sanitise it and answer normally; round before or after a conversion),
+    instruction.md states which one is required, with the exact observable result; a test must
+    never pin one of two valid behaviours the instruction left open. (A correct fix that rejected
+    CRLF input with a 400 failed tests that expected the value sanitised and the header present.)
   * The codebase is substantial and its existing behaviour matters: instruction.md says
     everything the service does today must keep working, and hidden regression tests check it,
     so "rewrite the affected module" is not a shortcut.
