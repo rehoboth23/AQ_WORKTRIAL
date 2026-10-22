@@ -60,10 +60,11 @@ def _age(ts: float) -> str:
 def _extra(key: str) -> list[str]:
     """Extra folders to show, from jobs/.dashboard-extra.json (re-read every render, so the
     running dashboard picks a change up without a restart), e.g.
-    {"logs": ["/path/to/a/run/logs"], "jobs": ["/path/to/worktree/jobs"]}."""
+    {"logs": ["/path/to/a/run/logs", "/path/to/worktree/output/_logs/*"], "jobs": ["/path/to/worktree/jobs"]}
+    (entries may be wildcards)."""
     try:
         with open(os.path.join(JOBS_DIR, ".dashboard-extra.json"), encoding="utf-8") as f:
-            return [p for p in json.load(f).get(key) or [] if os.path.isdir(p)]
+            return [d for p in json.load(f).get(key) or [] for d in sorted(glob.glob(p)) if os.path.isdir(d)]
     except (OSError, ValueError):
         return []
 
