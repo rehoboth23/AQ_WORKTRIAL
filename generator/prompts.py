@@ -236,7 +236,9 @@ Two more rules. A test input that violates the stated property (a CRLF in a head
 with "..") is NOT "legitimate functionality": rejecting it does not break a "keep everything
 working" clause. And when two fixes are both valid (reject with an error vs sanitise and answer;
 strip vs escape) and instruction.md does not say which, a test that pins one of them is "task"
-(ambiguous-spec), even if the other runs happened to pick the tested one. Also "task": the
+(ambiguous-spec), even if the other runs happened to pick the tested one. Also "task": a run that
+followed one instruction.md sentence and so broke another (a general rule vs a documented
+exception the instruction does not name): quote both; the conflict is the task's. Also "task": the
 verifier's own server or fixture failing (connection refused or closed on every request,
 including requests unrelated to the fix) when the agent's code is otherwise correct.
 Reply with ONE JSON object and nothing else:
@@ -796,6 +798,20 @@ DIFFICULTY_RULE_JUDGEMENT = f"""\
   * The codebase is substantial and its existing behaviour matters: instruction.md says
     everything the service does today must keep working, and hidden regression tests check it,
     so "rewrite the affected module" is not a shortcut.
+  * Where the difficulty must come from: the agent CAN check each site itself (the property is
+    precise, so it can write its own probe for any site it suspects). The task measures whether
+    it looks everywhere and probes everything before deciding it is done; it never depends on
+    the agent guessing an intent, a format or a choice. So the property is PRECISE: for any line
+    of code an expert can say whether it violates it. If any behaviour that must be kept looks
+    like a violation (exchange rates applied at a published precision, an escape that is
+    intentionally left in), instruction.md names that exception itself; a docstring that
+    contradicts instruction.md's general rule makes the task unfair. (Two correct runs followed
+    "rates are exact as written" and failed a test that expected a documented 6-figure rate.)
+  * A helper that already enforces the property correctly is an answer key when the violating
+    sites are simply the calls that bypass it ("use round_money everywhere" fixed every site of a
+    billing task, 5/5). If such a helper exists, at least half the sites must call it and still
+    violate the property (wrong input, wrong context, wrong boundary), so swapping the helper in
+    is not the fix.
 """
 
 DIFFICULTY_SPEC_FIELDS_JUDGEMENT = """,
@@ -824,9 +840,12 @@ the symptom, what it would grep for next, which sites that search reveals, and w
 test. The spec is TOO EASY if two sites share a mechanism (one search finds both), if
 instruction.md lists or counts the sites, if a comment or docstring marks a site, if there are
 fewer than __MIN_SITES__ sites, if any test, oracle or reference copy exists, or if the fix is a
-named technique applied in one place. It is UNFAIR if a site does not violate the stated
-property as an expert would read it, or if a hidden test checks a particular patch rather than
-behaviour through the public interface.
+named technique applied in one place. It is also TOO EASY if a correct helper for the property
+exists and the sites are mostly calls that bypass it. It is UNFAIR if a site does not violate the stated
+property as an expert would read it, if a hidden test checks a particular patch rather than
+behaviour through the public interface, or if any preserved behaviour, docstring or test
+contradicts instruction.md's general statement of the property without instruction.md naming
+that exception.
 
 If results of earlier designs are given, a design that repeats a shape those results show was
 too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
