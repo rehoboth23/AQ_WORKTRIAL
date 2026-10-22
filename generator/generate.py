@@ -437,6 +437,28 @@ def missing_files(files: dict[str, str]) -> list[str]:
     return [p for p in prompts.MODEL_FILES if not files.get(p, "").strip()]
 
 
+_HEREDOC = re.compile(r"python3?\s+-\s*<<\s*['\"]?(\w+)['\"]?\n(.*?)\n\1\b", re.S)
+
+
+def syntax_errors(files: dict[str, str]) -> list[str]:
+    """Python that was written but never run: compile every .py file and every Python heredoc in
+    solve.sh before any Docker spend. A test file with an IndentationError collects nothing, so the
+    oracle fails after a full build and an agent run (key rotation lost a 10-minute round to one)."""
+    out = []
+    for path, body in sorted(files.items()):
+        if path.endswith(".py"):
+            try:
+                compile(body, path, "exec")
+            except SyntaxError as e:
+                out.append(f"{path}: {e.msg} at line {e.lineno}")
+    for m in _HEREDOC.finditer(files.get("solution/solve.sh", "")):
+        try:
+            compile(m.group(2), "solution/solve.sh (python heredoc)", "exec")
+        except SyntaxError as e:
+            out.append(f"solution/solve.sh python heredoc: {e.msg} at line {e.lineno}")
+    return out
+
+
 def missing_copy_sources(files: dict[str, str]) -> list[str]:
     """Paths the Dockerfile COPYs/ADDs from the build context that were never written."""
     import fnmatch
@@ -684,6 +706,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
             reviewed = files["instruction.md"]
         missing = missing_files(files) + [f"environment/{p} (the Dockerfile COPYs it, but it was never written)"
                                           for p in missing_copy_sources(files)]
+        missing += [f"{s} (Python that does not compile; fix the syntax)" for s in syntax_errors(files)]
         leaks = difficulty.meta_leaks(files)  # both arms: the agent must never see the design
         if leaks:
             missing += ["spec details visible to the solving agent (remove them, make the code look "
