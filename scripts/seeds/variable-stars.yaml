@@ -43,6 +43,14 @@ quirk_matrix:
   - one variable
   - one saturated
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: period vs alias
+  evidence: the observatory's reduction conventions document; a practice star with an alias
+- quirk: observing nights
+  evidence: practice nights with gaps
+- quirk: comparison stars
+  evidence: the conventions document's comparison-star rule; practice nights with a variable comparison
 public_tests: 'about 30%: two visible stars with clean, non-alias periods'
 anti_cheese: hidden stars from fresh seeds within the period tolerance AND the catalogue unchanged
 ground_truth: light curves come from a seeded simulator of the stars and nightly conditions in tests/;

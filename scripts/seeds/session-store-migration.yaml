@@ -18,6 +18,14 @@ quirk_matrix:
   - read/write
   - same-session read-after-write
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: write rate during switch
+  evidence: the runbook's switch-over section; the practice load run
+- quirk: session age
+  evidence: the runbook's expiry rule
+- quirk: request mix
+  evidence: the practice load generator's scenario file
 public_tests: 'about 30%: a visible smoke test that the service answers through the new store when idle'
 anti_cheese: the load generator's correctness log during migration AND SQLite no longer used afterwards
 ground_truth: the load generator (in tests/ and a copy in the image without its checker) issues a seeded

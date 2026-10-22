@@ -20,6 +20,14 @@ quirk_matrix:
   - 1 decoy pattern
   - decoy plus casing variant
   mix: about 30% easy cells, the rest medium or hard
+reference_access: none
+quirk_evidence:
+- quirk: rule overlap (order matters)
+  evidence: training pairs where two rules overlap, at least 5 per overlap level
+- quirk: rare rule frequency in training
+  evidence: the 1-3 training pairs per rare rule; data/README.md says rare rules exist
+- quirk: near-miss (must not fire)
+  evidence: training pairs with decoy patterns left unchanged; README style guide
 public_tests: 'about 30%: 60 visible pairs in tests_public/ covering single-rule cases; ordering interactions
   and rare rules only in the hidden pairs'
 anti_cheese: output-identity check on 300 hidden pairs from fresh seeds (a lookup table of training pairs

@@ -19,6 +19,14 @@ quirk_matrix:
   - minus
   - minus with a frameshift
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: variant type
+  evidence: practice samples with their expected report for every variant type
+- quirk: position
+  evidence: docs/nomenclature.md section on positions; practice variants near primers and exon edges
+- quirk: strand
+  evidence: docs/nomenclature.md section on reverse-strand genes; one practice sample on the minus strand
 public_tests: 'about 30%: one visible sample with SNVs only and its expected report'
 anti_cheese: hidden samples from fresh seeds AND annotations computed by the reference annotator, not
   the old summary file

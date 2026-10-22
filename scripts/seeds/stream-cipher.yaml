@@ -18,6 +18,14 @@ quirk_matrix:
   - mixed
   - binary-ish
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: ciphertext length
+  evidence: known pairs of several lengths
+- quirk: key
+  evidence: the cipher source shows the key schedule
+- quirk: plaintext
+  evidence: known pairs; the README describes the message format
 public_tests: 'about 30%: the given known pairs plus one visible ciphertext under the sample key'
 anti_cheese: hidden ciphertexts under fresh keys AND the per-ciphertext time limit (brute force fails)
 ground_truth: the cipher implementation and a seeded key/IV generator in tests/ produce hidden ciphertexts

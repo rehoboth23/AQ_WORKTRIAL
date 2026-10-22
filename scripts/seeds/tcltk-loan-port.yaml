@@ -19,6 +19,14 @@ quirk_matrix:
   - save then edit
   - delete with dependents
   mix: about 30% easy cells
+reference_access: frozen_examples
+quirk_evidence:
+- quirk: errors at once
+  evidence: recorded transcripts and screenshots of practice scenarios with several errors
+- quirk: amounts
+  evidence: recorded practice scenarios at rounding boundaries; the Tcl source
+- quirk: actions
+  evidence: recorded practice scenarios for every action; the Tcl source
 public_tests: 'about 30%: visible browser tests for a valid application and one single-field error'
 anti_cheese: hidden scenarios checked against the Tcl logic AND the SQLite records byte-identical
 ground_truth: the original Tcl logic runs under tclsh in tests/ to produce expected values and messages
@@ -36,7 +44,8 @@ knobs:
   fairness: every behaviour is in the Tcl source the agent can read and run with tclsh
 must_keep:
 - SQLite schema and record format
-environment: debian slim with tcl/tk, python3 web stack, headless browser for tests; no network.
+environment: debian slim with python3 web stack; the Tcl source and recorded practice transcripts, but
+  no tclsh/wish in the agent's image (tcl runs only in the verifier); headless browser for tests; no network.
 out_of_bounds:
 - pixel-level layout
 - behaviour not in the Tcl source

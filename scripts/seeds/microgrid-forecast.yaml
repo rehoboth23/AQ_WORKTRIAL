@@ -21,6 +21,14 @@ quirk_matrix:
   - ferry day
   - ferry day on a holiday
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: calendar
+  evidence: the calendar file and a holiday in the training weeks
+- quirk: temperature
+  evidence: training weeks with cold spells; the operator notes describe heating load
+- quirk: special loads
+  evidence: the operator notes describe the ferry schedule; ferry days in the training weeks
 public_tests: 'about 30%: a visible check that the output format is right and that MAPE on one held-out
   ordinary week is below a loose 15%'
 anti_cheese: MAPE threshold on 3 hidden weeks from the simulator AND the runtime limit; no copies of held-out

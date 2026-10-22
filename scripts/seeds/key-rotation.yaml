@@ -19,6 +19,14 @@ quirk_matrix:
   - several
   - several with cached keysets
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: token age at rotation
+  evidence: docs/rotation-policy.md grace-period rule
+- quirk: revocations
+  evidence: docs/rotation-policy.md revocation section; the practice scenario includes one
+- quirk: clients
+  evidence: the practice client simulator run and its log
 public_tests: 'about 30%: a visible test that new tokens verify after rotation'
 anti_cheese: the client simulator's verdict log AND the key-management log matching the runbook steps
 ground_truth: a client simulator in tests/ with a seeded scenario computes which tokens must be accepted

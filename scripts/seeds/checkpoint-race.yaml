@@ -18,6 +18,14 @@ quirk_matrix:
   - medium
   - many chunks
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: crash point
+  evidence: docs/checkpoint-format.md describes the write order; the service source shows every step
+- quirk: workers
+  evidence: the service source and README state the worker pool
+- quirk: file size
+  evidence: README states the chunk size and the last-chunk rule
 public_tests: 'about 30%: a visible resume test with a crash at a quiet point'
 anti_cheese: the deterministic crash-point harness on hidden seeds AND an unchanged checkpoint format
 ground_truth: the harness in tests/ drives the service through a scheduler hook and checks the resumed

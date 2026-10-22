@@ -49,6 +49,15 @@ quirk_matrix:
   - some unreachable
   - disconnected components
   mix: about 30% easy cells
+reference_access: 'runnable: the original library is the baseline to speed up; the hard part is the 10x
+  target, and matching it is the guard'
+quirk_evidence:
+- quirk: ties
+  evidence: the library's header comment on tie-breaking; benchmark graphs with equal-cost routes
+- quirk: graph shape
+  evidence: benchmark graphs of each shape
+- quirk: reachability
+  evidence: benchmark graphs with unreachable nodes; README states the output for them
 public_tests: 'about 30%: the visible benchmark (few ties) plus a correctness test on small graphs'
 anti_cheese: relaxation-count budget (deterministic) AND byte-identical routes; the public API must not
   change

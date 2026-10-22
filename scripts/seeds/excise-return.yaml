@@ -19,6 +19,14 @@ quirk_matrix:
   - one 503
   - 503 then a duplicate risk
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: loss tolerance
+  evidence: the procedure manual section on losses, with a worked example
+- quirk: movement types
+  evidence: practice movements with a completed return for each type
+- quirk: portal faults
+  evidence: the procedure manual's retry and idempotency section
 public_tests: 'about 30%: a visible test that a return for a simple month (no special movements) is accepted'
 anti_cheese: hidden recomputation of the return AND no duplicate submissions in the portal's audit log
 ground_truth: the movement data and the duty calculation come from a seeded generator and rule engine

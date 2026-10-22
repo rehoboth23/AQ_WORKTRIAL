@@ -44,6 +44,14 @@ quirk_matrix:
   - clipping
   - clipping with shrinkage
   mix: about 30% easy cells
+reference_access: frozen_examples
+quirk_evidence:
+- quirk: binning ties
+  evidence: the recorded reference trace for the practice configs; library docs on binning
+- quirk: min-child-weight
+  evidence: the recorded trace of a practice config that hits the limit
+- quirk: shrinkage and clipping
+  evidence: the recorded trace of a practice config with clipping; library changelog
 public_tests: 'about 30%: the visible reference trace for the default config'
 anti_cheese: hidden configs must match the pristine library's traces AND the fix must be in the installed
   library, not the script

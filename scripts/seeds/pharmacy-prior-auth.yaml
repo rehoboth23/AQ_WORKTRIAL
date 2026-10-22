@@ -18,6 +18,14 @@ quirk_matrix:
   - stale note
   - note contradicts formulary
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: step therapy
+  evidence: the manual's step-therapy section; practice cases with decisions
+- quirk: quantity
+  evidence: the manual's quantity-limit table; practice cases at the limit
+- quirk: source conflict
+  evidence: the manual's precedence rule; one practice case with conflicting sources
 public_tests: 'about 30%: two visible worked cases with the manual''s ordinary path'
 anti_cheese: hidden recomputation of every decision AND no case decided twice in the audit log
 ground_truth: cases come from a seeded generator; a rule engine in tests/ applies the manual to compute

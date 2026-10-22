@@ -21,6 +21,14 @@ quirk_matrix:
   - near midnight local
   - across a DST change
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: window boundary
+  evidence: labelled flows at window edges in the training CSV; README defines the window
+- quirk: rule overlap
+  evidence: labelled flows that match two rules; README states that rules are ordered
+- quirk: time zone effect
+  evidence: README states the sensor's time zone; flows across the change in the training data
 public_tests: 'about 30%: 500 visible flows with labels, mostly far from any boundary'
 anti_cheese: decisions on 2,000 hidden flows from a fresh seed (memorising the training log fails); runtime
   under 60 s

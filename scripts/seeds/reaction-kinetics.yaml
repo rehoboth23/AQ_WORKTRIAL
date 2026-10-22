@@ -20,6 +20,14 @@ quirk_matrix:
   - longer
   - much longer
   mix: about 30% easy cells
+reference_access: none
+quirk_evidence:
+- quirk: reverse-step excitation
+  evidence: practice runs where the reverse step matters; lab notes
+- quirk: initial intermediate
+  evidence: practice runs with a non-zero initial intermediate
+- quirk: time range
+  evidence: practice runs over short and long time ranges; integrator docs on step control
 public_tests: 'about 30%: visible checks that the integrator builds and that predictions match one training
   condition'
 anti_cheese: predictions must come from the lab's Fortran integrator (a test traces the call) AND match
