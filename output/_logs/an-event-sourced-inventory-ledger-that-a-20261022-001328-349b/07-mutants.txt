@@ -1,0 +1,59 @@
+<<<FILE mutants/0.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+python3 << 'PYEOF'
+# Partial fix: only fix the dedup in replay.py to use event["event_id"]
+# instead of event["id"]. Do NOT fix the correction delta bug in either file.
+
+with open("/app/replay.py", "r") as f:
+    content = f.read()
+
+# Fix dedup: use event_id instead of id
+content = content.replace('event["id"] in seen', 'event["event_id"] in seen')
+content = content.replace('seen.add(event["id"])', 'seen.add(event["event_id"])')
+
+# Do NOT fix the correction delta in replay.py
+# Do NOT touch ledger.py
+
+with open("/app/replay.py", "w") as f:
+    f.write(content)
+
+PYEOF
+
+# Rebuild state.json from the partially corrected code
+python3 /app/ledger.py replay
+
+# Confirm verification passes
+python3 /app/ledger.py verify
+<<<END>>>
+<<<FILE mutants/1.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+python3 << 'PYEOF'
+# Partial fix: only fix ledger.py's correction handler to use
+# store.get_effective_qty(ref_id) instead of ref_event["quantity"].
+# Do NOT fix replay.py at all (neither dedup nor correction delta).
+
+with open("/app/ledger.py", "r") as f:
+    content = f.read()
+
+content = content.replace(
+    'original_qty = ref_event["quantity"]',
+    'original_qty = store.get_effective_qty(ref_id)'
+)
+
+with open("/app/ledger.py", "w") as f:
+    f.write(content)
+
+# Do NOT touch replay.py
+
+PYEOF
+
+# Rebuild state.json from the partially corrected code
+python3 /app/ledger.py replay
+
+# Confirm verification passes
+python3 /app/ledger.py verify
+<<<END>>>

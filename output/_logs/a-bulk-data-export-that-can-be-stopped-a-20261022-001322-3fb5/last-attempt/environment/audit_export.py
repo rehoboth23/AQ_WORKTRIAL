@@ -1,0 +1,615 @@
+#!/usr/bin/env python3
+"""
+audit_export.py — Warehouse Inventory Audit Export Tool
+
+Exports inventory transactions from a SQLite database to a CSV file.
+Supports checkpoint / resume for long-running jobs.
+"""
+
+import argparse
+import configparser
+import csv
+import json
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_DB_PATH = "/app/warehouse.db"
+DEFAULT_BATCH_SIZE = 25
+SUMMARY_MARKER = "# Summary"
+CSV_COLUMNS = [
+    "id",
+    "warehouse_id",
+    "tx_date",
+    "tx_type",
+    "quantity",
+    "balance",
+    "description",
+]
+
+
+# ---------------------------------------------------------------------------
+# BalanceTracker
+# ---------------------------------------------------------------------------
+
+class BalanceTracker:
+    """Accumulate per-warehouse running balances as transactions are
+    processed.
+
+    An IN transaction increases the warehouse balance by *quantity*;
+    an OUT transaction decreases it.
+
+    The tracker also records aggregate statistics: total IN and OUT
+    quantities per warehouse, and the number of transactions processed.
+    """
+
+    def __init__(self) -> None:
+        self.balances: Dict[str, int] = {}
+        self._in_totals: Dict[str, int] = {}
+        self._out_totals: Dict[str, int] = {}
+        self._tx_counts: Dict[str, int] = {}
+
+    def update(self, warehouse_id: str, quantity: int) -> int:
+        """Apply a quantity change and return the new balance.
+
+        Positive *quantity* represents an IN; negative represents an OUT.
+        """
+        if warehouse_id not in self.balances:
+            self.balances[warehouse_id] = 0
+            self._in_totals[warehouse_id] = 0
+            self._out_totals[warehouse_id] = 0
+            self._tx_counts[warehouse_id] = 0
+
+        self.balances[warehouse_id] += quantity
+
+        if quantity >= 0:
+            self._in_totals[warehouse_id] += quantity
+        else:
+            self._out_totals[warehouse_id] += abs(quantity)
+
+        self._tx_counts[warehouse_id] += 1
+        return self.balances[warehouse_id]
+
+    def get_balance(self, warehouse_id: str) -> int:
+        """Current balance for *warehouse_id* (0 if never seen)."""
+        return self.balances.get(warehouse_id, 0)
+
+    def get_warehouses(self) -> List[str]:
+        """Warehouse IDs with a recorded balance, sorted alphabetically."""
+        return sorted(self.balances.keys())
+
+    def total_balance(self) -> int:
+        """Sum of all warehouse balances."""
+        return sum(self.balances.values())
+
+    def total_in(self, warehouse_id: str) -> int:
+        """Cumulative IN quantity for a warehouse."""
+        return self._in_totals.get(warehouse_id, 0)
+
+    def total_out(self, warehouse_id: str) -> int:
+        """Cumulative OUT quantity for a warehouse."""
+        return self._out_totals.get(warehouse_id, 0)
+
+    def transaction_count(self, warehouse_id: str) -> int:
+        """Number of transactions recorded for a warehouse."""
+        return self._tx_counts.get(warehouse_id, 0)
+
+    def reset(self) -> None:
+        """Clear all tracked balances and statistics."""
+        self.balances.clear()
+        self._in_totals.clear()
+        self._out_totals.clear()
+        self._tx_counts.clear()
+
+    def has_warehouse(self, warehouse_id: str) -> bool:
+        """Return True if the warehouse has been seen at least once."""
+        return warehouse_id in self.balances
+
+    def snapshot(self) -> Dict[str, int]:
+        """Return a shallow copy of the current balance dict."""
+        return dict(self.balances)
+
+    def __repr__(self) -> str:
+        items = ", ".join(f"{k}={v}" for k, v in sorted(self.balances.items()))
+        return f"BalanceTracker({items})"
+
+
+# ---------------------------------------------------------------------------
+# CheckpointManager
+# ---------------------------------------------------------------------------
+
+class CheckpointManager:
+    """Persist export progress so a job can be resumed later.
+
+    The checkpoint records the primary key of the last exported row and
+    the number of rows processed so far.  On resume the tool re-queries
+    the database starting just after that position.
+    """
+
+    VERSION = 1
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def save(self, last_id: int, batch_count: int) -> None:
+        """Write checkpoint data atomically.
+
+        Args:
+            last_id: Primary key of the last exported transaction.
+            batch_count: Total rows exported so far.
+        """
+        payload = {
+            "version": self.VERSION,
+            "last_id": last_id,
+            "batch_count": batch_count,
+            "saved_at": datetime.now().isoformat(),
+        }
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+        os.replace(tmp, self.path)
+
+    def load(self) -> Dict[str, Any]:
+        """Read and return checkpoint data from disk."""
+        with open(self.path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if data.get("version") != self.VERSION:
+            raise ValueError(
+                f"Incompatible checkpoint version {data.get('version')}; "
+                f"expected {self.VERSION}"
+            )
+        return data
+
+    def exists(self) -> bool:
+        """Return True if the checkpoint file is present."""
+        return os.path.exists(self.path)
+
+    def clear(self) -> None:
+        """Remove the checkpoint file (no error if absent)."""
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+
+    def validate(self) -> bool:
+        """Return True if the checkpoint file is present and well-formed."""
+        if not self.exists():
+            return False
+        try:
+            data = self.load()
+            return (
+                isinstance(data.get("last_id"), int)
+                and isinstance(data.get("batch_count"), int)
+            )
+        except (json.JSONDecodeError, ValueError, KeyError):
+            return False
+
+    def info(self) -> Optional[Dict[str, Any]]:
+        """Return checkpoint data, or None if unavailable / corrupt."""
+        if not self.exists():
+            return None
+        try:
+            return self.load()
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+
+# ---------------------------------------------------------------------------
+# AuditExporter
+# ---------------------------------------------------------------------------
+
+class AuditExporter:
+    """Read transactions from SQLite, compute running balances, write CSV.
+
+    Processing order: ``ORDER BY warehouse_id, tx_date, id``.
+
+    The output file contains:
+      1. A CSV header row
+      2. One data row per transaction with a *balance* column
+      3. A blank line followed by a ``# Summary`` section listing the
+         final balance for each warehouse
+    """
+
+    def __init__(
+        self,
+        db_path: str,
+        output_path: str,
+        checkpoint_path: Optional[str] = None,
+    ) -> None:
+        self.db_path = db_path
+        self.output_path = output_path
+        self.checkpoint_path = checkpoint_path or (output_path + ".ckpt")
+        self.balance_tracker = BalanceTracker()
+        self.checkpoint_mgr = CheckpointManager(self.checkpoint_path)
+        self._header_written: bool = False
+        self.last_id: int = 0
+        self.last_wh: Optional[str] = None
+        self.last_date: Optional[str] = None
+        self._out: Optional[Any] = None
+        self._writer: Optional[csv.writer] = None
+        self._load_config()
+
+    # ── configuration ────────────────────────────────────────────────
+
+    def _load_config(self) -> None:
+        """Read batch size from config.ini next to the database."""
+        cfg = configparser.ConfigParser()
+        cfg_path = os.path.join(
+            os.path.dirname(os.path.abspath(self.db_path)), "config.ini"
+        )
+        if os.path.exists(cfg_path):
+            cfg.read(cfg_path)
+            self.batch_size = cfg.getint(
+                "export", "batch_size", fallback=DEFAULT_BATCH_SIZE
+            )
+        else:
+            self.batch_size = DEFAULT_BATCH_SIZE
+
+    # ── file I/O ────────────────────────────────────────────────────
+
+    def _open_output(self, append: bool = False) -> None:
+        """Open the output CSV for writing.
+
+        Args:
+            append: If True, open in append mode; otherwise truncate.
+        """
+        mode = "a" if append else "w"
+        self._out = open(self.output_path, mode, newline="", encoding="utf-8")
+        self._writer = csv.writer(self._out)
+
+    def _close_output(self) -> None:
+        """Flush and close the output file."""
+        if self._out is not None:
+            self._out.flush()
+            self._out.close()
+            self._out = None
+            self._writer = None
+
+    def _write_csv_header(self) -> None:
+        """Write the CSV header row if it has not already been written."""
+        if not self._header_written:
+            self._writer.writerow(CSV_COLUMNS)
+            self._out.flush()
+            self._header_written = True
+
+    def _write_row(self, row: Dict[str, Any], balance: int) -> None:
+        """Write a single transaction data row."""
+        self._writer.writerow([
+            row["id"],
+            row["warehouse_id"],
+            row["tx_date"],
+            row["tx_type"],
+            row["quantity"],
+            balance,
+            row.get("description", ""),
+        ])
+
+    def _write_summary(self) -> None:
+        """Write the summary section at the end of the CSV."""
+        self._out.write("\n")
+        self._out.write(f"{SUMMARY_MARKER}\n")
+        for wh in self.balance_tracker.get_warehouses():
+            self._out.write(f"{wh}: {self.balance_tracker.get_balance(wh)}\n")
+        self._out.flush()
+
+    # ── database helpers ─────────────────────────────────────────────
+
+    def _build_query(self, last_id: int) -> str:
+        """Build the SELECT statement for transactions.
+
+        When *last_id* is non-zero a WHERE clause is added so only rows
+        after that position are returned.
+        """
+        base = (
+            "SELECT id, warehouse_id, tx_date, tx_type, quantity, description "
+            "FROM transactions"
+        )
+        if last_id:
+            base += " WHERE id > ?"
+        return base
+
+    def _fetch_rows(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """Execute *query* with the standard ORDER BY and return row dicts."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        ordered = query + " ORDER BY warehouse_id, tx_date, id"
+        cur = conn.execute(ordered, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+
+    def _save_checkpoint(self, record_count: int) -> None:
+        """Persist current export position via the checkpoint manager."""
+        self.checkpoint_mgr.save(self.last_id, record_count)
+
+    # ── public introspection helpers ─────────────────────────────────
+
+    def get_transaction_count(self) -> int:
+        """Return the total number of transactions in the database."""
+        conn = sqlite3.connect(self.db_path)
+        cnt = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        conn.close()
+        return cnt
+
+    def get_warehouse_list(self) -> List[str]:
+        """Return sorted list of distinct warehouse IDs."""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT DISTINCT warehouse_id FROM transactions ORDER BY warehouse_id"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+    def get_date_range(self) -> Tuple[Optional[str], Optional[str]]:
+        """Return (earliest_tx_date, latest_tx_date) from the database."""
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT MIN(tx_date), MAX(tx_date) FROM transactions"
+        ).fetchone()
+        conn.close()
+        return row[0], row[1]
+
+    def get_warehouse_counts(self) -> Dict[str, int]:
+        """Return {warehouse_id: transaction_count} for each warehouse."""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT warehouse_id, COUNT(*) FROM transactions "
+            "GROUP BY warehouse_id ORDER BY warehouse_id"
+        ).fetchall()
+        conn.close()
+        return dict(rows)
+
+    def validate_database(self) -> bool:
+        """Return True if the database exists and has a transactions table."""
+        if not os.path.exists(self.db_path):
+            return False
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='transactions'"
+            )
+            if not cur.fetchone():
+                conn.close()
+                return False
+            cnt = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+            conn.close()
+            return cnt > 0
+        except sqlite3.Error:
+            return False
+
+    def print_info(self) -> None:
+        """Print database summary to stderr."""
+        if not self.validate_database():
+            print("Database not found or invalid.", file=sys.stderr)
+            return
+        count = self.get_transaction_count()
+        wh_list = self.get_warehouse_list()
+        date_min, date_max = self.get_date_range()
+        wh_counts = self.get_warehouse_counts()
+        print(f"Database  : {self.db_path}", file=sys.stderr)
+        print(f"Records   : {count}", file=sys.stderr)
+        print(f"Date range: {date_min} to {date_max}", file=sys.stderr)
+        print(f"Warehouses: {', '.join(wh_list)}", file=sys.stderr)
+        for wh, n in wh_counts.items():
+            print(f"  {wh}: {n} transactions", file=sys.stderr)
+        print(f"Batch size: {self.batch_size}", file=sys.stderr)
+
+    def print_checkpoint_info(self) -> None:
+        """Print checkpoint status to stderr."""
+        data = self.checkpoint_mgr.info()
+        if data is None:
+            print("No checkpoint found.", file=sys.stderr)
+        else:
+            print(f"Checkpoint : {self.checkpoint_path}", file=sys.stderr)
+            print(f"Last ID    : {data.get('last_id')}", file=sys.stderr)
+            print(f"Batch count: {data.get('batch_count')}", file=sys.stderr)
+            print(f"Saved at   : {data.get('saved_at')}", file=sys.stderr)
+
+    # ── progress / statistics ────────────────────────────────────────
+
+    def _report_progress(self, count: int) -> None:
+        """Print a progress dot every batch_size records."""
+        if count % self.batch_size == 0:
+            print(".", end="", flush=True, file=sys.stderr)
+
+    def _report_done(self, count: int) -> None:
+        """Print export statistics to stderr."""
+        print(file=sys.stderr)
+        print(f"Records exported: {count}", file=sys.stderr)
+        for wh in self.balance_tracker.get_warehouses():
+            bal = self.balance_tracker.get_balance(wh)
+            txns = self.balance_tracker.transaction_count(wh)
+            tot_in = self.balance_tracker.total_in(wh)
+            tot_out = self.balance_tracker.total_out(wh)
+            print(
+                f"  {wh}: balance={bal}  (IN={tot_in}, OUT={tot_out}, "
+                f"txns={txns})",
+                file=sys.stderr,
+            )
+        print(f"Total balance: {self.balance_tracker.total_balance()}",
+              file=sys.stderr)
+
+    # ── main export loop ─────────────────────────────────────────────
+
+    def export(
+        self,
+        limit: Optional[int] = None,
+        checkpoint: bool = False,
+        resume: bool = False,
+    ) -> int:
+        """Run the export pipeline.
+
+        Args:
+            limit:      Stop after this many records (None = unlimited).
+            checkpoint: Save periodic checkpoints.
+            resume:     Continue from the last checkpoint.
+
+        Returns:
+            Number of records written in this invocation.
+        """
+        # ── resolve start position ────────────────────────────────
+        if resume:
+            if not self.checkpoint_mgr.exists():
+                print("No checkpoint found; starting from scratch.",
+                      file=sys.stderr)
+                resume = False
+            elif not self.checkpoint_mgr.validate():
+                print("Checkpoint corrupt; starting from scratch.",
+                      file=sys.stderr)
+                self.checkpoint_mgr.clear()
+                resume = False
+
+        if resume:
+            cp = self.checkpoint_mgr.load()
+            self.last_id = cp["last_id"]
+            self._open_output(append=True)
+        else:
+            self.last_id = 0
+            self._open_output(append=False)
+
+        # ── write header ──────────────────────────────────────────
+        self._write_csv_header()
+
+        # ── fetch and process rows ────────────────────────────────
+        query = self._build_query(self.last_id)
+        params: tuple = (self.last_id,) if self.last_id else ()
+        rows = self._fetch_rows(query, params)
+
+        count = 0
+        try:
+            for row in rows:
+                qty = row["quantity"] if row["tx_type"] == "IN" else -row["quantity"]
+                self.balance_tracker.update(row["warehouse_id"], qty)
+                balance = self.balance_tracker.get_balance(row["warehouse_id"])
+                self._write_row(row, balance)
+                count += 1
+
+                self._report_progress(count)
+
+                # Periodic checkpoint — every batch_size records
+                if checkpoint and count % self.batch_size == 0:
+                    self.last_id = row["id"]
+                    self.last_wh = row["warehouse_id"]
+                    self.last_date = row["tx_date"]
+                    self._save_checkpoint(count)
+
+                # Honour --limit
+                if limit is not None and count >= limit:
+                    if checkpoint:
+                        self._save_checkpoint(count)
+                    self._close_output()
+                    self._report_done(count)
+                    return count
+
+        except sqlite3.Error as exc:
+            print(f"Database error during export: {exc}", file=sys.stderr)
+            self._close_output()
+            raise
+
+        # ── finalise ──────────────────────────────────────────────
+        if checkpoint:
+            self._save_checkpoint(count)
+
+        self._write_summary()
+        self._close_output()
+
+        self._report_done(count)
+        return count
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the argument parser."""
+    p = argparse.ArgumentParser(
+        prog="audit_export",
+        description=(
+            "Export warehouse inventory audit transactions to CSV "
+            "with running balances per warehouse."
+        ),
+    )
+    p.add_argument(
+        "--db",
+        default=DEFAULT_DB_PATH,
+        help=f"SQLite database path (default: {DEFAULT_DB_PATH})",
+    )
+    p.add_argument(
+        "--output",
+        required=True,
+        help="Output CSV path",
+    )
+    p.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="Save periodic checkpoints for resumability",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the last checkpoint",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Stop after N records (for testing / batching)",
+    )
+    p.add_argument(
+        "--info",
+        action="store_true",
+        help="Print database info and exit",
+    )
+    p.add_argument(
+        "--ckpt-info",
+        action="store_true",
+        help="Print checkpoint info and exit",
+    )
+    p.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate database before exporting",
+    )
+    return p
+
+
+def main() -> None:
+    """Entry point."""
+    args = build_parser().parse_args()
+
+    exporter = AuditExporter(args.db, args.output)
+
+    if args.info:
+        exporter.print_info()
+        sys.exit(0)
+
+    if args.ckpt_info:
+        exporter.print_checkpoint_info()
+        sys.exit(0)
+
+    if args.validate and not exporter.validate_database():
+        print("Database validation failed.", file=sys.stderr)
+        sys.exit(1)
+
+    # --resume implies --checkpoint
+    if args.resume and not args.checkpoint:
+        args.checkpoint = True
+
+    n = exporter.export(
+        limit=args.limit,
+        checkpoint=args.checkpoint,
+        resume=args.resume,
+    )
+    print(f"Exported {n} record(s) to {args.output}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

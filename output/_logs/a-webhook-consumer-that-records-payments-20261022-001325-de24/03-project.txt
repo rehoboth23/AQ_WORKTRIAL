@@ -1,0 +1,713 @@
+<<<MANIFEST>>>
+environment/webhook_consumer/__init__.py
+environment/webhook_consumer/db.py
+environment/webhook_consumer/dedup.py
+environment/webhook_consumer/receiver.py
+environment/webhook_consumer/processor.py
+environment/webhook_consumer/reconcile.py
+environment/config.py
+environment/cli.py
+environment/setup_db.py
+environment/README.md
+<<<END>>>
+<<<FILE environment/webhook_consumer/__init__.py>>>
+"""Payment webhook consumer for PayStream delivery notifications.
+
+Receives payment delivery notifications, processes them with idempotent
+balance updates, and provides reconciliation against expected values.
+"""
+
+__version__ = "1.2.0"
+<<<END>>>
+<<<FILE environment/webhook_consumer/db.py>>>
+"""Database connection management and schema initialization."""
+
+import sqlite3
+import os
+from config import DB_PATH
+
+
+def get_connection(db_path=None):
+    """Return a connection to the payments database.
+
+    Args:
+        db_path: Optional path override. Defaults to config.DB_PATH.
+
+    Returns:
+        sqlite3.Connection with WAL journal mode and row factory enabled.
+    """
+    path = db_path or DB_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(conn):
+    """Create database tables if they do not already exist.
+
+    Idempotent — safe to call on every startup.
+
+    Schema:
+        accounts(account_id, name, balance, initial_balance)
+        deliveries(delivery_id, event_id, account_id, amount, status, received_at)
+        processed_events(event_id, processed_at)
+    """
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            account_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 0,
+            initial_balance REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS deliveries (
+            delivery_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            amount REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            received_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS processed_events (
+            event_id TEXT PRIMARY KEY,
+            processed_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_deliveries_event_id
+            ON deliveries(event_id);
+        CREATE INDEX IF NOT EXISTS idx_deliveries_status
+            ON deliveries(status);
+        CREATE INDEX IF NOT EXISTS idx_deliveries_account_id
+            ON deliveries(account_id);
+    """)
+    conn.commit()
+<<<END>>>
+<<<FILE environment/webhook_consumer/dedup.py>>>
+"""Event deduplication cache to prevent reprocessing of payment events.
+
+The EventDedup class maintains an in-memory set of event_ids that have
+already been processed, loaded from the processed_events table. This
+avoids a database query on every dedup check during batch processing.
+"""
+
+
+class EventDedup:
+    """Tracks which event_ids have already been processed.
+
+    Uses an in-memory cache loaded from the processed_events table
+    for fast lookups during batch processing. The cache is loaded
+    lazily on first access and can be explicitly invalidated when
+    the underlying data may have changed.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+        self._cache = None
+
+    def _load_cache(self):
+        """Load all processed event_ids from the database into memory."""
+        rows = self.conn.execute(
+            "SELECT event_id FROM processed_events"
+        ).fetchall()
+        self._cache = {row[0] for row in rows}
+
+    def is_processed(self, event_id):
+        """Check whether an event_id has already been processed.
+
+        Returns True if the event is recorded in processed_events,
+        False otherwise. The cache is loaded lazily on first access.
+
+        Args:
+            event_id: The logical event identifier to check.
+
+        Returns:
+            bool indicating whether the event was already processed.
+        """
+        if self._cache is None:
+            self._load_cache()
+        return event_id in self._cache
+
+    def invalidate(self):
+        """Clear the in-memory cache, forcing a reload on next access.
+
+        Useful when the processed_events table has been modified
+        externally and the cache may be stale.
+        """
+        self._cache = None
+<<<END>>>
+<<<FILE environment/webhook_consumer/receiver.py>>>
+"""Webhook receiver for PayStream payment delivery notifications.
+
+PayStream retries failed deliveries. Each retry carries a new delivery_id
+but the same event_id as the original. The receiver must prevent duplicate
+event_ids from entering the processing queue.
+"""
+
+from webhook_consumer.db import get_connection
+
+
+class WebhookReceiver:
+    """Receives and validates incoming payment delivery notifications.
+
+    When a delivery arrives, the receiver checks for duplicates at two
+    levels:
+
+    1. delivery_id — an exact redelivery of the same notification.
+    2. event_id — a different delivery of the same logical event.
+
+    If neither check matches, the delivery is accepted into the pending
+    queue for processing.
+    """
+
+    def __init__(self, conn=None):
+        self.conn = conn or get_connection()
+
+    def receive_delivery(self, delivery_id, event_id, account_id, amount):
+        """Accept a delivery notification from the payment provider.
+
+        Args:
+            delivery_id: Unique identifier for this delivery attempt.
+            event_id: The logical event identifier (shared across retries).
+            account_id: The account this payment applies to.
+            amount: Payment amount (positive for charges, negative for refunds).
+
+        Returns:
+            dict with 'status' key: 'accepted', 'duplicate', or 'duplicate_event'.
+        """
+        # Check for exact delivery_id duplicate (same delivery redelivered)
+        existing = self.conn.execute(
+            "SELECT 1 FROM deliveries WHERE delivery_id = ?",
+            (delivery_id,)
+        ).fetchone()
+        if existing:
+            return {"status": "duplicate", "delivery_id": delivery_id}
+
+        # Check for event_id duplicate among pending deliveries.
+        # This prevents the same event from being queued twice
+        # while a previous delivery for it is still pending.
+        existing_event = self.conn.execute(
+            "SELECT 1 FROM deliveries WHERE event_id = ? AND status = 'pending'",
+            (event_id,)
+        ).fetchone()
+        if existing_event:
+            return {"status": "duplicate_event", "event_id": event_id}
+
+        # Insert the new delivery as pending
+        self.conn.execute(
+            "INSERT INTO deliveries "
+            "(delivery_id, event_id, account_id, amount, status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (delivery_id, event_id, account_id, amount)
+        )
+        self.conn.commit()
+
+        return {"status": "accepted", "delivery_id": delivery_id, "event_id": event_id}
+<<<END>>>
+<<<FILE environment/webhook_consumer/processor.py>>>
+"""Payment processor that applies pending deliveries to account balances.
+
+For each pending delivery the processor:
+1. Checks the event dedup cache to skip already-processed events.
+2. Applies the payment amount to the account balance.
+3. Records the event in processed_events for future dedup checks.
+4. Marks the delivery as processed.
+
+Each step is committed independently so that partial progress is
+preserved if the process is interrupted.
+"""
+
+import sys
+from webhook_consumer.dedup import EventDedup
+
+
+class PaymentProcessor:
+    """Processes pending payment deliveries and updates account balances.
+
+    Args:
+        conn: Active database connection.
+        crash_after_balance: If True, exit immediately after committing
+            the first balance update (for crash-recovery testing).
+    """
+
+    def __init__(self, conn, crash_after_balance=False):
+        self.conn = conn
+        self.dedup = EventDedup(conn)
+        self.crash_after_balance = crash_after_balance
+
+    def _apply_payment(self, account_id, amount):
+        """Apply a payment amount to an account's balance.
+
+        Updates the account balance and commits the change immediately
+        so that partial progress is preserved on failure.
+
+        Args:
+            account_id: The account to update.
+            amount: The amount to add (negative for refunds).
+        """
+        self.conn.execute(
+            "UPDATE accounts SET balance = balance + ? WHERE account_id = ?",
+            (amount, account_id)
+        )
+        self.conn.commit()
+
+    def _record_event(self, event_id):
+        """Record that an event has been processed for idempotency.
+
+        Uses INSERT OR IGNORE so that a duplicate insert is harmless.
+
+        Args:
+            event_id: The event identifier to record.
+        """
+        self.conn.execute(
+            "INSERT OR IGNORE INTO processed_events (event_id) VALUES (?)",
+            (event_id,)
+        )
+
+    def _mark_delivered(self, delivery_id):
+        """Mark a delivery as processed.
+
+        Args:
+            delivery_id: The delivery to mark.
+        """
+        self.conn.execute(
+            "UPDATE deliveries SET status = 'processed' WHERE delivery_id = ?",
+            (delivery_id,)
+        )
+
+    def process_pending(self):
+        """Process all pending deliveries in the queue.
+
+        Iterates through pending deliveries in receive order. For each
+        delivery, if the event has not yet been processed, the payment
+        is applied to the account balance, the event is recorded, and
+        the delivery is marked as processed. If the event was already
+        processed (e.g. by a concurrent consumer), the delivery is
+        simply marked as processed and skipped.
+        """
+        deliveries = self.conn.execute(
+            "SELECT delivery_id, event_id, account_id, amount "
+            "FROM deliveries WHERE status = 'pending' "
+            "ORDER BY received_at"
+        ).fetchall()
+
+        for row in deliveries:
+            delivery_id = row[0]
+            event_id = row[1]
+            account_id = row[2]
+            amount = row[3]
+
+            # Skip events that were already processed (dedup check)
+            if self.dedup.is_processed(event_id):
+                self._mark_delivered(delivery_id)
+                self.conn.commit()
+                continue
+
+            # Apply the payment to the account balance
+            self._apply_payment(account_id, amount)
+
+            # Crash simulation: exit after balance commit but before
+            # the event is recorded, leaving partial state.
+            if self.crash_after_balance:
+                sys.exit(0)
+
+            # Record the processed event for future dedup checks
+            self._record_event(event_id)
+            self.conn.commit()
+
+            # Mark the delivery as processed
+            self._mark_delivered(delivery_id)
+            self.conn.commit()
+<<<END>>>
+<<<FILE environment/webhook_consumer/reconcile.py>>>
+"""Reconciliation tool for verifying account balances against expected values.
+
+The expected balance for each account is computed from its initial_balance
+plus the sum of amounts for each unique event_id in the deliveries table.
+If an event has multiple deliveries (original + retries), only one amount
+is counted.
+"""
+
+import math
+
+
+class Reconciler:
+    """Compares actual account balances to expected values derived from events.
+
+    Args:
+        conn: Active database connection.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def reconcile(self):
+        """Check all accounts and return a list of discrepancies.
+
+        For each account, computes:
+
+            expected = initial_balance + sum(amount for each distinct event_id)
+
+        and compares it to the current balance. A discrepancy is reported
+        when the two differ by more than a small tolerance.
+
+        Returns:
+            List of dicts with keys: account_id, name, current_balance,
+            expected_balance, difference.  Empty list if all balances match.
+        """
+        discrepancies = []
+        accounts = self.conn.execute(
+            "SELECT account_id, name, balance, initial_balance FROM accounts"
+        ).fetchall()
+
+        for account in accounts:
+            account_id = account[0]
+            name = account[1]
+            current_balance = account[2]
+            initial_balance = account[3]
+
+            # Sum one amount per unique event_id for this account.
+            # Retries share the same event_id, so GROUP BY picks one row.
+            events = self.conn.execute(
+                "SELECT event_id, amount FROM deliveries "
+                "WHERE account_id = ? GROUP BY event_id",
+                (account_id,)
+            ).fetchall()
+
+            event_total = sum(event[1] for event in events)
+            expected = initial_balance + event_total
+
+            if not math.isclose(current_balance, expected, rel_tol=1e-9, abs_tol=0.01):
+                discrepancies.append({
+                    "account_id": account_id,
+                    "name": name,
+                    "current_balance": current_balance,
+                    "expected_balance": expected,
+                    "difference": current_balance - expected,
+                })
+
+        return discrepancies
+<<<END>>>
+<<<FILE environment/config.py>>>
+"""Application configuration for the payment webhook consumer."""
+
+import os
+
+# Database path — can be overridden via environment variable
+DB_PATH = os.environ.get("PAYMENTS_DB_PATH", "/app/data/payments.db")
+
+# PayStream provider settings
+PROVIDER_NAME = "PayStream"
+MAX_RETRY_DELIVERIES = 5
+
+# Processing settings
+BATCH_SIZE = 100
+<<<END>>>
+<<<FILE environment/cli.py>>>
+"""Command-line interface for the payment webhook consumer."""
+
+import sys
+import argparse
+from webhook_consumer.db import get_connection, init_db
+from webhook_consumer.receiver import WebhookReceiver
+from webhook_consumer.processor import PaymentProcessor
+from webhook_consumer.reconcile import Reconciler
+
+
+def cmd_init(args):
+    """Initialize the database schema."""
+    conn = get_connection()
+    init_db(conn)
+    print("Database schema initialized.")
+    conn.close()
+
+
+def cmd_process(args):
+    """Process all pending payment deliveries."""
+    conn = get_connection()
+    processor = PaymentProcessor(
+        conn,
+        crash_after_balance=args.crash_after_balance
+    )
+    processor.process_pending()
+    conn.close()
+
+
+def cmd_reconcile(args):
+    """Reconcile account balances against expected values."""
+    conn = get_connection()
+    reconciler = Reconciler(conn)
+    discrepancies = reconciler.reconcile()
+    if discrepancies:
+        for d in discrepancies:
+            print(
+                f"DISCREPANCY: {d['account_id']} ({d['name']}) - "
+                f"balance={d['current_balance']:.2f}, "
+                f"expected={d['expected_balance']:.2f}, "
+                f"difference={d['difference']:+.2f}"
+            )
+    else:
+        print("All accounts reconciled successfully.")
+    conn.close()
+
+
+def cmd_receive(args):
+    """Receive a delivery notification from the payment provider."""
+    conn = get_connection()
+    receiver = WebhookReceiver(conn)
+    result = receiver.receive_delivery(
+        args.delivery_id, args.event_id, args.account_id, args.amount
+    )
+    print(f"Status: {result['status']}")
+    if "delivery_id" in result:
+        print(f"  delivery_id: {result['delivery_id']}")
+    if "event_id" in result:
+        print(f"  event_id: {result['event_id']}")
+    conn.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Payment webhook consumer for PayStream delivery notifications"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # init
+    subparsers.add_parser("init", help="Initialize the database schema")
+
+    # process
+    process_parser = subparsers.add_parser(
+        "process", help="Process pending deliveries"
+    )
+    process_parser.add_argument(
+        "--crash-after-balance", action="store_true",
+        help=argparse.SUPPRESS
+    )
+
+    # reconcile
+    subparsers.add_parser("reconcile", help="Reconcile account balances")
+
+    # receive
+    receive_parser = subparsers.add_parser(
+        "receive", help="Receive a delivery notification"
+    )
+    receive_parser.add_argument("delivery_id", help="Unique delivery identifier")
+    receive_parser.add_argument(
+        "event_id", help="Event identifier (shared across retries)"
+    )
+    receive_parser.add_argument("account_id", help="Target account identifier")
+    receive_parser.add_argument("amount", type=float, help="Payment amount")
+
+    args = parser.parse_args()
+
+    if args.command == "init":
+        cmd_init(args)
+    elif args.command == "process":
+        cmd_process(args)
+    elif args.command == "reconcile":
+        cmd_reconcile(args)
+    elif args.command == "receive":
+        cmd_receive(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/setup_db.py>>>
+#!/usr/bin/env python3
+"""Build-time script to initialize the payments database with sample data.
+
+Creates 5 accounts and 11 delivery notifications (8 unique events
+plus 3 retries that share event_ids with originals). All deliveries
+start in 'pending' status.
+
+This script is deleted from the image after the database is created.
+"""
+
+import sqlite3
+import os
+
+DB_PATH = "/app/data/payments.db"
+
+SCHEMA = """
+    CREATE TABLE IF NOT EXISTS accounts (
+        account_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        balance REAL NOT NULL DEFAULT 0,
+        initial_balance REAL NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        received_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS processed_events (
+        event_id TEXT PRIMARY KEY,
+        processed_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_deliveries_event_id
+        ON deliveries(event_id);
+    CREATE INDEX IF NOT EXISTS idx_deliveries_status
+        ON deliveries(status);
+    CREATE INDEX IF NOT EXISTS idx_deliveries_account_id
+        ON deliveries(account_id);
+"""
+
+
+def setup():
+    """Create the database and populate it with sample data."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(SCHEMA)
+
+    # --- Sample accounts ---
+    accounts = [
+        ("ACC001", "Alice Merchants",  1000.00, 1000.00),
+        ("ACC002", "Bob's Bakery",      500.00,  500.00),
+        ("ACC003", "Charlie Corp",     2500.00, 2500.00),
+        ("ACC004", "Diana Designs",       0.00,    0.00),
+        ("ACC005", "Eve Electronics",   750.00,  750.00),
+    ]
+    conn.executemany(
+        "INSERT INTO accounts (account_id, name, balance, initial_balance) "
+        "VALUES (?, ?, ?, ?)",
+        accounts,
+    )
+
+    # --- Sample deliveries (8 unique events + 3 retries = 11 rows) ---
+    # PayStream retries get a new delivery_id but carry the same event_id.
+    deliveries = [
+        # Original deliveries
+        ("DEL001", "EVT001", "ACC001",  150.00),  # charge – Alice
+        ("DEL002", "EVT002", "ACC002",  200.00),  # charge – Bob
+        ("DEL003", "EVT003", "ACC001",  -50.00),  # refund – Alice
+        ("DEL004", "EVT004", "ACC003",  300.00),  # charge – Charlie
+        ("DEL005", "EVT005", "ACC004",  100.00),  # charge – Diana (zero-balance acct)
+        ("DEL007", "EVT006", "ACC005",  175.00),  # charge – Eve
+        ("DEL008", "EVT007", "ACC001",  250.00),  # charge – Alice
+        ("DEL010", "EVT008", "ACC003",  450.00),  # charge – Charlie
+        # Retries (same event_id, different delivery_id)
+        ("DEL006", "EVT002", "ACC002",  200.00),  # retry of EVT002 – Bob
+        ("DEL009", "EVT004", "ACC003",  300.00),  # retry of EVT004 – Charlie
+        ("DEL011", "EVT005", "ACC004",  100.00),  # retry of EVT005 – Diana
+    ]
+    conn.executemany(
+        "INSERT INTO deliveries "
+        "(delivery_id, event_id, account_id, amount, status, received_at) "
+        "VALUES (?, ?, ?, ?, 'pending', datetime('now'))",
+        deliveries,
+    )
+
+    conn.commit()
+    conn.close()
+    print(f"Database initialized at {DB_PATH}")
+
+
+if __name__ == "__main__":
+    setup()
+<<<END>>>
+<<<FILE environment/README.md>>>
+# Payment Webhook Consumer
+
+Processes payment delivery notifications from PayStream, a payment
+provider that retries failed deliveries.
+
+## Overview
+
+PayStream sends delivery notifications when payment events occur. If a
+delivery fails (network error, timeout, server error, etc.), PayStream
+retries it with a **new delivery_id** but the **same event_id**. The
+consumer must ensure each unique event affects account balances exactly
+once, regardless of how many delivery attempts arrive.
+
+## CLI Usage
+
+```
+python3 /app/cli.py init                                        # Initialize schema
+python3 /app/cli.py receive DEL123 EVT456 ACC001 150.00         # Receive a delivery
+python3 /app/cli.py process                                     # Process pending deliveries
+python3 /app/cli.py reconcile                                   # Verify balances
+```
+
+### Commands
+
+| Command    | Description                                      |
+|------------|--------------------------------------------------|
+| `init`     | Create database tables (idempotent)              |
+| `receive`  | Accept a delivery notification into the queue     |
+| `process`  | Apply all pending deliveries to account balances  |
+| `reconcile`| Compare actual balances to expected values        |
+
+### receive arguments
+
+| Argument     | Meaning                                        |
+|--------------|------------------------------------------------|
+| `delivery_id`| Unique identifier for this delivery attempt     |
+| `event_id`   | Logical event identifier (shared across retries)|
+| `account_id` | Target account                                  |
+| `amount`     | Payment amount (negative for refunds)           |
+
+## Database
+
+Location: `/app/data/payments.db` (SQLite, WAL journal mode).
+
+### Schema
+
+**accounts**
+
+| Column           | Type    | Description                    |
+|------------------|---------|--------------------------------|
+| account_id (PK)  | TEXT    | Account identifier             |
+| name             | TEXT    | Account holder name            |
+| balance          | REAL    | Current balance                |
+| initial_balance  | REAL    | Balance before any events      |
+
+**deliveries**
+
+| Column           | Type    | Description                              |
+|------------------|---------|------------------------------------------|
+| delivery_id (PK) | TEXT    | Unique delivery attempt identifier       |
+| event_id         | TEXT    | Logical event (shared by retries)        |
+| account_id       | TEXT    | Target account                           |
+| amount           | REAL    | Payment amount (negative = refund)       |
+| status           | TEXT    | 'pending' or 'processed'                 |
+| received_at      | TEXT    | Timestamp when delivery was received     |
+
+**processed_events**
+
+| Column           | Type    | Description                              |
+|------------------|---------|------------------------------------------|
+| event_id (PK)    | TEXT    | Event that has been fully processed      |
+| processed_at     | TEXT    | Timestamp when event was recorded        |
+
+### Delivery Lifecycle
+
+1. A delivery arrives via `receive` and is inserted with status
+   `'pending'`.
+2. The processor picks up pending deliveries, applies the balance
+   change, records the event in `processed_events`, and marks the
+   delivery as `'processed'`.
+
+## Idempotency
+
+Each unique event_id must affect each account's balance at most once.
+The system uses event-level deduplication (via `processed_events`) to
+prevent double-counting when PayStream retries a delivery or when the
+processor is restarted after an interruption.
+<<<END>>>

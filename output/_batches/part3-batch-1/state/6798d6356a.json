@@ -1,0 +1,231 @@
+{
+  "topic": "a bulk data export that can be stopped and resumed with a checkpoint file, but a resumed export sometimes differs from an uninterrupted one",
+  "key": "6798d6356a",
+  "stage": "gen_failed",
+  "calibration": "",
+  "arm": "treatment",
+  "updated": "2026-10-22T01:32:29",
+  "started": "2026-10-22T00:13:22",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5",
+  "gen": {
+    "status": "failed",
+    "task_dir": null,
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5",
+    "run_id": "a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md names shipped source/config files (audit_export.py); which points the agent at the fault; describe the symptom and goal instead and let the agent find the location",
+          "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/audit_export.py:6: states the rule a fault breaks: running per-warehouse balances.  Supports checkpoint / resume so that"
+        ]
+      },
+      {
+        "round": 1,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": false,
+            "reward": null,
+            "error": "Oracle check failed: running solution/solve.sh then the tests gave reward None (expected 1).\n\nException during the trial (build, setup or run):\n...[truncated]...\n-packages/harbor/environments/docker/docker.py\\\", line 756, in _run_docker_compose_command\\n    raise RuntimeError(\\nRuntimeError: Docker compose command failed for environment audit-export-resume-checkpoint. Command: docker compose --project-name audit-export-resume-checkpoint__smn4kgd__env --project-directory /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/audit-export-resume-checkpoint/environment -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpmhg2vaek/audit-export-resume-checkpoint__SmN4KGd__env-docker-compose-resources.json -f /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpmr_g3z7r/docker-compose-environment.json -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpfh6k88ek/docker-compose-mounts.json -f /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-egress-control.yaml -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmp8nn9qfr1/docker-compose-egress-control-services.json build. Return code: 1. Stdout:  Image audit-export-resume-checkpoint__smn4kgd__env-main Building \\n#1 [internal] load local bake definitions\\n#1 reading from stdin 756B done\\n#1 DONE 0.0s\\n\\n#2 [internal] load build definition from Dockerfile\\n#2 transferring dockerfile: 307B done\\n#2 DONE 0.0s\\n\\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\\n#3 ...\\n\\n#4 [auth] library/python:pull token for registry-1.docker.io\\n#4 DONE 0.0s\\n\\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\\n#3 DONE 0.8s\\n\\n#5 [internal] load .dockerignore\\n#5 transferring context: 2B done\\n#5 DONE 0.0s\\n\\n#6 [1/4] FROM docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70\\n#6 resolve docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 done\\n#6 DONE 0.0s\\n\\n#7 [2/4] WORKDIR /app\\n#7 CACHED\\n\\n#8 [internal] load build context\\n#8 transferring context: 28.79kB done\\n#8 DONE 0.0s\\n\\n#9 [3/4] COPY audit_export.py config.ini README.md setup_db.py ./\\n#9 DONE 0.0s\\n\\n#10 [4/4] RUN python3 setup_db.py && rm setup_db.py\\n#10 0.104 Created /app/warehouse.db with 224 transactions across 1 warehouses\\n#10 0.104 Traceback (most recent call last):\\n#10 0.104   File \\\"/app/setup_db.py\\\", line 129, in <module>\\n#10 0.104     create_database()\\n#10 0.104   File \\\"/app/setup_db.py\\\", line 125, in create_database\\n#10 0.104     assert wh_count == 5, f'Expected 5 warehouses, got {wh_count}'\\n#10 0.104            ^^^^^^^^^^^^^\\n#10 0.104 AssertionError: Expected 5 warehouses, got 1\\n#10 ERROR: process \\\"/bin/sh -c python3 setup_db.py && rm setup_db.py\\\" did not complete successfully: exit code: 1\\n------\\n > [4/4] RUN python3 setup_db.py && rm setup_db.py:\\n0.104 Created /app/warehouse.db with 224 transactions across 1 warehouses\\n0.104 Traceback (most recent call last):\\n0.104   File \\\"/app/setup_db.py\\\", line 129, in <module>\\n0.104     create_database()\\n0.104   File \\\"/app/setup_db.py\\\", line 125, in create_database\\n0.104     assert wh_count == 5, f'Expected 5 warehouses, got {wh_count}'\\n0.104            ^^^^^^^^^^^^^\\n0.104 AssertionError: Expected 5 warehouses, got 1\\n------\\nDockerfile:8\\n\\n--------------------\\n\\n   6 |     COPY audit_export.py config.ini README.md setup_db.py ./\\n\\n   7 |     \\n\\n   8 | >>> RUN python3 setup_db.py && rm setup_db.py\\n\\n   9 |     \\n\\n--------------------\\n\\nfailed to solve: process \\\"/bin/sh -c python3 setup_db.py && rm setup_db.py\\\" did not complete successfully: exit code: 1\\n\\n\\n\\nView build details: docker-desktop://dashboard/build/default/default/v4di3f8e9624c1ooqt2fr72cu\\n\\n. Stderr: None. \\n\",\n \"occurred_at\": \"2026-10-22T08:10:19.782068Z\"\n}",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r1-011016-oracle",
+            "seconds": 6.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r1-011016-oracle/audit-export-resume-checkpoint__SmN4KGd",
+              "exception": {
+                "exception_type": "RuntimeError",
+                "exception_message": "Docker compose command failed for environment audit-export-resume-checkpoint. Command: docker compose --project-name audit-export-resume-checkpoint__smn4kgd__env --project-directory /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/audit-export-resume-checkpoint/environment -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpmhg2vaek/audit-export-resume-checkpoint__SmN4KGd__env-docker-compose-resources.json -f /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpmr_g3z7r/docker-compose-environment.json -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpfh6k88ek/docker-compose-mounts.json -f /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-egress-control.yaml -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmp8nn9qfr1/docker-compose-egress-control-services.json build. Return code: 1. Stdout:  Image audit-export-resume-checkpoint__smn4kgd__env-main Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 756B done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 307B done\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\n#3 ...\n\n#4 [auth] library/python:pull token for registry-1.docker.io\n#4 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\n#3 DONE 0.8s\n\n#5 [internal] load .dockerignore\n#5 transferring context: 2B done\n#5 DONE 0.0s\n\n#6 [1/4] FROM docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70\n#6 resolve docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 done\n#6 DONE 0.0s\n\n#7 [2/4] WORKDIR /app\n#7 CACHED\n\n#8 [internal] load build context\n#8 transferring context: 28.79kB done\n#8 DONE 0.0s\n\n#9 [3/4] COPY audit_export.py config.ini README.md setup_db.py ./\n#9 DONE 0.0s\n\n#10 [4/4] RUN python3 setup_db.py && rm setup_db.py\n#10 0.104 Created /app/warehouse.db with 224 transactions across 1 warehouses\n#10 0.104 Traceback (most recent call last):\n#10 0.104   File \"/app/setup_db.py\", line 129, in <module>\n#10 0.104     create_database()\n#10 0.104   File \"/app/setup_db.py\", line 125, in create_database\n#10 0.104     assert wh_count == 5, f'Expected 5 warehouses, got {wh_count}'\n#10 0.104            ^^^^^^^^^^^^^\n#10 0.104 AssertionError: Expected 5 warehouses, got 1\n#10 ERROR: process \"/bin/sh -c python3 setup_db.py && rm setup_db.py\" did not complete successfully: exit code: 1\n------\n > [4/4] RUN python3 setup_db.py && rm setup_db.py:\n0.104 Created /app/warehouse.db with 224 transactions across 1 warehouses\n0.104 Traceback (most recent call last):\n0.104   File \"/app/setup_db.py\", line 129, in <module>\n0.104     create_database()\n0.104   File \"/app/setup_db.py\", line 125, in create_database\n0.104     assert wh_count == 5, f'Expected 5 warehouses, got {wh_count}'\n0.104            ^^^^^^^^^^^^^\n0.104 AssertionError: Expected 5 warehouses, got 1\n------\nDockerfile:8\n\n--------------------\n\n   6 |     COPY audit_export.py config.ini README.md setup_db.py ./\n\n   7 |     \n\n   8 | >>> RUN python3 setup_db.py && rm setup_db.py\n\n   9 |     \n\n--------------------\n\nfailed to solve: process \"/bin/sh -c python3 setup_db.py && rm setup_db.py\" did not complete successfully: exit code: 1\n\n\n\nView build details: docker-desktop://dashboard/build/default/default/v4di3f8e9624c1ooqt2fr72cu\n\n. Stderr: None. ",
+                "exception_traceback": "Traceback (most recent call last):\n  File \"/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/trial/trial.py\", line 497, in run\n    await self._prepare()\n  File \"/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/trial/trial.py\", line 536, in _prepare\n    await self._setup_agent_environment()\n  File \"/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/trial/trial.py\", line 1684, in _setup_agent_environment\n    await self._start_agent_environment()\n  File \"/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/trial/trial.py\", line 1690, in _start_agent_environment\n    await asyncio.wait_for(\n  File \"/Users/rehobothokorie/.local/share/uv/python/cpython-3.12.15-macos-aarch64-none/lib/python3.12/asyncio/tasks.py\", line 520, in wait_for\n    return await fut\n           ^^^^^^^^^\n  File \"/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 1056, in start\n    await self._run_docker_compose_command([\"build\"])\n  File \"/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 756, in _run_docker_compose_command\n    raise RuntimeError(\nRuntimeError: Docker compose command failed for environment audit-export-resume-checkpoint. Command: docker compose --project-name audit-export-resume-checkpoint__smn4kgd__env --project-directory /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/audit-export-resume-checkpoint/environment -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpmhg2vaek/audit-export-resume-checkpoint__SmN4KGd__env-docker-compose-resources.json -f /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpmr_g3z7r/docker-compose-environment.json -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmpfh6k88ek/docker-compose-mounts.json -f /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/.venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-egress-control.yaml -f /private/var/folders/16/43gvlwlj04q3f54kvlq41hdr0000gn/T/tmp8nn9qfr1/docker-compose-egress-control-services.json build. Return code: 1. Stdout:  Image audit-export-resume-checkpoint__smn4kgd__env-main Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 756B done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 307B done\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\n#3 ...\n\n#4 [auth] library/python:pull token for registry-1.docker.io\n#4 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm\n#3 DONE 0.8s\n\n#5 [internal] load .dockerignore\n#5 transferring context: 2B done\n#5 DONE 0.0s\n\n#6 [1/4] FROM docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70\n#6 resolve docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 done\n#6 DONE 0.0s\n\n#7 [2/4] WORKDIR /app\n#7 CACHED\n\n#8 [internal] load build context\n#8 transferring context: 28.79kB done\n#8 DONE 0.0s\n\n#9 [3/4] COPY audit_export.py config.ini README.md setup_db.py ./\n#9 DONE 0.0s\n\n#10 [4/4] RUN python3 setup_db.py && rm setup_db.py\n#10 0.104 Created /app/warehouse.db with 224 transactions across 1 warehouses\n#10 0.104 Traceback (most recent call last):\n#10 0.104   File \"/app/setup_db.py\", line 129, in <module>\n#10 0.104     create_database()\n#10 0.104   File \"/app/setup_db.py\", line 125, in create_database\n#10 0.104     assert wh_count == 5, f'Expected 5 warehouses, got {wh_count}'\n#10 0.104            ^^^^^^^^^^^^^\n#10 0.104 AssertionError: Expected 5 warehouses, got 1\n#10 ERROR: process \"/bin/sh -c python3 setup_db.py && rm setup_db.py\" did not complete successfully: exit code: 1\n------\n > [4/4] RUN python3 setup_db.py && rm setup_db.py:\n0.104 Created /app/warehouse.db with 224 transactions across 1 warehouses\n0.104 Traceback (most recent call last):\n0.104   File \"/app/setup_db.py\", line 129, in <module>\n0.104     create_database()\n0.104   File \"/app/setup_db.py\", line 125, in create_database\n0.104     assert wh_count == 5, f'Expected 5 warehouses, got {wh_count}'\n0.104            ^^^^^^^^^^^^^\n0.104 AssertionError: Expected 5 warehouses, got 1\n------\nDockerfile:8\n\n--------------------\n\n   6 |     COPY audit_export.py config.ini README.md setup_db.py ./\n\n   7 |     \n\n   8 | >>> RUN python3 setup_db.py && rm setup_db.py\n\n   9 |     \n\n--------------------\n\nfailed to solve: process \"/bin/sh -c python3 setup_db.py && rm setup_db.py\" did not complete successfully: exit code: 1\n\n\n\nView build details: docker-desktop://dashboard/build/default/default/v4di3f8e9624c1ooqt2fr72cu\n\n. Stderr: None. \n",
+                "occurred_at": "2026-10-22T08:10:19.782068Z"
+              }
+            }
+          }
+        ],
+        "difficulty_gate": []
+      },
+      {
+        "round": 2,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011039-oracle",
+            "seconds": 22.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011039-oracle/audit-export-resume-checkpoint__R2Hei9T",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011039-nop",
+            "seconds": 20.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011039-nop/audit-export-resume-checkpoint__gowMh5m",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "Add balances to the checkpoint save but forget to restore them on resume, or restore them only for the last-processed warehouse rather than all warehouses",
+            "verdict": "killed",
+            "failed_tests": 6,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011121-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "Change the ORDER BY to match the resume filter (ORDER BY id) instead of changing the resume filter to match the sort order",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011121-mutant1"
+          },
+          {
+            "fault": 2,
+            "wrong_fix": "Set _header_written = True on resume to skip the header, but forget to truncate the old summary section from the interrupted run's output before appending new data",
+            "verdict": "survived",
+            "failed_tests": 0,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011121-mutant2"
+          },
+          {
+            "fault": 3,
+            "wrong_fix": "Save a checkpoint at the --limit break point but not at the end of a full (non-limited) run before the summary write",
+            "verdict": "survived",
+            "failed_tests": 0,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r2-011121-mutant3"
+          }
+        ]
+      },
+      {
+        "round": 3,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013015-oracle",
+            "seconds": 22.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013015-oracle/audit-export-resume-checkpoint__7PGH4gW",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013015-nop",
+            "seconds": 24.1,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013015-nop/audit-export-resume-checkpoint__uKUZDhH",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "Add balances to the checkpoint save but forget to restore them on resume, or restore them only for the last-processed warehouse rather than all warehouses",
+            "verdict": "killed",
+            "failed_tests": 6,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013101-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "Change the ORDER BY to match the resume filter (ORDER BY id) instead of changing the resume filter to match the sort order",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013101-mutant1"
+          },
+          {
+            "fault": 2,
+            "wrong_fix": "Set _header_written = True on resume to skip the header, but forget to truncate the old summary section from the interrupted run's output before appending new data",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013101-mutant2"
+          },
+          {
+            "fault": 3,
+            "wrong_fix": "Save a checkpoint at the --limit break point but not at the end of a full (non-limited) run before the summary write",
+            "verdict": "survived",
+            "failed_tests": 0,
+            "total_tests": 11,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5-r3-013101-mutant3"
+          }
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 79799,
+      "completion_tokens": 111047,
+      "cost_usd": 0.0
+    },
+    "seconds": 2502.4,
+    "task_name": null
+  },
+  "record": {
+    "topic": "a bulk data export that can be stopped and resumed with a checkpoint file, but a resumed export sometimes differs from an uninterrupted one",
+    "arm": "treatment",
+    "stage": "generate",
+    "verdict": "gen_failed",
+    "decision": "rejected",
+    "why": "failed generation: Part 1 checks",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-bulk-data-export-that-can-be-stopped-a-20261022-001322-3fb5"
+  }
+}

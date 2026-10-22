@@ -1,0 +1,104 @@
+{
+  "name": "event-sourced-ledger-corrections",
+  "description": "Fix an event-sourced inventory ledger whose incremental stock diverges from a log replay due to bugs in correction and dedup handling.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "run_id": "event-sourced-ledger-corrections-20261022-010147-186c",
+  "features": {
+    "env_lines": 559,
+    "solve_lines": 23,
+    "faults": 2,
+    "fault_layers": 1
+  },
+  "verdict": "too_easy",
+  "passes": 4,
+  "n_valid": 4,
+  "n_invalid": 1,
+  "decision": "rejected",
+  "why": "too_easy (stopped early after 4 passes)",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/event-sourced-ledger-corrections",
+    "verdict": "too_easy",
+    "passes": 4,
+    "n_valid": 4,
+    "n_invalid": 1,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__E7imHRR",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 87136,
+        "output_tokens": 7989,
+        "cost_usd": 0.00719423,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__Lmvq2d9",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 42324,
+        "output_tokens": 3885,
+        "cost_usd": 0.003511292,
+        "episodes": 6,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__dZspAgU",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 63987,
+        "output_tokens": 3624,
+        "cost_usd": 0.0047384459999999995,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__g9ksugv",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 71851,
+        "output_tokens": 3537,
+        "cost_usd": 0.0044684035,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__p5RamoX",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 58489,
+        "output_tokens": 4423,
+        "cost_usd": 0.00461024,
+        "episodes": 7,
+        "failed_tests": [],
+        "found_step": 1
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0"
+    ],
+    "tokens": {
+      "input": 323787,
+      "output": 23458
+    },
+    "cost_usd": 0.0245,
+    "median_steps": 7.5,
+    "median_found_step": 1.0,
+    "early_stop": true,
+    "seconds": 85.1,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

@@ -1,0 +1,71 @@
+```json
+{
+  "name": "event-sourced-ledger-corrections",
+  "description": "Fix an event-sourced inventory ledger whose incremental stock diverges from a log replay due to bugs in correction and dedup handling.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["event-sourcing", "inventory", "corrections", "dedup", "state-consistency"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 90,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A warehouse runs an event-sourced inventory ledger (/app/ledger.py) that tracks stock for each SKU. Events (receipts, shipments, corrections) are appended to an immutable log, and stock is maintained incrementally. A consistency check compares the incremental stock against a full replay of the event log — these must always agree. The check is currently failing: mismatches are reported for some SKUs. The ledger also supports late corrections (multiple corrections to the same original event) and must handle redelivered events (same event_id appearing more than once in the log) idempotently.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 environment with /app/ledger.py (~350 lines), a pre-populated events.jsonl (24 entries including 2 redeliveries and 6 corrections, one event receiving two corrections), and state.json reflecting the buggy incremental computation. A README.md describes usage. The two bugs are: (1) replay_events has no dedup — redelivered event_ids are processed twice, and (2) both process_event and replay_events compute correction deltas from the original event's quantity field instead of the current effective quantity, so after two corrections to the same event both paths produce the same wrong stock. The effective_qty data structure is correctly maintained but never consulted for the delta.",
+  "instruction_summary": "Fix /app/ledger.py so that `python3 /app/ledger.py verify` reports no mismatches and stock levels are correct per the business rules: RECEIPT adds, SHIPMENT subtracts, CORRECTION replaces the effective quantity of the referenced event (each correction supersedes the previous one), and each unique event_id is processed exactly once. After fixing, rebuild state with `python3 /app/ledger.py replay`. The correct stock for the pre-loaded data should be WIDGET=130, GADGET=75, THINGAMAJIG=85, DOOHICKEY=270.",
+  "solution_outline": [
+    "In process_event's correction handler, change original_qty = original_event[\"quantity\"] to original_qty = state[\"effective_qty\"].get(original_id, original_event[\"quantity\"])",
+    "In replay_events, add a seen=set() before the loop and a dedup check (if event_id in seen: continue; seen.add(event_id)) inside the loop",
+    "In replay_events's correction handler, change original_qty = original_event[\"quantity\"] to original_qty = effective.get(original_id, original_event[\"quantity\"])",
+    "Run python3 /app/ledger.py replay to rebuild state.json from the fixed code"
+  ],
+  "test_plan": [
+    "test_stock_values: read state.json, assert WIDGET=130, GADGET=75, THINGAMAJIG=85, DOOHICKEY=270",
+    "test_verify_passes: run ledger.py verify, assert output contains 'OK' and no 'MISMATCH'",
+    "test_replay_matches_incremental: run ledger.py replay then ledger.py verify, assert OK",
+    "test_double_correction_receipt: with clean_state fixture, ingest a temp JSONL with receipt qty=200, correction to 150, correction to 175; assert SKU stock=175",
+    "test_double_correction_shipment: with clean_state, ingest receipt qty=100, shipment qty=40, correction shipment to 30, correction shipment to 25; assert SKU stock=100-25=75",
+    "test_redelivery_ignored: with clean_state, ingest receipt qty=80 then same event_id again; assert SKU stock=80"
+  ],
+  "anti_cheat": "The correct stock values are not stored anywhere in the image. state.json contains the buggy incremental values (WIDGET=110, not 130). No .git history, backups, or reference implementations exist. Tests inject new events not in the shipped data, so hard-coding the initial stock values cannot pass all tests. The effective_qty structure is present but unused, giving no direct clue about the correct delta computation.",
+  "failure_modes": "An agent may fix only the replay dedup bug, after which verify reports OK because both paths now agree on the same wrong values. Trusting verify alone, the agent may stop before discovering the correction-delta bug. Alternatively, an agent may fix process_event's correction handler but miss the identical bug in replay_events, causing verify to show new mismatches that seem like a regression rather than partial progress.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "ledger.py replay_events function",
+      "what": "No deduplication by event_id; redelivered events are processed multiple times",
+      "symptom": "verify reports mismatches for SKUs affected by redeliveries (WIDGET and GADGET show different values in current vs replay)",
+      "how_discovered": "Running verify; reading replay_events and noticing there is no seen-ids check in the loop",
+      "central": "true",
+      "wrong_fix": "Add dedup to replay only and stop. After this, both paths agree on the same (wrong) correction-delta result. Verify passes but stock values are incorrect.",
+      "counterexample": "WIDGET stock is 110 after the partial fix, but should be 130 because E001 was corrected twice (C001→80, C002→90) and both correction deltas were computed from the original qty 100 instead of the effective qty",
+      "why_normal_case_passes": "For SKUs with no double-corrected events (GADGET, THINGAMAJIG, DOOHICKEY), the correction bug has no effect because single corrections produce the correct delta from either baseline. Verify shows no mismatches after dedup fix.",
+      "caught_by_test": "test_stock_values checks WIDGET=130"
+    },
+    {
+      "layer": "code",
+      "where": "ledger.py process_event and replay_events correction handlers",
+      "what": "Correction delta is computed as corrected_qty - original_event[\"quantity\"] instead of corrected_qty - current_effective_quantity. The effective_qty/effective dicts are maintained correctly but not consulted.",
+      "symptom": "After two corrections to the same event, stock is wrong by the difference between the two corrections' deltas (e.g., 20 units low for WIDGET). No visible mismatch between incremental and replay because both paths share the same bug.",
+      "how_discovered": "Manually computing expected stock for WIDGET from the event history and comparing to the reported value; then reading the correction handling code and noticing it reads from the original event rather than the effective_qty map",
+      "central": "true",
+      "wrong_fix": "Fix only process_event's correction handler (change to use state[\"effective_qty\"]). Replay still uses original_event[\"quantity\"], so verify now shows a WIDGET mismatch (incremental=130, replay=110).",
+      "counterexample": "After fixing only process_event, run verify: WIDGET shows current=130 vs replay=110. The unfixed replay path still computes both correction deltas from original qty 100.",
+      "why_normal_case_passes": "For a single correction to any event, the original quantity equals the effective quantity, so the delta is identical under both approaches. Only a second correction to the same event exposes the bug.",
+      "caught_by_test": "test_double_correction_receipt and test_double_correction_shipment ingest new events with two corrections and verify the final stock"
+    }
+  ],
+  "hidden_edge_cases": [
+    "Two corrections to a shipment event (not just receipts) — the sign handling in the delta must still use the effective quantity",
+    "A correction that restores the original quantity (effective loops back) — the delta should be zero from the effective baseline but non-zero from the original",
+    "A redelivered correction event (same correction event_id twice in the log) — replay must dedup corrections too, not just receipts/shipments"
+  ],
+  "why_not_textbook": "This is not a well-known bug pattern like off-by-one or missing null check. It arises from the interaction between two independently reasonable design choices: maintaining an effective_qty map for bookkeeping while separately looking up the original event for the delta. Neither function is locally wrong — each reads a quantity that exists and is correct for its own event. The bug is that the correction semantics require reading the *current* effective state, not the historical original, which only matters when another correction has already intervened.",
+  "static_read": "Reading the code reveals that effective_qty is maintained in process_event and effective is maintained in replay_events. Both are written to on corrections. However, the delta computation in both functions references original_event[\"quantity\"] rather than these maps. A reader who doesn't trace the lifecycle of a double-corrected event won't notice the mismatch, because the code looks like it's using the 'original quantity' for a correction — which sounds correct until you realize 'original' means the event's initial value, not the value after prior corrections.",
+  "crux": "A correction's delta must be computed from the current effective quantity of the referenced event, not from the event's original quantity. The system already tracks effective quantities correctly but doesn't use them where it matters — in the delta computation. After the obvious dedup fix makes both paths agree, the agent must independently verify stock correctness against the business rules to discover this second bug.",
+  "challenge_kind": "incremental_state",
+  "sequence_invariant": "After processing any sequence of events, the incrementally maintained stock must equal the result of replaying the event log from scratch, and both must reflect correct stock per the business rules.",
+  "nameable_fix": "Use effective quantity for correction deltas and deduplicate in replay",
+  "self_check_blind_spot": "After adding dedup to the replay function, the agent runs `ledger.py verify` and sees 'OK: current stock matches replay'. This is the natural self-check, and it passes — both paths now agree. The agent may conclude the task is done without independently verifying that the agreed-upon stock values are actually correct according to the business rules.",
+  "reference_in_environment": "None. Both code paths share the flawed correction-delta logic. The effective_qty/effective maps are maintained but never used for the computation. No correct reference implementation exists in the image.",
+  "interaction": "The incremental path (process_event) and the replay path (replay_events) each independently maintain an effective-quantity map (state['effective_qty'] and local `effective`) and independently compute correction deltas from the original event instead. After the dedup bug is fixed, the two paths produce identical results for all inputs, masking the fact that both are wrong for double-corrected events. The effective-quantity maps are correct in isolation — they accurately track the latest correction — but the delta computation ignores them, creating a consistency that is superficially correct (paths agree) but semantically wrong (both paths compute from the wrong baseline)."
+}
+```

@@ -1,0 +1,7 @@
+The payment webhook consumer at /app processes delivery notifications from PayStream, a provider that retries failed deliveries. Each retry gets a fresh delivery_id but carries the same event_id as the original attempt.
+
+After a recent deploy, account balances are incorrect.
+
+The system must guarantee: **each unique event_id affects each account's balance exactly once, regardless of how many times its delivery is consumed or whether the processor is interrupted and restarted.**
+
+Fix the code so this invariant holds. The database is at /app/data/payments.db. The CLI is `python3 /app/cli.py`.

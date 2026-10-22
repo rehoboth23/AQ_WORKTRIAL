@@ -1,0 +1,88 @@
+```json
+{
+  "name": "payment-webhook-idempotency",
+  "description": "Fix a webhook consumer so retried and partially processed payment deliveries never change balances more than once.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["webhooks", "idempotency", "sqlite", "transactions", "caching"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A payment webhook consumer receives delivery notifications from a provider (PayStream) that retries failed deliveries. Each retry gets a fresh delivery_id but carries the same event_id. After a recent deploy, several account balances are too high—the reconciler confirms discrepancies on accounts that received retried deliveries. The codebase is small but the bugs span the receiver, the dedup cache, and the processor's transaction boundaries.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 image with /app as WORKDIR. It copies the webhook_consumer package (db.py, dedup.py, receiver.py, processor.py, reconcile.py), cli.py, and config.py into /app/. A build-time script (setup_db.py) creates /app/data/payments.db with 5 accounts and ~11 deliveries (including 3 retries that share event_ids with originals), then deletes itself. The database starts with all deliveries in 'pending' status and all accounts at their initial balances. Three faults are baked in: (1) the receiver deduplicates by delivery_id only, allowing retry deliveries into the pending queue; (2) the EventDedup cache loaded at processor start is never refreshed when new events are recorded in the same batch; (3) the processor commits the balance update and the event recording as separate transactions, so a crash between them lets the event be re-applied on restart.",
+  "instruction_summary": "The payment webhook consumer at /app processes payment delivery notifications from a provider that retries failed deliveries. Each retry gets a new delivery_id but the same event_id as the original. Several account balances are wrong—too high—after the system processed deliveries that included retries. Running `python3 /app/cli.py reconcile` confirms the discrepancies. The system must guarantee: **each unique event_id affects each account's balance exactly once, regardless of how many times its delivery is consumed or whether the processor is interrupted and restarted.** Fix the code so this invariant holds. The database is at /app/data/payments.db. The CLI is `python3 /app/cli.py`. After your fix, processing any set of deliveries—including retries and re-runs after interruption—must produce correct balances.",
+  "solution_outline": [
+    "In receiver.py: after the existing delivery_id duplicate check, add a second check querying deliveries by event_id; if any row exists, return False to reject the retry delivery.",
+    "In dedup.py: add a notify_processed(event_id) method that adds the event_id to self._cache (if the cache has been loaded).",
+    "In processor.py _apply_payment: remove the self.conn.commit() call so the balance update is not committed separately.",
+    "In processor.py process_pending: after _apply_payment, add the INSERT OR IGNORE INTO processed_events and the UPDATE deliveries SET status='processed' statements without intermediate commits; add a single self.conn.commit() after all three; then call self.dedup.notify_processed(event_id) to refresh the cache.",
+    "In processor.py: add import of datetime at the top if not already present (it is)."
+  ],
+  "test_plan": [
+    "test_basic_with_retries: Reset DB, insert 2 accounts and 3 deliveries (one event has both an original and a retry delivery with different delivery_id), run processor, assert each account's balance equals initial_balance + sum of its unique event amounts.",
+    "test_same_batch_duplicate: Reset DB, directly insert 2 pending deliveries for the same event_id into the deliveries table, run processor, assert the balance was incremented only once—catches stale-cache partial fix.",
+    "test_crash_recovery: Reset DB, insert accounts and deliveries, run processor with hidden --crash-after-balance flag (exits after committing balance but before recording event), then run processor again normally, assert all balances are correct—catches non-atomic partial fix.",
+    "test_idempotent_rerun: Reset DB, insert deliveries, run processor twice, assert balances unchanged on second run.",
+    "test_refunds: Reset DB, insert a charge event and a refund event for the same account (different event_ids), run processor, assert balance = initial + charge + refund.",
+    "test_zero_initial_balance: Reset DB, insert an account with 0 initial balance and a charge delivery, run processor, assert balance equals charge amount.",
+    "test_multiple_events_with_retry: Reset DB, insert 3 unique events for one account plus a retry of one of them, run processor, assert balance = initial + sum of 3 unique amounts.",
+    "test_receiver_rejects_retry: Reset DB, use the receiver CLI to accept a delivery, then accept a retry (same event_id, different delivery_id), assert the second call returns False and only one pending delivery exists—validates receiver-level dedup."
+  ],
+  "anti_cheat": "The tests load fresh data (different accounts, amounts, event IDs) into a reset database before each run, so hard-coding balances or truncating tables cannot pass. The crash-recovery test uses a hidden CLI flag (--crash-after-balance) that is not mentioned in instruction.md; it simulates a mid-transaction failure that only atomic transactions survive. The same-batch test directly inserts duplicate pending deliveries into the DB, bypassing the receiver, so fixing only the receiver does not pass. No .git history, backup files, or reference implementations exist in the image.",
+  "failure_modes": "An agent that fixes only the receiver's delivery_id→event_id dedup will pass the obvious retry test but fail the same-batch test (processor cache still stale). An agent that fixes the receiver and the cache but leaves the non-atomic commits will pass normal runs but fail the crash-recovery test. An agent that 'fixes' atomicity by swapping the commit order (event first, then balance) still has a crash window and also fails the crash test. An agent that removes caching entirely without fixing the receiver still fails the retry test.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "webhook_consumer/receiver.py receive_delivery()",
+      "what": "Deduplication checks only delivery_id; a retried delivery with a new delivery_id but the same event_id is accepted as a new pending delivery.",
+      "symptom": "The deliveries table contains two pending rows for the same event_id, and the processor applies the balance change twice.",
+      "how_discovered": "Reading receive_delivery and noticing the SELECT queries delivery_id but not event_id; running the reconciler shows discrepancies exactly on accounts that received retries.",
+      "central": "true",
+      "wrong_fix": "Change the receiver to also reject deliveries whose delivery_id matches an already-processed delivery's event_id, but leave the processor's stale cache and non-atomic commits unchanged.",
+      "counterexample": "Two pending deliveries for the same event_id are already in the database (e.g., from before the fix was applied, or inserted by a migration tool). Running the processor processes both because the cache doesn't reflect the first event's recording.",
+      "why_normal_case_passes": "After the receiver fix, no new duplicate deliveries enter the queue, so processing existing pending deliveries one-by-one across separate runs works (each run loads a fresh cache).",
+      "caught_by_test": "test_same_batch_duplicate directly inserts two pending deliveries for the same event_id and runs the processor once."
+    },
+    {
+      "layer": "code",
+      "where": "webhook_consumer/dedup.py EventDedup class",
+      "what": "The _cache set is loaded once from processed_events on first call to is_processed() and never updated when new events are recorded during the same processing run. There is no method to notify the cache of newly processed events.",
+      "symptom": "When multiple pending deliveries for the same event_id exist in one batch, the dedup check for the second delivery still returns False because the cache doesn't contain the event_id recorded while processing the first delivery.",
+      "how_discovered": "Tracing the data flow: is_processed() reads from _cache, but nothing in the processing loop writes to _cache after recording an event. Reading the EventDedup class reveals _load_cache populates _cache but no method updates it.",
+      "central": "true",
+      "wrong_fix": "Add a notify_processed method that updates _cache, and call it from the processor, but leave the non-atomic commits (balance and event recording committed separately).",
+      "counterexample": "Run the processor with --crash-after-balance: the balance is committed, then the process exits before the event is recorded. On restart the processor re-applies the balance change because the event is not in processed_events.",
+      "why_normal_case_passes": "Without a crash, each event is recorded and the cache is updated within the same run; the processor skips duplicates correctly on subsequent runs because the cache is reloaded from the DB.",
+      "caught_by_test": "test_crash_recovery uses --crash-after-balance to exit after the balance commit but before the event commit, then resumes processing."
+    },
+    {
+      "layer": "code",
+      "where": "webhook_consumer/processor.py _apply_payment() and process_pending()",
+      "what": "_apply_payment() commits the balance update in its own transaction, separate from the processed_events INSERT and the delivery status UPDATE. Three separate commits mean a crash between any two leaves partial state.",
+      "symptom": "After a crash between the balance commit and the event-recording commit, restarting the processor re-applies the balance because the event isn't in processed_events yet, doubling the amount.",
+      "how_discovered": "Reading _apply_payment shows self.conn.commit() after the balance UPDATE; reading process_pending shows separate commits for event recording and delivery marking. The three-commit structure means no atomicity guarantee.",
+      "central": "true",
+      "wrong_fix": "Swap the order so the event is recorded and committed before the balance is updated.",
+      "counterexample": "Crash after the event-record commit but before the balance commit: on restart, the processor sees the event in processed_events and skips it, but the balance was never updated—payment is silently lost.",
+      "why_normal_case_passes": "Without a crash, both commits succeed and the end state is correct.",
+      "caught_by_test": "test_crash_recovery simulates the crash window; swapping the order still leaves a window that loses payments, and the test detects incorrect balances."
+    }
+  ],
+  "hidden_edge_cases": [
+    "An account starting at zero balance receiving a charge event.",
+    "A refund (negative amount) event for an account that also has charge events.",
+    "Running the processor twice on the same set of deliveries (idempotent re-run).",
+    "Multiple distinct events for the same account where one has a retry.",
+    "A delivery whose event_id matches an already-processed event from a previous run—the processor must skip it even with a fresh cache load."
+  ],
+  "why_not_textbook": "This is not a classic 'add a unique constraint' or 'use UPSERT' problem. The delivery_id vs event_id distinction is domain-specific to webhook provider retry semantics. The stale-cache bug arises from a natural optimization (lazy-loading a set from the DB) that is correct in isolation—each function is locally right. The non-atomic transaction bug is not about missing a transaction block but about three separate commits that each make sense individually (allow partial progress on failure) but together violate the idempotency invariant. No well-known bug pattern (Pillow ANTIALIAS, nginx trailing slash, etc.) covers this combination.",
+  "static_read": "Reading receiver.py shows the delivery_id SELECT; reading dedup.py shows the _cache loaded once and never mutated; reading processor.py shows three separate self.conn.commit() calls. An agent can spot all three issues by reading, but the interaction between them—why fixing one isn't enough—requires reasoning about what sequences (same-batch duplicates, crash-restart) the other faults enable. The code comments describe what each part does without flagging the invariant violations.",
+  "crux": "Idempotency requires that the dedup key matches the provider's retry identity (event_id not delivery_id), that the dedup state is visible to subsequent checks within the same processing batch (cache must be refreshed or bypassed), and that the side effect (balance mutation) and the idempotency marker (processed_events row) are committed atomically so no partial state can exist after a crash.",
+  "challenge_kind": "retry_idempotency",
+  "sequence_invariant": "Each unique event_id contributes to each account's balance at most once, regardless of how many times its delivery is consumed or whether the processor is interrupted and restarted.",
+  "nameable_fix": "event-level dedup with cache coherency and atomic commit",
+  "self_check_blind_spot": "After fixing the receiver's delivery_id→event_id dedup, the agent re-runs the processor on the pre-loaded sample data. Because no new retries enter the queue, each event appears only once in the pending list and the processor produces correct balances. The agent concludes the fix is complete, not realizing that (a) the stale cache would still fail if duplicate pending deliveries existed in the same batch, and (b) non-atomic commits would still fail after a crash.",
+  "reference_in_environment": "None. No .git history, no pristine copy, no backup files, no test suite that names the faults. The reconcile tool computes expected balances from unique events but does not explain why discrepancies exist or how to fix them.",
+  "interaction": "The receiver writes deliveries keyed by delivery_id (assuming delivery_id is the identity); the processor reads pending deliveries and checks processed_events via a cache that reflects only the state at load time. Each component is locally correct: the receiver prevents exact-duplicate HTTP requests, and the cache avoids a per-delivery DB query. The gap is that the receiver's identity model (delivery_id) doesn't match the processor's (event_id), and the cache doesn't see in-batch writes. Separately, the processor's _apply_payment commits the balance before the event is recorded; the dedup check reads processed_events to decide whether to skip. The balance write and the dedup read operate on different transactional assumptions—one is already committed, the other isn't yet—so a crash between them lets the same event pass the dedup check on restart and be re-applied."
+}
+```

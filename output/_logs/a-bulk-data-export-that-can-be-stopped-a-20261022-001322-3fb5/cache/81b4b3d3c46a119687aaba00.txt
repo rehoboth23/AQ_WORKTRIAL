@@ -1,0 +1,12 @@
+VERDICT: leaks
+- "transaction rows may be missing or duplicated, balance values may be wrong, and the file structure may be broken (duplicate headers, duplicate summary sections)" -> reveals symptom categories that map 1:1 to the four hidden faults (faults 2 and 3)
+- "The tool's interface and output format are documented in /app/README.md." -> pointer to where answers/rules live (fault 4)
+- "The batch size is set in /app/config.ini." -> pointer to where answers/rules live (fault 4)
+
+<<<FILE instruction.md>>>
+The warehouse audit export tool at /app/audit_export.py exports inventory transactions from /app/warehouse.db to a CSV file with per-warehouse running balances. It supports --checkpoint and --resume so long-running exports can be stopped and continued later.
+
+The problem: when an export is interrupted and then resumed, the resulting CSV file differs from what a single uninterrupted run would produce.
+
+Fix the tool so that a resumed export always produces exactly the same output as an uninterrupted export: the same header row, the same transaction rows in the same order with the same running-balance values, and the same summary section. This must hold regardless of when the export is interrupted and resumed.
+<<<END>>>

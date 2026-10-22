@@ -1,0 +1,84 @@
+{
+  "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+  "run_id": "an-event-sourced-inventory-ledger-that-a-20261022-001328-349b",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261022-001328-349b",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/event-sourced-ledger-corrections",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/README.md:66: states the rule a fault breaks: Running `python3 ledger.py verify` should report no mismatches between"
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-oracle",
+          "seconds": 24.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-oracle/event-sourced-ledger-corrections__D6ER6R5",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-nop",
+          "seconds": 18.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-nop/event-sourced-ledger-corrections__78JHJ6M",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": [],
+      "mutation": [
+        {
+          "fault": 0,
+          "wrong_fix": "Fix only the replay dedup to use event['event_id']. After this, both paths agree on all values, verify passes. But stock values for SKUs with double-corrected events (GADGET, THINGAMAJIG) are still wrong because both paths share the correction-delta bug.",
+          "verdict": "killed",
+          "failed_tests": 4,
+          "total_tests": 8,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010047-mutant0"
+        },
+        {
+          "fault": 1,
+          "wrong_fix": "Fix only ledger.py's correction handler to use store.get_effective_qty(ref_id). Replay.py still uses original_event['quantity']. After running replay to rebuild state.json, the state is built by the still-buggy replay code, so state values are wrong. But verify compares this buggy state against a fresh buggy replay \u2014 both wrong the same way \u2014 so verify shows OK.",
+          "verdict": "killed",
+          "failed_tests": 7,
+          "total_tests": 8,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010047-mutant1"
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 32191,
+    "completion_tokens": 38247,
+    "cost_usd": 0.0
+  },
+  "seconds": 656.5,
+  "task_name": "afterquery/event-sourced-ledger-corrections"
+}

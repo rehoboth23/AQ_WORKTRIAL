@@ -1,0 +1,8 @@
+a bulk data export that can be stopped and resumed with a checkpoint file, but a resumed export sometimes differs from an uninterrupted one
+a webhook consumer that records payments from a provider that retries deliveries, where retried or partially processed deliveries change balances more than once
+an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log
+a command-line notes tool whose on-disk store is being upgraded to a new format while older files must stay readable, and some notes change or disappear after the upgrade or on a rerun of it
+a log shipper that tails files in fixed-size chunks and survives restarts, but drops or duplicates lines around chunk boundaries, rotations and restarts
+a small build tool for a C project that decides what to recompile from timestamps and dependency lists, and leaves stale objects after some edit sequences
+a deployment script that applies database migrations and config changes in steps, which leaves the system in a different state when a failed run is retried
+a job scheduler that persists its queue to disk and runs recurring jobs, which runs some jobs twice or skips them after a restart or a clock change

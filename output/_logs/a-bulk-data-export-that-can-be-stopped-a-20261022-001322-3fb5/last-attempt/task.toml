@@ -1,0 +1,27 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/audit-export-resume-checkpoint"
+description = "Fix a checkpointable bulk export tool where resuming produces different output than an uninterrupted run."
+keywords = [ "sqlite", "csv", "checkpoint", "resume", "state-management",]
+
+[metadata]
+difficulty = "hard"
+category = "debugging"
+tags = [ "sqlite", "csv", "checkpoint", "resume", "state-management",]
+expert_time_estimate_min = 40.0
+junior_time_estimate_min = 100.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+network_mode = "no-network"
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

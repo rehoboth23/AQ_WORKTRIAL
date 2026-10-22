@@ -1,0 +1,143 @@
+{
+  "name": "payment-webhook-idempotency",
+  "description": "Fix a webhook consumer so retried and partially processed payment deliveries never change balances more than once.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "run_id": "payment-webhook-idempotency-20261022-011431-75eb",
+  "features": {
+    "env_lines": 558,
+    "solve_lines": 103,
+    "faults": 3,
+    "fault_layers": 1
+  },
+  "verdict": "learnable",
+  "passes": 3,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "unfair: the failing assertion requires the receiver to print 'duplicate' for a retry of an already-processed event; instruction.md states only the balance invariant and never asks for any receiver output (re-triaged with the stricter rule; the fixed instruction then scored 4/4 too easy)",
+  "triage": [
+    {
+      "trial": "payment-webhook-idempotency__4KjA6zZ",
+      "fault": "task",
+      "category": "untested-requirement",
+      "reason": "the failing assertion requires the receiver to print 'duplicate' for a retry of an already-processed event; instruction.md states only the balance invariant and never asks for any receiver output",
+      "evidence": [
+        "test_retry_after_processing failed: 'duplicate' not found in 'status: accepted\\n  delivery_id: d2\\n  event_id: e1\\n'",
+        "The receiver accepted D2 (same event_id E1 already processed) instead of rejecting it as duplicate",
+        "8 other tests passed showing processor idempotency works, but receiver-side dedup is missing"
+      ],
+      "failed_requirements": [
+        "The receiver must reject a retry delivery for an already-processed event (the receiver only checks pending status in deliveries, not the processed_events table)"
+      ],
+      "requirement_quote": ""
+    },
+    {
+      "trial": "payment-webhook-idempotency__N7DLDcy",
+      "fault": "task",
+      "category": "untested-requirement",
+      "reason": "the failing assertion requires the receiver to print 'duplicate' for a retry of an already-processed event; instruction.md states only the balance invariant and never asks for any receiver output",
+      "evidence": [
+        "test_retry_after_processing failed: assert 'duplicate' in 'status: accepted\\n  delivery_id: d2\\n  event_id: e1\\n'",
+        "In step 9, the agent explicitly reverted the receiver: 'Restore the receiver's prior check behavior' \u2014 removing the processed_events check",
+        "The agent's disposable tests only tested processor-level idempotency, not the receiver's response to post-processing retries"
+      ],
+      "failed_requirements": [
+        "The receiver must reject a retry delivery for an already-processed event (return 'duplicate'), ensuring each unique event_id affects each account's balance exactly once regardless of how many times its delivery is consumed"
+      ],
+      "requirement_quote": ""
+    }
+  ],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/payment-webhook-idempotency",
+    "verdict": "learnable",
+    "passes": 3,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-payment-webhook-idempotency-20261022-011431-75eb-0/payment-webhook-idempotency__4KjA6zZ",
+        "outcome": "fail",
+        "detail": "",
+        "reward": 0.0,
+        "input_tokens": 97954,
+        "output_tokens": 16463,
+        "cost_usd": 0.009432409999999999,
+        "episodes": 9,
+        "failed_tests": [
+          "test_retry_after_processing"
+        ],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-payment-webhook-idempotency-20261022-011431-75eb-0/payment-webhook-idempotency__N7DLDcy",
+        "outcome": "fail",
+        "detail": "",
+        "reward": 0.0,
+        "input_tokens": 157101,
+        "output_tokens": 26436,
+        "cost_usd": 0.015071926000000001,
+        "episodes": 11,
+        "failed_tests": [
+          "test_retry_after_processing"
+        ],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-payment-webhook-idempotency-20261022-011431-75eb-0/payment-webhook-idempotency__Qx2q25c",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 146189,
+        "output_tokens": 20820,
+        "cost_usd": 0.013470069999999997,
+        "episodes": 11,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-payment-webhook-idempotency-20261022-011431-75eb-0/payment-webhook-idempotency__T6otskV",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 103794,
+        "output_tokens": 17569,
+        "cost_usd": 0.009984270000000002,
+        "episodes": 9,
+        "failed_tests": [],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-payment-webhook-idempotency-20261022-011431-75eb-0/payment-webhook-idempotency__XxoeJiw",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 167886,
+        "output_tokens": 22510,
+        "cost_usd": 0.014386030499999999,
+        "episodes": 12,
+        "failed_tests": [],
+        "found_step": 2
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-payment-webhook-idempotency-20261022-011431-75eb-0"
+    ],
+    "tokens": {
+      "input": 672924,
+      "output": 103798
+    },
+    "cost_usd": 0.0623,
+    "median_steps": 11,
+    "median_found_step": 2,
+    "early_stop": false,
+    "seconds": 300.1,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/payment-webhook-idempotency",
+  "topic": "a webhook consumer that records payments from a provider that retries deliveries, where retried or partially processed deliveries change balances more than once",
+  "stage": "eval",
+  "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-webhook-consumer-that-records-payments-20261022-001325-de24"
+}

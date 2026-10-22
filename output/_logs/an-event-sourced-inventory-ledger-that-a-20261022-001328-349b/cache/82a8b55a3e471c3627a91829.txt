@@ -1,0 +1,738 @@
+<<<MANIFEST>>>
+environment/ledger.py
+environment/store.py
+environment/replay.py
+environment/events.jsonl
+environment/generate_state.py
+environment/README.md
+<<<END>>>
+<<<FILE environment/ledger.py>>>
+"""Inventory ledger with event-sourced tracking.
+
+Maintains stock levels incrementally and supports verification
+against a full log replay. Events are appended to an immutable
+log (events.jsonl), and the current state is maintained in
+state.json.
+
+Usage:
+    python3 ledger.py replay [events_path] [state_path]
+    python3 ledger.py verify [events_path] [state_path]
+    python3 ledger.py ingest [events_path] [state_path]
+    python3 ledger.py summary [state_path]
+"""
+
+import json
+import sys
+
+from store import EventStore
+from replay import replay_events
+
+
+EVENTS_PATH = "/app/events.jsonl"
+STATE_PATH = "/app/state.json"
+
+
+def load_state(path=STATE_PATH):
+    """Load current stock state from file.
+
+    Args:
+        path: path to the state JSON file
+
+    Returns:
+        Dict mapping SKU names to stock quantities.
+        Returns empty dict if file doesn't exist or is invalid.
+    """
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(stock, path=STATE_PATH):
+    """Save stock state to file.
+
+    Args:
+        stock: dict mapping SKU names to stock quantities
+        path: path to the state JSON file
+    """
+    with open(path, "w") as f:
+        json.dump(stock, f, indent=2, sort_keys=True)
+
+
+def process_event(event, store, stock):
+    """Process a single event and update stock incrementally.
+
+    Applies the event to the stock dict and registers it in the store.
+    Duplicate events (same event_id already seen) are skipped.
+
+    Args:
+        event: the event dict to process
+        store: the EventStore instance for tracking events
+        stock: the stock dict to update (modified in place)
+
+    Returns:
+        True if the event was processed, False if it was a duplicate.
+    """
+    eid = event["event_id"]
+
+    # Skip duplicate events (same event_id already seen)
+    if store.has_event(eid):
+        return False
+
+    sku = event["sku"]
+    etype = event["type"]
+    qty = event["quantity"]
+
+    if sku not in stock:
+        stock[sku] = 0
+
+    store.add_event(event)
+
+    if etype == "RECEIPT":
+        stock[sku] += qty
+
+    elif etype == "SHIPMENT":
+        stock[sku] -= qty
+
+    elif etype == "CORRECTION":
+        ref_id = event["ref_id"]
+        ref_event = store.get_event(ref_id)
+        original_qty = ref_event["quantity"]
+        new_qty = qty
+        delta = new_qty - original_qty
+
+        if ref_event["type"] == "RECEIPT":
+            stock[sku] += delta
+        elif ref_event["type"] == "SHIPMENT":
+            stock[sku] -= delta
+
+        store.update_effective_qty(ref_id, new_qty)
+
+    return True
+
+
+def ingest_all(store, stock, events_path=EVENTS_PATH):
+    """Ingest all events from the log into the incremental state.
+
+    Processes events in order, applying each to the stock dict.
+    Duplicate event_ids are skipped.
+
+    Args:
+        store: the EventStore instance
+        stock: the stock dict to update (modified in place)
+        events_path: path to the JSONL event log
+
+    Returns:
+        Number of events processed (excluding duplicates).
+    """
+    count = 0
+    with open(events_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                event = json.loads(line)
+                if process_event(event, store, stock):
+                    count += 1
+    return count
+
+
+def cmd_replay(events_path=EVENTS_PATH, state_path=STATE_PATH):
+    """Replay the entire event log and save the result as the new state.
+
+    This discards the current incremental state and rebuilds it
+    from scratch by replaying the full event log.
+
+    Args:
+        events_path: path to the JSONL event log
+        state_path: path to the state JSON file
+    """
+    stock = replay_events(events_path)
+    save_state(stock, state_path)
+    print(f"Replayed events and saved state to {state_path}")
+
+
+def cmd_ingest(events_path=EVENTS_PATH, state_path=STATE_PATH):
+    """Rebuild state by incrementally re-processing all events.
+
+    Unlike replay (which uses the replay module), this uses the
+    incremental process_event function to rebuild state from scratch.
+
+    Args:
+        events_path: path to the JSONL event log
+        state_path: path to the state JSON file
+    """
+    store = EventStore()
+    stock = {}
+    count = ingest_all(store, stock, events_path)
+    save_state(stock, state_path)
+    print(f"Ingested {count} events and saved state to {state_path}")
+
+
+def cmd_verify(events_path=EVENTS_PATH, state_path=STATE_PATH):
+    """Verify that incremental state matches a full replay.
+
+    Loads the current state from the state file and compares it against
+    a fresh replay of the event log. Any SKUs with differing values
+    are reported as mismatches.
+
+    Args:
+        events_path: path to the JSONL event log
+        state_path: path to the state JSON file
+    """
+    incremental = load_state(state_path)
+    replayed = replay_events(events_path)
+
+    all_skus = sorted(set(list(incremental.keys()) + list(replayed.keys())))
+
+    mismatches = []
+    for sku in all_skus:
+        inc_val = incremental.get(sku, 0)
+        rep_val = replayed.get(sku, 0)
+        if inc_val != rep_val:
+            mismatches.append((sku, inc_val, rep_val))
+
+    if mismatches:
+        for sku, inc_val, rep_val in mismatches:
+            print(f"MISMATCH {sku}: incremental={inc_val} replay={rep_val}")
+        sys.exit(1)
+    else:
+        print("OK: current stock matches replay")
+
+
+def cmd_summary(state_path=STATE_PATH):
+    """Print a summary of the current stock state.
+
+    Args:
+        state_path: path to the state JSON file
+    """
+    stock = load_state(state_path)
+    if not stock:
+        print("No state found.")
+        return
+
+    print("Current stock levels:")
+    for sku in sorted(stock.keys()):
+        print(f"  {sku}: {stock[sku]}")
+
+    total = sum(stock.values())
+    print(f"  Total: {total} units across {len(stock)} SKUs")
+
+
+def main():
+    """Main entry point for the ledger CLI."""
+    if len(sys.argv) < 2:
+        print("Usage: python3 ledger.py <command> [events_path] [state_path]")
+        print("Commands: replay, verify, ingest, summary")
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    events_path = sys.argv[2] if len(sys.argv) > 2 else EVENTS_PATH
+    state_path = sys.argv[3] if len(sys.argv) > 3 else STATE_PATH
+
+    if cmd == "replay":
+        cmd_replay(events_path, state_path)
+    elif cmd == "verify":
+        cmd_verify(events_path, state_path)
+    elif cmd == "ingest":
+        cmd_ingest(events_path, state_path)
+    elif cmd == "summary":
+        cmd_summary(state_path)
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/store.py>>>
+"""Event store for the inventory ledger.
+
+Provides the EventStore class which manages event records and tracks
+effective quantities as corrections are applied over time.
+"""
+
+import json
+from collections import defaultdict
+
+
+class EventStore:
+    """Central store for event data and effective quantity tracking.
+
+    Maintains two key data structures:
+    - events: maps event_id to the original event dict
+    - effective_qty: maps event_id to its current effective quantity
+      (updated when corrections are applied)
+
+    The store also provides lookup methods for querying events by
+    various criteria.
+    """
+
+    def __init__(self):
+        self.events = {}                # event_id -> event dict
+        self.effective_qty = {}         # event_id -> current effective quantity
+        self._sku_index = defaultdict(list)  # sku -> list of event_ids
+
+    def add_event(self, event):
+        """Register an event in the store.
+
+        For RECEIPT and SHIPMENT events, the effective quantity is
+        initialized to the event's quantity field. CORRECTION events
+        do not have their own effective quantity; instead they modify
+        the effective quantity of the referenced event via
+        update_effective_qty.
+
+        Args:
+            event: dict with event_id, type, sku, quantity, and
+                   optionally ref_id (for corrections).
+
+        Raises:
+            ValueError: if the event is missing required fields.
+        """
+        self._validate_event(event)
+        eid = event["event_id"]
+        self.events[eid] = event
+        if event["type"] in ("RECEIPT", "SHIPMENT"):
+            self.effective_qty[eid] = event["quantity"]
+        self._sku_index[event["sku"]].append(eid)
+
+    def update_effective_qty(self, event_id, new_qty):
+        """Update the effective quantity for an event after a correction.
+
+        Args:
+            event_id: the event whose effective quantity to update
+            new_qty: the new effective quantity value
+        """
+        self.effective_qty[event_id] = new_qty
+
+    def get_event(self, event_id):
+        """Return the original event by event_id.
+
+        Args:
+            event_id: the logical event identifier
+
+        Returns:
+            The event dict, or None if not found.
+        """
+        return self.events.get(event_id)
+
+    def get_effective_qty(self, event_id):
+        """Return the current effective quantity for an event.
+
+        The effective quantity starts as the event's original quantity
+        and is updated each time a correction is applied to the event.
+
+        Args:
+            event_id: the logical event identifier
+
+        Returns:
+            The current effective quantity, or None if not found.
+        """
+        return self.effective_qty.get(event_id)
+
+    def has_event(self, event_id):
+        """Check if an event_id has been registered.
+
+        Args:
+            event_id: the logical event identifier
+
+        Returns:
+            True if the event has been registered, False otherwise.
+        """
+        return event_id in self.events
+
+    def get_events_by_sku(self, sku):
+        """Return all event_ids associated with a SKU.
+
+        Args:
+            sku: the SKU to look up
+
+        Returns:
+            List of event_id strings.
+        """
+        return list(self._sku_index.get(sku, []))
+
+    def get_corrections_for(self, event_id):
+        """Return all correction events that reference a given event.
+
+        Args:
+            event_id: the event being corrected
+
+        Returns:
+            List of correction event dicts, in insertion order.
+        """
+        return [
+            evt for evt in self.events.values()
+            if evt["type"] == "CORRECTION" and evt.get("ref_id") == event_id
+        ]
+
+    @property
+    def event_count(self):
+        """Return the number of registered events."""
+        return len(self.events)
+
+    def _validate_event(self, event):
+        """Validate that an event has the required fields.
+
+        Args:
+            event: the event dict to validate
+
+        Raises:
+            ValueError: if required fields are missing.
+        """
+        required = ["event_id", "type", "sku", "quantity"]
+        for field in required:
+            if field not in event:
+                raise ValueError(f"Event missing required field: {field}")
+        if event["type"] not in ("RECEIPT", "SHIPMENT", "CORRECTION"):
+            raise ValueError(f"Invalid event type: {event['type']}")
+        if event["type"] == "CORRECTION" and "ref_id" not in event:
+            raise ValueError("Correction event missing ref_id")
+
+    def load_from_file(self, path):
+        """Load events from a JSONL file into the store.
+
+        Args:
+            path: path to the JSONL file
+
+        Returns:
+            Number of events loaded.
+        """
+        count = 0
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    event = json.loads(line)
+                    self.add_event(event)
+                    count += 1
+        return count
+
+    def __repr__(self):
+        return f"EventStore(events={self.event_count})"
+<<<END>>>
+<<<FILE environment/replay.py>>>
+"""Log replay for the inventory ledger.
+
+Replays the full event log from scratch to compute stock levels,
+providing a ground-truth comparison for the incrementally maintained state.
+"""
+
+import json
+
+
+def validate_event_log(event_log_path):
+    """Validate the structure of an event log file.
+
+    Checks that each line is valid JSON with required fields and
+    that sequence numbers are consistent.
+
+    Args:
+        event_log_path: path to the JSONL event log
+
+    Returns:
+        List of validation error strings (empty if valid).
+    """
+    errors = []
+    line_num = 0
+
+    with open(event_log_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            line_num += 1
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as e:
+                errors.append(f"Line {line_num}: invalid JSON: {e}")
+                continue
+
+            for field in ("id", "event_id", "type", "sku", "quantity"):
+                if field not in event:
+                    errors.append(f"Line {line_num}: missing field '{field}'")
+
+            if event.get("type") == "CORRECTION" and "ref_id" not in event:
+                errors.append(f"Line {line_num}: correction missing ref_id")
+
+    return errors
+
+
+def replay_events(event_log_path):
+    """Replay all events from the log and compute final stock levels.
+
+    Processes each event in order, applying receipts, shipments, and
+    corrections. Redeliveries (same event_id appearing more than once)
+    are skipped on subsequent appearances.
+
+    Args:
+        event_log_path: path to the JSONL event log
+
+    Returns:
+        Dict mapping SKU names to stock quantities.
+    """
+    events = []
+    with open(event_log_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                events.append(json.loads(line))
+
+    stock = {}
+    seen = set()
+    effective = {}      # event_id -> current effective quantity
+    events_by_id = {}   # event_id -> original event dict
+
+    for event in events:
+        # Skip duplicate events
+        if event["id"] in seen:
+            continue
+        seen.add(event["id"])
+
+        eid = event["event_id"]
+        sku = event["sku"]
+        etype = event["type"]
+        qty = event["quantity"]
+
+        if sku not in stock:
+            stock[sku] = 0
+
+        if etype == "RECEIPT":
+            stock[sku] += qty
+            effective[eid] = qty
+            events_by_id[eid] = event
+
+        elif etype == "SHIPMENT":
+            stock[sku] -= qty
+            effective[eid] = qty
+            events_by_id[eid] = event
+
+        elif etype == "CORRECTION":
+            ref_id = event["ref_id"]
+            ref_event = events_by_id[ref_id]
+            original_qty = ref_event["quantity"]
+            new_qty = qty
+            delta = new_qty - original_qty
+
+            if ref_event["type"] == "RECEIPT":
+                stock[sku] += delta
+            elif ref_event["type"] == "SHIPMENT":
+                stock[sku] -= delta
+
+            effective[ref_id] = new_qty
+
+    return stock
+
+
+def replay_with_details(event_log_path):
+    """Replay events and return detailed results including processing info.
+
+    Useful for debugging and understanding which events were applied.
+
+    Args:
+        event_log_path: path to the JSONL event log
+
+    Returns:
+        Dict with keys:
+        - stock: dict mapping SKU to final stock
+        - processed: list of event_ids that were processed (in order)
+        - skipped: list of event_ids that were skipped as duplicates
+    """
+    events = []
+    with open(event_log_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                events.append(json.loads(line))
+
+    stock = {}
+    seen = set()
+    effective = {}
+    events_by_id = {}
+    processed = []
+    skipped = []
+
+    for event in events:
+        if event["id"] in seen:
+            skipped.append(event["event_id"])
+            continue
+        seen.add(event["id"])
+
+        eid = event["event_id"]
+        sku = event["sku"]
+        etype = event["type"]
+        qty = event["quantity"]
+
+        if sku not in stock:
+            stock[sku] = 0
+
+        if etype == "RECEIPT":
+            stock[sku] += qty
+            effective[eid] = qty
+            events_by_id[eid] = event
+        elif etype == "SHIPMENT":
+            stock[sku] -= qty
+            effective[eid] = qty
+            events_by_id[eid] = event
+        elif etype == "CORRECTION":
+            ref_id = event["ref_id"]
+            ref_event = events_by_id[ref_id]
+            original_qty = ref_event["quantity"]
+            new_qty = qty
+            delta = new_qty - original_qty
+
+            if ref_event["type"] == "RECEIPT":
+                stock[sku] += delta
+            elif ref_event["type"] == "SHIPMENT":
+                stock[sku] -= delta
+
+            effective[ref_id] = new_qty
+
+        processed.append(eid)
+
+    return {
+        "stock": stock,
+        "processed": processed,
+        "skipped": skipped,
+    }
+<<<END>>>
+<<<FILE environment/events.jsonl>>>
+{"id":1,"event_id":"E001","type":"RECEIPT","sku":"WIDGET","quantity":100}
+{"id":2,"event_id":"E002","type":"RECEIPT","sku":"WIDGET","quantity":50}
+{"id":3,"event_id":"E003","type":"SHIPMENT","sku":"WIDGET","quantity":15}
+{"id":4,"event_id":"E004","type":"RECEIPT","sku":"GADGET","quantity":100}
+{"id":5,"event_id":"C005","type":"CORRECTION","sku":"GADGET","quantity":80,"ref_id":"E004"}
+{"id":6,"event_id":"C006","type":"CORRECTION","sku":"GADGET","quantity":95,"ref_id":"E004"}
+{"id":7,"event_id":"E007","type":"RECEIPT","sku":"GADGET","quantity":15}
+{"id":8,"event_id":"E008","type":"RECEIPT","sku":"THINGAMAJIG","quantity":100}
+{"id":9,"event_id":"E009","type":"SHIPMENT","sku":"THINGAMAJIG","quantity":40}
+{"id":10,"event_id":"C010","type":"CORRECTION","sku":"THINGAMAJIG","quantity":30,"ref_id":"E009"}
+{"id":11,"event_id":"C011","type":"CORRECTION","sku":"THINGAMAJIG","quantity":25,"ref_id":"E009"}
+{"id":12,"event_id":"E012","type":"RECEIPT","sku":"THINGAMAJIG","quantity":15}
+{"id":13,"event_id":"E013","type":"RECEIPT","sku":"DOOHICKEY","quantity":200}
+{"id":14,"event_id":"E014","type":"SHIPMENT","sku":"DOOHICKEY","quantity":10}
+{"id":15,"event_id":"E001","type":"RECEIPT","sku":"WIDGET","quantity":100}
+{"id":16,"event_id":"E014","type":"SHIPMENT","sku":"DOOHICKEY","quantity":10}
+{"id":17,"event_id":"E017","type":"RECEIPT","sku":"WIDGET","quantity":20}
+{"id":18,"event_id":"E018","type":"SHIPMENT","sku":"WIDGET","quantity":20}
+{"id":19,"event_id":"E019","type":"RECEIPT","sku":"GADGET","quantity":10}
+{"id":20,"event_id":"E020","type":"SHIPMENT","sku":"GADGET","quantity":10}
+{"id":21,"event_id":"E021","type":"RECEIPT","sku":"THINGAMAJIG","quantity":10}
+{"id":22,"event_id":"E022","type":"SHIPMENT","sku":"THINGAMAJIG","quantity":10}
+{"id":23,"event_id":"E023","type":"RECEIPT","sku":"DOOHICKEY","quantity":25}
+{"id":24,"event_id":"E024","type":"SHIPMENT","sku":"DOOHICKEY","quantity":25}
+<<<END>>>
+<<<FILE environment/generate_state.py>>>
+#!/usr/bin/env python3
+"""Generate the initial incremental state from the event log.
+
+Computes state.json by processing events.jsonl through the incremental
+path (process_event). Run this once during image build, then delete
+this script.
+"""
+
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from store import EventStore
+from ledger import process_event
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EVENTS_PATH = os.path.join(BASE_DIR, "events.jsonl")
+STATE_PATH = os.path.join(BASE_DIR, "state.json")
+
+
+def main():
+    store = EventStore()
+    stock = {}
+
+    with open(EVENTS_PATH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                event = json.loads(line)
+                process_event(event, store, stock)
+
+    with open(STATE_PATH, "w") as f:
+        json.dump(stock, f, indent=2, sort_keys=True)
+
+    print(f"Generated state from {store.event_count} unique events")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/README.md>>>
+# Warehouse Inventory Ledger
+
+An event-sourced inventory ledger that tracks stock for each SKU in
+a warehouse system.
+
+## Overview
+
+Events (receipts, shipments, corrections) are appended to an immutable
+log file (`events.jsonl`). Stock levels are maintained incrementally
+in a state file (`state.json`). A verification command compares the
+incremental state against a full replay of the event log to detect
+any divergence.
+
+## Event Types
+
+- **RECEIPT**: Adds the event's quantity to the SKU's stock.
+- **SHIPMENT**: Subtracts the event's quantity from the SKU's stock.
+- **CORRECTION**: Changes the effective quantity of the referenced
+  event to the correction's `quantity` value. If the referenced event
+  has been corrected before, the new correction supersedes the
+  previous one. The stock impact of a correction follows from the
+  change in effective quantity and the referenced event's type.
+
+## Event Format
+
+Each event in `events.jsonl` is a JSON object on a single line:
+
+| Field      | Description                                                 |
+|------------|-------------------------------------------------------------|
+| `id`       | Per-line sequence number in the JSONL file                  |
+| `event_id` | Logical event identifier (shared by redeliveries)           |
+| `type`     | One of `RECEIPT`, `SHIPMENT`, `CORRECTION`                  |
+| `sku`      | The SKU affected                                            |
+| `quantity` | The quantity (for CORRECTION, the new effective quantity)   |
+| `ref_id`   | For CORRECTION only: the `event_id` of the event to correct |
+
+## Deduplication
+
+Each unique `event_id` must be processed exactly once, regardless of
+how many times it appears in the event log. Events with the same
+`event_id` but different `id` values are redeliveries and should be
+skipped on second and subsequent appearances.
+
+## Commands
+
+```bash
+# Replay the entire event log and save result as new state
+python3 ledger.py replay
+
+# Rebuild state by incrementally re-processing all events
+python3 ledger.py ingest
+
+# Verify incremental state matches a full replay
+python3 ledger.py verify
+
+# Print a summary of current stock levels
+python3 ledger.py summary
+```
+
+## Consistency
+
+After processing any sequence of events, the incrementally maintained
+stock must equal the result of replaying the event log from scratch,
+and both must reflect correct stock per the business rules above.
+
+Running `python3 ledger.py verify` should report no mismatches between
+the incremental state and the replay result.
+<<<END>>>

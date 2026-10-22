@@ -1,0 +1,204 @@
+{
+  "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+  "key": "8472cb6052",
+  "stage": "done",
+  "calibration": "",
+  "arm": "treatment",
+  "updated": "2026-10-22T01:03:12",
+  "started": "2026-10-22T00:13:28",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261022-001328-349b",
+  "gen": {
+    "status": "ok",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/event-sourced-ledger-corrections",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261022-001328-349b",
+    "run_id": "an-event-sourced-inventory-ledger-that-a-20261022-001328-349b",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/README.md:66: states the rule a fault breaks: Running `python3 ledger.py verify` should report no mismatches between"
+        ]
+      },
+      {
+        "round": 1,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-oracle",
+            "seconds": 24.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-oracle/event-sourced-ledger-corrections__D6ER6R5",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-nop",
+            "seconds": 18.0,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010005-nop/event-sourced-ledger-corrections__78JHJ6M",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "Fix only the replay dedup to use event['event_id']. After this, both paths agree on all values, verify passes. But stock values for SKUs with double-corrected events (GADGET, THINGAMAJIG) are still wrong because both paths share the correction-delta bug.",
+            "verdict": "killed",
+            "failed_tests": 4,
+            "total_tests": 8,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010047-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "Fix only ledger.py's correction handler to use store.get_effective_qty(ref_id). Replay.py still uses original_event['quantity']. After running replay to rebuild state.json, the state is built by the still-buggy replay code, so state values are wrong. But verify compares this buggy state against a fresh buggy replay \u2014 both wrong the same way \u2014 so verify shows OK.",
+            "verdict": "killed",
+            "failed_tests": 7,
+            "total_tests": 8,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-an-event-sourced-inventory-ledger-that-a-20261022-001328-349b-r1-010047-mutant1"
+          }
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 32191,
+      "completion_tokens": 38247,
+      "cost_usd": 0.0
+    },
+    "seconds": 656.5,
+    "task_name": "afterquery/event-sourced-ledger-corrections"
+  },
+  "run_id": "event-sourced-ledger-corrections-20261022-010147-186c",
+  "harbor_pid": null,
+  "record": {
+    "name": "event-sourced-ledger-corrections",
+    "description": "Fix an event-sourced inventory ledger whose incremental stock diverges from a log replay due to bugs in correction and dedup handling.",
+    "difficulty": "hard",
+    "arm": "treatment",
+    "run_id": "event-sourced-ledger-corrections-20261022-010147-186c",
+    "features": {
+      "env_lines": 559,
+      "solve_lines": 23,
+      "faults": 2,
+      "fault_layers": 1
+    },
+    "verdict": "too_easy",
+    "passes": 4,
+    "n_valid": 4,
+    "n_invalid": 1,
+    "decision": "rejected",
+    "why": "too_easy (stopped early after 4 passes)",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/event-sourced-ledger-corrections",
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 4,
+      "n_invalid": 1,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__E7imHRR",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 87136,
+          "output_tokens": 7989,
+          "cost_usd": 0.00719423,
+          "episodes": 8,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__Lmvq2d9",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 42324,
+          "output_tokens": 3885,
+          "cost_usd": 0.003511292,
+          "episodes": 6,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__dZspAgU",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 63987,
+          "output_tokens": 3624,
+          "cost_usd": 0.0047384459999999995,
+          "episodes": 8,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__g9ksugv",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 71851,
+          "output_tokens": 3537,
+          "cost_usd": 0.0044684035,
+          "episodes": 8,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0/event-sourced-ledger-corrections__p5RamoX",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 58489,
+          "output_tokens": 4423,
+          "cost_usd": 0.00461024,
+          "episodes": 7,
+          "failed_tests": [],
+          "found_step": 1
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-event-sourced-ledger-corrections-20261022-010147-186c-0"
+      ],
+      "tokens": {
+        "input": 323787,
+        "output": 23458
+      },
+      "cost_usd": 0.0245,
+      "median_steps": 7.5,
+      "median_found_step": 1.0,
+      "early_stop": true,
+      "seconds": 85.1,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/event-sourced-ledger-corrections",
+    "topic": "an event-sourced inventory ledger that accepts late corrections and redelivered events, whose current stock differs from a replay of the full event log",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/an-event-sourced-inventory-ledger-that-a-20261022-001328-349b"
+  }
+}

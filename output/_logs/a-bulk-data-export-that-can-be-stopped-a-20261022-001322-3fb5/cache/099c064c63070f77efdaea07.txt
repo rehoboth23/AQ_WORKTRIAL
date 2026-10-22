@@ -1,0 +1,134 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md: the invariant is that a resumed export must produce byte-identical CSV output to an uninterrupted run, including header, all transaction rows with running balances, and the summary section.",
+    "Agent reads README.md: learns the CLI flags (--checkpoint, --resume, --limit), the CSV format (header, data rows, blank line, # Summary section with per-warehouse totals), and the sort order (warehouse_id, tx_date, id).",
+    "Agent explores the database schema and data: discovers 5 warehouses, ~217 transactions with interleaved numeric IDs across warehouses.",
+    "Agent reads audit_export.py (~300 lines): finds CheckpointManager, BalanceTracker, AuditExporter classes. Sees CheckpointManager.save() persists last_id and batch_count to JSON. Sees BalanceTracker has a balances dict but no serialization methods. Sees _write_csv_header() checks self._header_written flag. Sees _build_query(resume_after_id) produces WHERE id > ?. Sees _fetch_rows appends ORDER BY warehouse_id, tx_date, id. Sees the export loop updates self.last_id only inside the batch-save block (every 25 records). Sees the loop breaks on --limit without saving a checkpoint. Sees _write_csv_header has a self._header_written guard that looks like it prevents duplicates. Sees the summary is written unconditionally at loop exit. Sees the file is opened in append mode on resume.",
+    "Agent runs a full uninterrupted export, then runs with --checkpoint --limit 50 and --resume, and diffs the outputs. The diff immediately reveals: (a) balance column values differ for warehouses with pre-checkpoint transactions, (b) the CSV header appears twice, (c) a # Summary block from the interrupted run sits between the data and the new summary. Agent fixes the most visible issues first.",
+    "Agent fixes fault 2 (resume query): changes _build_query to accept and use (warehouse_id, tx_date, id) tuple comparison instead of WHERE id > ?, and updates checkpoint save/load to persist the sort-order key. Re-tests with --limit 50: balances still wrong (fault 1), header still duplicated (fault 3).",
+    "Agent fixes fault 3 (file structure on resume): on resume, sets self._header_written = True to skip the header; adds logic to truncate the file at the '# Summary' marker before appending. Re-tests with --limit 50: header and summary now correct, but balances for warehouses with pre-checkpoint history are still wrong (fault 1).",
+    "Agent fixes fault 1 (balances not in checkpoint): adds balance dict to CheckpointManager.save() and restores it into BalanceTracker on resume. Re-tests with --limit 50: everything matches. Agent declares victory.",
+    "Hidden test runs with --limit 37 (non-batch-boundary): self.last_id was only updated at batch boundaries (record 25), so the exit-point checkpoint records position from record 25, causing records 26-37 to be processed again on resume. Duplicate transaction IDs appear. Fault 4 is still present. Agent fails.",
+    "A more thorough agent would test with --limit 37 or --limit 1, discover the duplicate records, trace self.last_id's update pattern, and move the position tracking outside the batch-save block. Then they'd also add a checkpoint save at the --limit break AND at the end of a full run (before the summary write)."
+  ],
+  "too_easy_because": [
+    "Fault 1 is too discoverable: the BalanceTracker class has unused to_dict/from_dict methods that scream 'use me for checkpointing,' making the omission of balances from the checkpoint obvious by reading one class.",
+    "Fault 2 (WHERE id > ? vs ORDER BY sort-order) is visible within _build_query or between _build_query and _fetch_rows — a strong reader spots the mismatch in one pass through the query construction code.",
+    "Fault 3 (duplicate header/summary) as described ('header written unconditionally') is a readable omission in the export function's file-writing path, not an interaction bug where each side looks correct.",
+    "Fault 4 ('checkpoints only saved every BATCH_SIZE') is also a readable omission — the agent sees the checkpoint-save call inside an `if count % BATCH_SIZE == 0` block and the absence of any save at the --limit break.",
+    "Multiple faults are 'missing code' bugs (omissions) rather than interaction mismatches where each component is correct on its own and the defect lives in the seam between them.",
+    "The `nameable_fix` ('Checkpoint the balance state and resume using the sort-order tuple') is concise enough that an expert who can name it can apply it mechanically.",
+    "No test exercises the counterexample for fault 4's wrong_fix (full run then resume), so that partial-fix trap is unguarded.",
+    "Code size (~300 lines) is below the ~400-line minimum for realistic project feel."
+  ],
+  "spec": {
+    "name": "audit-export-resume-checkpoint",
+    "description": "Fix a checkpointable bulk export tool where resuming produces different output than an uninterrupted run.",
+    "difficulty": "hard",
+    "category": "debugging",
+    "tags": [
+      "sqlite",
+      "csv",
+      "checkpoint",
+      "resume",
+      "state-management"
+    ],
+    "expert_time_estimate_min": 40.0,
+    "junior_time_estimate_min": 100.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "A logistics company runs nightly inventory audit exports from a SQLite database to a CSV with running balances per warehouse. The export tool supports checkpoint/resume for long-running jobs, but staff report that when they stop a run and resume it later, the resulting CSV differs from what a single uninterrupted run would produce. The tool must be fixed so a resumed export is identical to an uninterrupted one.",
+    "environment_setup": "The Dockerfile builds a Python 3.12 image with /app as WORKDIR. setup_db.py creates /app/warehouse.db with ~217 transactions across 5 warehouses (ALPHA, BETA, CENTRAL, DELTA, GAMMA) over January 2024, with interleaved numeric IDs so the (warehouse_id, tx_date, id) sort order diverges significantly from numeric id order. setup_db.py is deleted after build. The main tool is /app/audit_export.py (~450 lines), a structured CLI tool with BalanceTracker, CheckpointManager, and AuditExporter classes. It reads transactions sorted by (warehouse_id, tx_date, id), computes running balances, writes CSV rows plus a summary section, and supports --checkpoint / --resume / --limit flags. A config.ini sets the batch size (default 25) and README.md documents usage and output format. Four bugs are planted, each in the interaction between components: (1) running balances are never included in the checkpoint JSON — CheckpointManager.save() persists last_id and batch_count but not the balance dict, and the resume path never restores balances into the tracker; BalanceTracker has no serialization helpers, so the agent must reason that balances are accumulated state requiring persistence; (2) the resume query filters by WHERE id > ? but the export sorts by (warehouse_id, tx_date, id), so records with lower ids that sort later are skipped and records with higher ids that sort earlier are duplicated — the WHERE clause is built in _build_query while the ORDER BY is applied separately in _fetch_rows, so each function reads as correct in isolation; (3) the CSV header write is guarded by self._header_written (an instance flag set after writing), and the summary is written at loop exit — on resume, a new exporter instance resets the flag to False, causing a duplicate header, and the old summary from the interrupted run is never removed before appending, causing a duplicate summary; each write path is internally consistent but neither accounts for pre-existing file content; (4) the export loop updates self.last_id only inside the batch-checkpoint block (every 25 records), so when --limit stops the loop at a non-batch record, the checkpoint saved at exit records the stale position from the last batch boundary, causing records between the batch boundary and the stop point to be reprocessed on resume.",
+    "instruction_summary": "Fix /app/audit_export.py so that a resumed export produces exactly the same output as an uninterrupted export. The tool reads from /app/warehouse.db and writes a CSV to a specified --output path. With --checkpoint, it saves progress; with --resume, it continues from the last checkpoint. A resumed export must produce a CSV with the same header, the same transaction rows in the same order with the same running-balance values, and the same summary section as a full uninterrupted run. The invariant must hold regardless of when the export is interrupted and resumed. The README at /app/README.md documents the tool's interface and output format.",
+    "solution_outline": [
+      "Add last_warehouse_id, last_tx_date, last_id fields to CheckpointManager.save and the checkpoint JSON; update self.last_wh, self.last_date, self.last_id on every record in the export loop (not just at batch boundaries)",
+      "Add a balances dict to the checkpoint JSON, populated from self.balance_tracker.balances; on resume, restore balances by assigning into the tracker",
+      "Change _build_query to accept (last_wh, last_date, last_id) and use WHERE (warehouse_id, tx_date, id) > (?, ?, ?) instead of WHERE id > ?",
+      "On resume: set self._header_written = True before writing any output; truncate the output file at the '# Summary' marker (and preceding blank line) to remove the old summary; skip writing the CSV header",
+      "Move self.last_wh/self.last_date/self.last_id updates outside the batch-save block so they track the current record on every iteration; save a checkpoint (with all fields including balances) just before writing the summary at the end of a full run, and also at the --limit break point"
+    ],
+    "test_plan": [
+      "test_full_export_correctness: Run uninterrupted export, parse CSV, independently compute expected running balances from DB by iterating in (warehouse_id, tx_date, id) order, assert every row's balance matches and summary matches final balances",
+      "test_resume_at_25: Run with --limit 25 --checkpoint, then --resume, parse result, compare every row and summary to a fresh full run",
+      "test_resume_at_50: Same with --limit 50",
+      "test_resume_at_37: Same with --limit 37 (non-batch-boundary) to catch stale-position fault",
+      "test_resume_at_1: Same with --limit 1 (boundary: first record) to catch missing exit-point checkpoint",
+      "test_full_run_then_resume: Run with --checkpoint (no --limit, full export), then --resume; compare to original full run — catches the case where no final checkpoint is saved before the summary write",
+      "test_no_duplicate_headers: After a resume run, count occurrences of the header string in the output file; must be exactly 1",
+      "test_no_duplicate_summary: After a resume run, count occurrences of '# Summary' in the output; must be exactly 1",
+      "test_no_duplicate_transaction_ids: After a resume run, collect all transaction IDs from the data rows; verify no ID appears more than once",
+      "test_no_missing_transaction_ids: After a resume run, verify every transaction ID from the database appears in the output",
+      "test_balance_values_after_resume: For each warehouse, compute the expected final balance from the DB and compare to the summary section of a resumed export"
+    ],
+    "anti_cheat": "The expected correct output is never stored anywhere in the image. The database contains only raw transactions; expected balances must be computed from first principles by querying the DB in (warehouse_id, tx_date, id) order. No .git history, backups, or reference implementations exist. The BalanceTracker class has no serialization methods — the agent must reason that balances are accumulated state needing persistence and implement the serialization themselves. Tests compute expected values independently from the database, so hard-coding any output cannot pass. Tests use --limit values that are NOT multiples of the batch size (1, 37) and also test full-run-then-resume, ensuring that fixes which only handle batch-boundary or --limit exits fail.",
+    "failure_modes": "An agent may fix the resume query (fault 2) and verify record counts match, but miss that balances restart from zero (fault 1). Or fix balances (fault 1) and test a warehouse whose first transaction is after the checkpoint, where balances happen to be correct, missing warehouses with pre-checkpoint history. Or fix both query and balances but not notice the duplicate header/summary (fault 3) because they only compare row values not the full file structure. Or fix faults 1-3 but test only at batch-aligned limits and miss that the checkpoint position is stale at non-batch stops (fault 4). Or fix fault 4 by saving a checkpoint at the --limit break but not at the end of a full run, passing all --limit tests but failing test_full_run_then_resume. Each partial fix passes the agent's own re-test for the case they checked, but fails a different interruption point, a different warehouse's balance, or a different exit path.",
+    "faults": [
+      {
+        "layer": "code",
+        "where": "CheckpointManager.save and AuditExporter.export resume path",
+        "what": "Running balances are never included in the checkpoint JSON; CheckpointManager.save() persists last_id and batch_count only, and the resume path never restores any balance state into the BalanceTracker",
+        "symptom": "After resuming, warehouse balances in the CSV restart from 0 instead of continuing from where they left off, producing wrong balance values for any warehouse that had transactions before the checkpoint",
+        "how_discovered": "Run a resume export and compare balance columns to a full run; or trace what state the export accumulates across records (the balances dict) versus what the checkpoint persists, noticing the gap",
+        "central": true,
+        "wrong_fix": "Add balances to the checkpoint save but forget to restore them on resume, or restore them only for the last-processed warehouse rather than all warehouses",
+        "counterexample": "Resume after checkpoint at record 50; check warehouse CENTRAL which had 10 pre-checkpoint transactions and 5 post-checkpoint transactions — its post-checkpoint balances will still start from 0 because the tracker was not reconstituted from the checkpoint data",
+        "why_normal_case_passes": "If the agent only checks a warehouse whose first transaction is after the checkpoint, its balance is correct even without restoration; the row count and transaction IDs are unaffected",
+        "caught_by_test": "test_balance_values_after_resume independently computes each warehouse's final balance from the DB and compares to the resumed export's summary; test_resume_at_37 also compares every row's balance column to the full run"
+      },
+      {
+        "layer": "code",
+        "where": "AuditExporter._build_query and _fetch_rows",
+        "what": "The resume query uses WHERE id > ? but the export processes records in ORDER BY warehouse_id, tx_date, id order; records with lower numeric ids that sort after the checkpoint position are skipped, and records with higher ids that sort before it are duplicated",
+        "symptom": "After resuming, some transaction rows are missing (warehouses that sort after the checkpoint warehouse but have low numeric ids) and some appear twice (records with high numeric ids from warehouses already processed)",
+        "how_discovered": "Run a resume export and diff transaction ID sets against a full run; or compare the WHERE clause key (id) to the ORDER BY key (warehouse_id, tx_date, id) across _build_query and _fetch_rows, noting they use different coordinate systems",
+        "central": true,
+        "wrong_fix": "Change the ORDER BY to match the resume filter (ORDER BY id) instead of changing the resume filter to match the sort order",
+        "counterexample": "With ORDER BY id, CENTRAL transactions would no longer be grouped together; the running balance for CENTRAL would interleave with other warehouses' transactions, producing completely wrong balance values throughout the entire file",
+        "why_normal_case_passes": "If the agent only counts total rows, the count might be correct due to duplicates offsetting missing records; if they check only one warehouse's presence, it might happen to be correct",
+        "caught_by_test": "test_no_duplicate_transaction_ids and test_no_missing_transaction_ids check the exact set of transaction IDs; test_full_export_correctness verifies balance computation against independent DB query"
+      },
+      {
+        "layer": "code",
+        "where": "AuditExporter.export file handling and _write_csv_header",
+        "what": "The CSV header write is guarded by self._header_written (an instance flag), and the summary is written at loop exit; on resume, a new exporter instance resets _header_written to False causing a duplicate header, and the old summary from the interrupted run remains in the file causing a duplicate summary section",
+        "symptom": "A resumed export CSV contains two header rows and two # Summary sections, making it unparseable as a standard CSV and producing wrong totals if both summaries are read",
+        "how_discovered": "Examine the full output file after a resume run; or trace the file-open mode (append) and write calls on the resume path, noticing that the new exporter instance has no memory of what the previous instance wrote",
+        "central": true,
+        "wrong_fix": "Set _header_written = True on resume to skip the header, but forget to truncate the old summary section from the interrupted run's output before appending new data",
+        "counterexample": "After resume, the file contains the correct single header and all transaction rows, but the old summary (with partial balances based on only the first N records) appears before the new summary, causing a double-summary; any parser reading both summaries gets wrong totals",
+        "why_normal_case_passes": "If the agent only checks data rows or reads only the last summary in the file, the duplicate goes unnoticed; row counts and balance columns in data rows are unaffected",
+        "caught_by_test": "test_no_duplicate_headers counts header string occurrences (must be 1); test_no_duplicate_summary counts '# Summary' occurrences (must be 1)"
+      },
+      {
+        "layer": "code",
+        "where": "AuditExporter.export loop position tracking and checkpoint timing",
+        "what": "The export loop updates self.last_id only inside the batch-checkpoint block (every 25 records), not on every record; when --limit stops the loop at a non-batch record (e.g. record 37), the checkpoint saved at exit records the stale position from the last batch boundary (record 25), causing records 26-37 to be reprocessed on resume",
+        "symptom": "After resuming from a --limit 37 run, records 26-37 appear twice in the output; after resuming from a full run (no --limit), records 201-217 appear twice because the final checkpoint before the summary was saved at batch boundary 200 with a stale position",
+        "how_discovered": "Test with a --limit that is NOT a multiple of the batch size (e.g. 37), then check for duplicate transaction IDs; or trace the self.last_id variable's assignment in the loop, noticing it only updates at batch boundaries",
+        "central": true,
+        "wrong_fix": "Save a checkpoint at the --limit break point but not at the end of a full (non-limited) run before the summary write",
+        "counterexample": "A full run (no --limit) that completes all 217 records; the user then runs --resume (e.g. accidentally or to verify idempotency). The last batch checkpoint was at record 200 with position from record 200, so resume reprocesses records 201-217, duplicating them",
+        "why_normal_case_passes": "If the agent only tests with --limit values, the --limit-break checkpoint fix works; the failure only appears when a full (non-limited) run is followed by a resume",
+        "caught_by_test": "test_resume_at_37 uses --limit 37 (not a multiple of 25) and checks for duplicate transaction IDs; test_full_run_then_resume runs a complete export with --checkpoint then --resume and compares to the original full run"
+      }
+    ],
+    "decoys": [],
+    "hidden_edge_cases": [
+      "A warehouse that has only one transaction, which falls exactly at the batch-boundary checkpoint position — its balance must be correctly preserved across resume",
+      "The very first transaction in sort order (resume at limit=1 must correctly checkpoint position and balance)",
+      "The very last transaction in sort order (full-run-then-resume must not reprocess it)",
+      "Multiple warehouses sharing the same tx_date as the checkpoint record, where some sort before and some after the checkpoint tuple in the (warehouse_id, tx_date, id) comparison — the tuple comparison must correctly include/exclude these",
+      "A warehouse with zero transactions before the checkpoint and multiple after — its balances should start from 0 correctly even without restoration, but other warehouses with pre-checkpoint history must not"
+    ],
+    "why_not_textbook": "No well-known bug matches this pattern. The sort-order vs primary-key mismatch in the resume query is specific to this tool's design choice of grouping by warehouse. The missing-checkpoint-state pattern (balances not persisted) is not a famous library bug but a domain-specific omission. The _header_written instance flag that resets across re-instantiation is a common Python pattern that looks correct in isolation. The stale position variable (updated only at batch boundaries) is a subtle timing interaction, not a textbook off-by-one. None of these reproduce a named CVE, blog post, or textbook exercise.",
+    "static_read": "Reading each function in isolation, everything looks reasonable: CheckpointManager.save() correctly persists the fields it receives; _build_query correctly filters by the id it's given; _fetch_rows correctly sorts by (warehouse_id, tx_date, id); _write_csv_header checks _header_written before writing; the batch-save block correctly saves a checkpoint every N records. The bugs only emerge when tracing data flow and object lifecycles: what state does the export accumulate (balances) vs what does the checkpoint capture (id, count)? The checkpoint captures an id; the export needs a (warehouse, date, id) tuple. The checkpoint omits balances; the export depends on them. The _header_written flag prevents duplicates within one run but not across runs. The position variable self.last_id is set inside the batch block; the exit-point code reads it assuming it's current. Each function is locally correct; the defects live in the seams between them.",
+    "crux": "A checkpoint for a stateful, ordered export must capture every piece of accumulated state the export depends on (running balances) using a resume key aligned with the export's sort order (tuple comparison, not just primary key), must update that key on every record (not just at periodic batch saves), and must save the checkpoint at every exit point. File-level state (existing header, existing summary) must also be accounted for when resuming in append mode.",
+    "challenge_kind": "resume_after_interruption",
+    "sequence_invariant": "Regardless of when an export is stopped and resumed, the final output CSV must contain exactly the same header, transaction rows (in the same order with the same balance values), and summary section as an uninterrupted run from the same database.",
+    "nameable_fix": "Persist full accumulated state and sort-order position at every exit point, align the resume query with the export sort order, and reconcile existing file content on resume",
+    "self_check_blind_spot": "After fixing the resume query (fault 2), the agent re-runs with --limit 50 (a batch-aligned value) and diffs against a full run. The diff reveals wrong balances and a duplicate header (faults 1 and 3). After fixing those and re-testing with --limit 50, everything matches. The agent declares victory. But self.last_id was only moved into the checkpoint-save block's update logic, so at non-batch-aligned stops (limit=37) or after a full run, the position is still stale. The natural re-test at limit=50 (a nice round batch-aligned number) passes, hiding fault 4.",
+    "reference_in_environment": "None. No .git history, backups, reference implementations, or project test files exist in the image. The BalanceTracker class has no serialization methods, so there is no code that already shows the correct handling of balance persistence. The README states the resume invariant but not how to achieve it. The config.ini sets the batch size but does not document its implications for checkpoint freshness.",
+    "interaction": "The central defects arise from interactions between: (A) CheckpointManager, which persists a resume key (last_id) and batch count but not balances, and (B) AuditExporter, which processes records in (warehouse_id, tx_date, id) order and accumulates balances in a BalanceTracker — each component is internally consistent, but the checkpoint's coordinate system (id) differs from the exporter's sort order (warehouse_id, tx_date, id), and the checkpoint omits the exporter's accumulated state (balances). A third interaction: _write_csv_header's _header_written flag and the summary-write logic assume they are operating on a fresh file, but the resume path opens the file in append mode with pre-existing content; the new exporter instance has no memory of what the previous instance wrote. A fourth: self.last_id is updated inside the batch-save block and read by the exit-point save, creating a temporal mismatch when the tool stops between batch boundaries — the batch-save code is correct (save every N records) and the exit-point save is correct (save on exit), but they share a variable that is only current at batch boundaries."
+  }
+}
+```

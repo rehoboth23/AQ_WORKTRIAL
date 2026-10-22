@@ -1,0 +1,67 @@
+<<<FILE environment/webhook_consumer/receiver.py>>>
+"""Webhook receiver for PayStream payment delivery notifications.
+
+PayStream retries failed deliveries. Each retry carries a new delivery_id
+but the same event_id as the original attempt.
+"""
+
+from webhook_consumer.db import get_connection
+
+
+class WebhookReceiver:
+    """Receives and validates incoming payment delivery notifications.
+
+    When a delivery arrives, the receiver checks for duplicates at two
+    levels:
+
+    1. delivery_id — an exact redelivery of the same notification.
+    2. event_id — a different delivery of the same logical event.
+
+    If neither check matches, the delivery is accepted into the pending
+    queue for processing.
+    """
+
+    def __init__(self, conn=None):
+        self.conn = conn or get_connection()
+
+    def receive_delivery(self, delivery_id, event_id, account_id, amount):
+        """Accept a delivery notification from the payment provider.
+
+        Args:
+            delivery_id: Unique identifier for this delivery attempt.
+            event_id: The logical event identifier (shared across retries).
+            account_id: The account this payment applies to.
+            amount: Payment amount (positive for charges, negative for refunds).
+
+        Returns:
+            dict with 'status' key: 'accepted', 'duplicate', or 'duplicate_event'.
+        """
+        # Check for exact delivery_id duplicate (same delivery redelivered)
+        existing = self.conn.execute(
+            "SELECT 1 FROM deliveries WHERE delivery_id = ?",
+            (delivery_id,)
+        ).fetchone()
+        if existing:
+            return {"status": "duplicate", "delivery_id": delivery_id}
+
+        # Check for event_id duplicate among pending deliveries.
+        # This prevents the same event from being queued twice
+        # while a previous delivery for it is still pending.
+        existing_event = self.conn.execute(
+            "SELECT 1 FROM deliveries WHERE event_id = ? AND status = 'pending'",
+            (event_id,)
+        ).fetchone()
+        if existing_event:
+            return {"status": "duplicate_event", "event_id": event_id}
+
+        # Insert the new delivery as pending
+        self.conn.execute(
+            "INSERT INTO deliveries "
+            "(delivery_id, event_id, account_id, amount, status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (delivery_id, event_id, account_id, amount)
+        )
+        self.conn.commit()
+
+        return {"status": "accepted", "delivery_id": delivery_id, "event_id": event_id}
+<<<END>>>
