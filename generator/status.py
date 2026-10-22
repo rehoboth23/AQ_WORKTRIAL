@@ -14,7 +14,7 @@ import re
 import subprocess
 import time
 
-from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, load_difficulty
+from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, N_RUNS, load_difficulty
 
 OUT = os.path.join(JOBS_DIR, "dashboard.html")
 # Optional focus: show only processes, runs, jobs and containers whose name or path contains
@@ -350,7 +350,7 @@ def eval_activity(limit: int = 6) -> list[tuple[str, str, str]]:
     return rows[:limit]
 
 
-def band_jobs() -> list[dict]:
+def band_jobs(since_sec: float = RECENT_SEC) -> list[dict]:
     out = []
     live = live_trials()
     for jd in [j for root in [JOBS_DIR] + _extra("jobs") for j in glob.glob(os.path.join(root, "*"))]:
@@ -359,7 +359,7 @@ def band_jobs() -> list[dict]:
         if not os.path.isdir(jd) or not (os.path.basename(jd).startswith("band-")
                                          or glob.glob(os.path.join(jd, "*", "agent", "trajectory.json"))):
             continue
-        if time.time() - os.path.getmtime(jd) > RECENT_SEC:
+        if time.time() - os.path.getmtime(jd) > since_sec:
             continue
         trials = []
         for td in sorted(glob.glob(os.path.join(jd, "*", ""))):
@@ -405,6 +405,8 @@ def band_verdict(trials: list[str]) -> str:
         return f"running: {passes} pass / {fails} fail so far"
     if not valid:
         return "invalid (no valid runs)"
+    if passes <= BAND_HIGH and valid < N_RUNS:  # stopped short: only "too easy" is certain without all 5 valid runs
+        return f"inconclusive ({passes}/{valid}, {len(trials) - valid} invalid)"
     verdict = "too easy" if passes > BAND_HIGH else "too hard" if passes < BAND_LOW else "learnable"
     note = f", {len(trials) - valid} invalid" if len(trials) > valid else ""
     return f"{verdict} ({passes}/{valid}{note})"
@@ -413,7 +415,16 @@ def band_verdict(trials: list[str]) -> str:
 def render() -> str:
     cfg = load_difficulty()
     procs, conts, rs, bands = processes(), containers(), runs(), band_jobs()
-    calib = [r for r in _jsonl(CALIBRATION_FILE) if r.get("verdict")][-8:]
+    calib = [r for r in _jsonl(CALIBRATION_FILE) if r.get("verdict")]
+    # Evals run with `harbor run` directly (hand-built tasks) never reach calibration.jsonl: add every
+    # finished band job of the last 24 h with the verdict its runs give.
+    for b in band_jobs(86400):
+        if any(t.startswith("running") for t in b["trials"]) or not b["trials"]:
+            continue
+        calib.append({"time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(b["mtime"])), "name": b["job"],
+                      "verdict": b["verdict"], "passes": sum(t == "pass" for t in b["trials"]),
+                      "note": "harbor job run outside the pipeline: " + " ".join(b["trials"])})
+    calib = sorted(calib, key=lambda r: str(r.get("time", "")))[-12:]
     today = time.strftime("%Y-%m-%d")
     eval_cost = sum(r.get("cost_usd") or 0 for r in _jsonl(CALIBRATION_FILE) if str(r.get("time", "")).startswith(today))
     gen_tokens = 0
