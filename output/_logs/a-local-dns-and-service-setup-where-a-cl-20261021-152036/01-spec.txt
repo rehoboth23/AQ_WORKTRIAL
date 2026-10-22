@@ -1,0 +1,104 @@
+```json
+{
+  "name": "stale-dns-intermittent-backend",
+  "description": "Diagnose and fix intermittent DNS resolution causing a client to sometimes reach a decommissioned backend due to stale hosts entries, duplicate dnsmasq address directives, wrong nsswitch order, and a faulty fallback in the healthcheck code.",
+  "difficulty": "hard",
+  "category": "system-administration",
+  "tags": ["dns", "dnsmasq", "nsswitch", "networking", "debugging", "configuration"],
+  "expert_time_estimate_min": 25,
+  "junior_time_estimate_min": 75,
+  "base_image": "debian:12-slim",
+  "scenario": "An internal platform team at a company runs a local dnsmasq resolver and two HTTP backends for the service api.internal.local. The service was recently migrated from a legacy backend (version 1.0 at 127.0.0.2:8080) to an active backend (version 2.0 at 127.0.0.1:8080). After the migration, the health check script intermittently connects to the wrong backend—sometimes getting version 2.0 (correct) and sometimes version 1.0 (wrong). The team's migration runbook and architecture docs are in /app/docs/, the service configs are spread across system files and /app/config/, and the health check and backend code live under /app/bin/ and /app/backends/. The intermittency must be eliminated so that api.internal.local always resolves to the active backend.",
+  "environment_setup": "The Dockerfile installs dnsmasq, dnsutils, python3, curl, and iproute2 on debian:12-slim. It copies a full project tree under /app/ (backends, bin, config, docs, monitoring) and sets up system config files: /etc/hosts with a stale entry (127.0.0.2 for api.internal.local), /etc/nsswitch.conf with 'hosts: dns files' (non-standard order), /etc/dnsmasq.conf reading conf-dir=/etc/dnsmasq.d/*.conf and addn-hosts=/etc/dnsmasq.hosts, and /etc/resolv.conf pointing to 127.0.0.1. The dnsmasq.d/ directory contains: 00-infra.conf (stale address=/api.internal.local/127.0.0.2 with a 'DO NOT EDIT' comment), active.conf (correct address=/api.internal.local/127.0.0.1), legacy.conf (stale address=/api.internal.local/127.0.0.2 with 'keep for rollback' comment), caching.conf (very short local-ttl=5, a decoy), and logging.conf (verbose logging, a decoy). The addn-hosts file /etc/dnsmasq.hosts correctly maps web.internal.local and db.internal.local to 127.0.0.1. The healthcheck script at /app/bin/healthcheck.py contains a FALLBACK_IPS dict mapping api.internal.local to 127.0.0.2 (wrong). The start script at /app/bin/start_services.sh passes a --address=/api.internal.local/127.0.0.2 flag to dnsmasq via a ROLLBACK_ADDR shell variable. Two Python HTTP backends exist: active_backend.py (binds 127.0.0.1:8080, returns version 2.0) and legacy_backend.py (binds 127.0.0.2:8080, returns version 1.0). Documentation in /app/docs/ describes the migration and architecture, with some claims that are outdated or misleading (e.g., MIGRATION.md claims /etc/hosts was updated when it wasn't). No services are running at container start; the agent must start them.",
+  "instruction_summary": "The service api.internal.local was migrated from a legacy backend (version 1.0) to an active backend (version 2.0), but health checks intermittently hit the wrong backend. Start services with /app/bin/start_services.sh, observe the issue with python3 /app/bin/healthcheck.py, and fix the DNS/resolver configuration so resolution is always correct. After the fix, all of these must hold: (1) dig +short api.internal.local @127.0.0.1 returns exactly 127.0.0.1 with no other IPs, (2) getent hosts api.internal.local returns only 127.0.0.1, (3) the health check consistently reports version 2.0 across 10 consecutive runs, (4) no configuration under /etc/dnsmasq.d/ or /etc/dnsmasq.conf maps api.internal.local to any IP other than 127.0.0.1, (5) web.internal.local and db.internal.local still resolve to 127.0.0.1 via dnsmasq, (6) the system's host resolution order follows the standard convention where local files are consulted before DNS, (7) the health check script's fallback IP for api.internal.local is not 127.0.0.2, (8) /app/bin/start_services.sh does not pass any address flag mapping api.internal.local to 127.0.0.2.",
+  "solution_outline": [
+    "Remove the stale api.internal.local entry from /etc/hosts and add the correct one: 127.0.0.1 api.internal.local",
+    "Delete /etc/dnsmasq.d/legacy.conf (stale address directive for 127.0.0.2)",
+    "Delete /etc/dnsmasq.d/00-infra.conf (second stale address directive for 127.0.0.2)",
+    "Fix /etc/nsswitch.conf: change 'hosts: dns files' to 'hosts: files dns'",
+    "Fix /app/bin/healthcheck.py: change FALLBACK_IPS['api.internal.local'] from '127.0.0.2' to '127.0.0.1'",
+    "Fix /app/bin/start_services.sh: remove the ROLLBACK_ADDR variable and its use in the dnsmasq command",
+    "Kill any running dnsmasq process and restart it cleanly (without stale command-line flags)",
+    "Start the active backend with python3 /app/backends/active_backend.py &"
+  ],
+  "test_plan": [
+    "test_dig_single_ip: run 'dig +short api.internal.local @127.0.0.1', assert exactly one IP returned and it is 127.0.0.1",
+    "test_getent_correct_ip: run 'getent hosts api.internal.local', assert output contains 127.0.0.1 and not 127.0.0.2",
+    "test_etc_hosts_no_stale: grep api.internal.local from /etc/hosts, assert 127.0.0.2 is absent and 127.0.0.1 is present if any entry exists",
+    "test_nsswitch_standard_order: grep '^hosts:' from /etc/nsswitch.conf, assert 'files' appears before 'dns' in the line",
+    "test_no_stale_dnsmasq_address: grep recursively for api.internal.local across /etc/dnsmasq.d/ and /etc/dnsmasq.conf, assert 127.0.0.2 is absent",
+    "test_other_hostnames_resolve: dig web.internal.local and db.internal.local @127.0.0.1, both must return 127.0.0.1",
+    "test_healthcheck_consistency: run python3 /app/bin/healthcheck.py 10 times, all must exit 0 and contain version 2.0 with no mention of 1.0",
+    "test_healthcheck_fallback: read /app/bin/healthcheck.py and verify no line references 127.0.0.2 in connection with 'api' (fallback IP must be correct)",
+    "test_start_script_no_stale_flag: read /app/bin/start_services.sh and verify no --address flag maps api.internal.local to 127.0.0.2"
+  ],
+  "anti_cheat": "The correct configuration is never stored in the image—only the broken configs exist. The MIGRATION.md documentation claims certain steps were completed (e.g., '/etc/hosts was updated') when they actually were not, so trusting the docs without verification leads astray. The decoy caching.conf with local-ttl=5 looks like it could cause intermittency (short cache = frequent re-resolution), but it is not the root cause. The 00-infra.conf has a 'DO NOT EDIT WITHOUT APPROVAL' comment that might deter modification, but it contains a stale address directive. Tests check actual DNS resolution behavior (dig, getent, HTTP responses) not just file contents, so superficial string edits without correct values will fail.",
+  "failure_modes": "An agent might fix only the obvious legacy.conf and restart dnsmasq, missing the hidden 00-infra.conf; DNS would still return both IPs. An agent might fix DNS but ignore /etc/hosts and nsswitch, leaving latent misconfiguration. An agent might 'fix' nsswitch to files-first before correcting /etc/hosts, making resolution consistently wrong instead of intermittent. An agent might stop the legacy backend instead of fixing DNS, which is wrong and still intermittent via DNS round-robin. An agent might trust the MIGRATION.md claim that /etc/hosts was already updated and not verify it. An agent might be deterred by the 'DO NOT EDIT' comment in 00-infra.conf.",
+  "faults": [
+    {
+      "layer": "data",
+      "where": "/etc/hosts",
+      "what": "Stale entry '127.0.0.2 api.internal.local' pointing to the decommissioned backend instead of 127.0.0.1",
+      "symptom": "Tools that resolve via /etc/hosts (e.g., getent with files-first nsswitch) get the wrong IP",
+      "how_discovered": "Running 'getent hosts api.internal.local' or 'cat /etc/hosts'; also the MIGRATION.md claims this was updated but checking reveals it wasn't",
+      "depends_on": null
+    },
+    {
+      "layer": "config",
+      "where": "/etc/dnsmasq.d/legacy.conf",
+      "what": "Stale address directive 'address=/api.internal.local/127.0.0.2' with a 'keep for rollback' comment",
+      "symptom": "dig returns both 127.0.0.1 and 127.0.0.2 for api.internal.local, causing intermittent connections",
+      "how_discovered": "Running 'dig +short api.internal.local @127.0.0.1' shows multiple IPs; listing /etc/dnsmasq.d/ and reading legacy.conf",
+      "depends_on": null
+    },
+    {
+      "layer": "config",
+      "where": "/etc/dnsmasq.d/00-infra.conf",
+      "what": "Second stale address directive 'address=/api.internal.local/127.0.0.2' with a 'DO NOT EDIT' comment making it look authoritative",
+      "symptom": "After fixing legacy.conf, DNS still returns both IPs because this file also provides 127.0.0.2",
+      "how_discovered": "After removing legacy.conf and restarting dnsmasq, dig still returns two IPs; must re-examine all files in /etc/dnsmasq.d/",
+      "depends_on": 1
+    },
+    {
+      "layer": "config",
+      "where": "/etc/nsswitch.conf",
+      "what": "Hosts resolution order is 'dns files' instead of the standard 'files dns', meaning DNS is consulted before /etc/hosts",
+      "symptom": "Even with correct /etc/hosts, the system resolver queries DNS first; if DNS is misconfigured, the stale DNS result wins; non-standard order violates policy",
+      "how_discovered": "Checking /etc/nsswitch.conf when verifying resolver behavior; the instruction states the standard convention must be followed",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/bin/healthcheck.py",
+      "what": "FALLBACK_IPS dictionary maps 'api.internal.local' to '127.0.0.2' (legacy IP) as a fallback when DNS resolution fails",
+      "symptom": "If dnsmasq is temporarily down, the health check connects to the legacy backend instead of failing or using the correct IP",
+      "how_discovered": "Reading the healthcheck.py source code; the fallback is only exercised when DNS is unavailable, so it is a hidden edge case not visible from the intermittent symptom",
+      "depends_on": null
+    },
+    {
+      "layer": "runtime",
+      "where": "/app/bin/start_services.sh",
+      "what": "The script passes ROLLBACK_ADDR='--address=/api.internal.local/127.0.0.2' as a command-line flag to dnsmasq, which overrides config file address directives",
+      "symptom": "Even after fixing config files, starting services via the script re-introduces the stale address; dnsmasq command-line flags override file settings",
+      "how_discovered": "Reading start_services.sh; the ROLLBACK_ADDR variable and its use in the dnsmasq command line; the instruction states the script must not pass stale address flags",
+      "depends_on": null
+    }
+  ],
+  "decoys": [
+    "/etc/dnsmasq.d/caching.conf sets local-ttl=5 (very short), which looks like it could cause inconsistent behavior by forcing frequent re-resolution, but it is not the root cause of intermittency",
+    "/etc/dnsmasq.d/logging.conf enables verbose query logging, which looks like debugging was recently done but is not the problem",
+    "/app/docs/MIGRATION.md claims '/etc/hosts was updated to point api.internal.local to 127.0.0.1'—this is false and might make the agent skip verifying /etc/hosts",
+    "/app/config/hosts is a copy of the intended dnsmasq addn-hosts content but is NOT referenced by any dnsmasq config—it looks relevant but is unused",
+    "/app/monitoring/collect_metrics.py performs DNS timing measurements and has threshold alerts, suggesting performance issues, but the problem is correctness not speed"
+  ],
+  "hidden_edge_cases": [
+    "Fallback IP in healthcheck.py: when DNS is temporarily unavailable (dnsmasq down), the fallback should point to 127.0.0.1 not 127.0.0.2—this is not visible from normal operation",
+    "nsswitch order: even if DNS returns the correct IP after dnsmasq is fixed, the non-standard 'dns files' order means /etc/hosts stale entries would take effect if dnsmasq fails, and it violates system policy",
+    "start_services.sh command-line override: even after all config files are correct, the ROLLBACK_ADDR flag in the startup script re-introduces the stale address if the script is used to restart services",
+    "Other hostnames (web.internal.local, db.internal.local) must still resolve correctly after changes—removing the wrong dnsmasq config file could break these if done carelessly",
+    "The 00-infra.conf file is masked by legacy.conf: both provide the same stale address, so removing only legacy.conf appears to not fix the problem, requiring deeper investigation"
+  ],
+  "why_not_textbook": "This is not a simple 'wrong IP in /etc/hosts' fix. The intermittency arises from the interaction between dnsmasq serving multiple A records (from two separate stale address directives in different config files, one disguised with a 'DO NOT EDIT' header), a stale /etc/hosts entry, a non-standard nsswitch resolver order, a code-level fallback IP, and a startup script that overrides config via command-line flags. No single well-known bug pattern covers this; the agent must understand the full DNS resolution chain (nsswitch → files/dns → dnsmasq sources → address directives vs hosts files vs CLI flags) and fix every layer. The duplicate stale directive in 00-infra.conf is specifically designed to be discovered only after fixing the more obvious legacy.conf, creating a chained fault that punishes incomplete investigation.",
+  "expected_agent_steps": 20
+}
+```

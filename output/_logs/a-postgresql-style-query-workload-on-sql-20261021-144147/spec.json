@@ -1,0 +1,43 @@
+{
+  "name": "sqlite-view-null-timezone-report",
+  "description": "Fix three cascading bugs (NULL handling in WHERE and arithmetic, wrong timezone offset direction) across layered SQL views that produce an incorrect daily regional sales report in SQLite.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": [
+    "sqlite",
+    "sql-views",
+    "null-handling",
+    "timezone",
+    "cascading-bugs"
+  ],
+  "expert_time_estimate_min": 25.0,
+  "junior_time_estimate_min": 60.0,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A startup migrated their PostgreSQL analytics pipeline to SQLite to cut costs. The daily regional sales report (v_daily_regional_summary view) now produces wrong numbers. The original engineer left, and the migration notes mention syntax changes made during the port. Three bugs across three layered views compound to corrupt the final report: a NULL-excluding WHERE clause drops active orders, NULL arithmetic nullifies revenue figures, and a timezone offset is negated in the wrong direction\u2014masked by a misleading code comment. The agent must examine the view definitions, understand the data and business rules, identify all three bugs, and fix the views in correct dependency order.",
+  "environment_setup": "Ubuntu 24.04 with sqlite3 installed. A database at /app/data/analytics.db contains tables: regions (id, name, utc_offset_hours using standard convention positive=east), customers (id, name, region_id, created_at in UTC), and orders (id, customer_id, total_amount, discount_amount nullable, status nullable with CHECK constraint, created_at in UTC). 20 orders across 5 regions with deliberately placed NULL statuses, NULL discounts, and timestamps near midnight UTC to expose timezone bugs. Three buggy views: v_active_orders uses WHERE status != 'cancelled' (excludes NULLs), v_order_revenue computes total_amount - discount_amount (yields NULL when discount is NULL), v_daily_regional_summary uses a CTE with date(created_at, (0 - utc_offset_hours) || ' hours') and a misleading comment saying 'subtract offset' \u2014 you actually ADD the offset to convert UTC to local. A migration_notes.md file at /app/migration_notes.md mentions replacing IS DISTINCT FROM with !=, and AT TIME ZONE with date() modifiers, providing context but not the fix. The init SQL is deleted after build so the agent can only inspect views via .schema.",
+  "instruction_summary": "Fix three SQL views in /app/data/analytics.db so the daily regional sales report (v_daily_regional_summary) is correct. Business rules: (1) Active orders = all except explicitly cancelled; NULL status orders are active. (2) Net revenue = total_amount - discount_amount; NULL discount means 0 discount. (3) Date grouping uses LOCAL date: add the region's utc_offset_hours (standard sign convention, positive=east) to the UTC timestamp. The three views (v_active_orders \u2192 v_order_revenue \u2192 v_daily_regional_summary) are layered. Fix must be applied directly to the database file. Verification queries: SELECT COUNT(*) FROM v_active_orders should return 18; SELECT COUNT(*) FROM v_order_revenue WHERE net_revenue IS NULL should return 0; US_Pacific orders at 03:00 UTC must appear under 2024-03-14; Asia_Tokyo orders at 20:00 UTC must appear under 2024-03-16.",
+  "solution_outline": [
+    "Drop the three views in reverse dependency order: v_daily_regional_summary, then v_order_revenue, then v_active_orders",
+    "Recreate v_active_orders with WHERE o.status IS NULL OR o.status != 'cancelled' to include NULL-status orders",
+    "Recreate v_order_revenue with total_amount - COALESCE(ao.discount_amount, 0) AS net_revenue so NULL discounts yield correct revenue",
+    "Recreate v_daily_regional_summary using date(vor.created_at, r.utc_offset_hours || ' hours') in the CTE (add offset, don't negate it) and matching GROUP BY expression",
+    "Verify the corrected views produce the expected query results"
+  ],
+  "test_plan": [
+    "test_includes_null_status: SELECT COUNT(*) FROM v_active_orders WHERE status IS NULL must equal 5 (orders 3,7,11,15,18)",
+    "test_excludes_cancelled: SELECT COUNT(*) FROM v_active_orders WHERE status='cancelled' must equal 0",
+    "test_total_active_count: SELECT COUNT(*) FROM v_active_orders must equal 18",
+    "test_no_null_revenue: SELECT COUNT(*) FROM v_order_revenue WHERE net_revenue IS NULL must equal 0",
+    "test_null_discount_revenue: For orders with NULL discount, net_revenue must equal total_amount (check via COUNT of mismatches = 0)",
+    "test_specific_order: Order 1 (total=100, discount=NULL) must have net_revenue = 100.0",
+    "test_pacific_early_utc: US_Pacific report_date='2024-03-14' must exist with order_count=1, total_revenue=100.0 (order at 03:00 UTC, offset -8 \u2192 local 19:00 prev day)",
+    "test_eastern_early_utc: US_Eastern report_date='2024-03-14' must exist with order_count=1, total_revenue=110.0 (order at 04:00 UTC, offset -5 \u2192 local 23:00 prev day)",
+    "test_tokyo_cross_date: Asia_Tokyo must have two date groups: 2024-03-15 (count=2, total=550.0) and 2024-03-16 (count=2, total=600.0)",
+    "test_central_late_utc: EU_Central report_date='2024-03-16' must exist with order_count=1, total_revenue=110.0 (order at 23:00 UTC, offset +1 \u2192 local 00:00 next day)",
+    "test_london_summary: EU_London (offset 0) on 2024-03-15 must have order_count=4, total_revenue=325.0, avg_revenue=81.25",
+    "test_total_summary_orders: SUM(order_count) across all rows in v_daily_regional_summary must equal 18",
+    "test_pacific_march_15: US_Pacific on 2024-03-15 must have order_count=2, total_revenue=405.0"
+  ],
+  "anti_cheat": "The init_db.sql is deleted after the Docker build, so the agent cannot read the original view-creation script. The correct view definitions are not stored anywhere in the image. The agent must discover the bugs by inspecting the live database schema (.schema or sqlite_master) and cross-referencing with the business rules in instruction.md. Tests check actual computed query results against known-good values derived from first-principles calculation of the data, not string matching. An agent cannot cheat by inserting hardcoded rows or modifying table data \u2014 the views must produce correct results for the existing data.",
+  "failure_modes": "Agent fixes only 1 or 2 of the 3 bugs: the layered view architecture means fixing v_active_orders alone still leaves NULL revenues and wrong dates; fixing only the NULL bugs still leaves wrong date grouping. Agent trusts the misleading code comment 'Adjust UTC to local time by subtracting offset' and keeps the wrong sign. Agent drops views in wrong dependency order (e.g., dropping v_active_orders before v_order_revenue) causing a foreign-view reference error. Agent tries CREATE OR REPLACE VIEW which SQLite does not support, leading to SQL errors. Agent fixes the SELECT clause timezone expression but forgets the GROUP BY copy of the same expression. Agent uses COALESCE(status,'') != 'cancelled' which works but might not match if they accidentally use a different pattern that has edge cases."
+}

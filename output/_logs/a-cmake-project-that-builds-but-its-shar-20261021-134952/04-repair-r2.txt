@@ -1,0 +1,14 @@
+The Docker build fails because `render.c` can't find `math_ops.h` — it's in `/app/libmath/` but the include path only has `/app`. The same issue applies to `render.h` for `main.c`. I need to add the subdirectories to the PUBLIC include directories so they propagate through the link chain.
+
+<<<FILE environment/src/libmath/CMakeLists.txt>>>
+add_library(math SHARED math_ops.c)
+target_include_directories(math PUBLIC ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/libmath)
+target_compile_definitions(math PRIVATE USE_SINGLE_PRECISION)
+target_link_libraries(math PRIVATE m)
+<<<END>>>
+
+<<<FILE environment/src/librender/CMakeLists.txt>>>
+add_library(render SHARED render.c)
+target_include_directories(render PUBLIC ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/librender)
+target_link_libraries(render PUBLIC math)
+<<<END>>>

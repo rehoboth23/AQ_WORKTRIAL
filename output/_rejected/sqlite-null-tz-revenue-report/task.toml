@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/sqlite-null-tz-revenue-report"
+description = "Fix a migrated PostgreSQL-to-SQLite analytics pipeline that produces incorrect monthly revenue reports after migration."
+keywords = [ "sqlite", "sql-views", "null-handling", "timezone", "config-error", "data-pipeline",]
+
+[metadata]
+difficulty = "hard"
+category = "debugging"
+tags = [ "sqlite", "sql-views", "null-handling", "timezone", "config-error", "data-pipeline",]
+expert_time_estimate_min = 35.0
+junior_time_estimate_min = 90.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

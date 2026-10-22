@@ -1,0 +1,13 @@
+The Petrify static site generator builds without errors but the generated site in `dist/` has several problems:
+
+1. **Blog posts appear in the wrong order** on the homepage and in the RSS feed — the most recent post by publication date should appear first, but December 2024 posts are not at the top.
+
+2. **CSS and JS files fail to load** — the generated HTML references asset filenames that don't exist in the output directory. Only the hashed versions of those files exist in `dist/css/` and `dist/js/`, but the HTML points to the unhashed originals.
+
+3. **Navigation links from nested pages are broken** — clicking nav links from deep pages (e.g. under `docs/`) takes you to the wrong destination. The homepage link in particular does not lead to the actual site root from every page.
+
+Fix the generator so the produced site in `dist/` is correct:
+- Blog posts on the homepage and in `dist/feed.xml` are in reverse-chronological order by publication date (format: `DD Month YYYY`)
+- Every `<link href>` and `<script src>` for CSS/JS in every HTML file references a hashed filename (8-char hex, e.g. `main.abc12345.css`), and each referenced file actually exists in `dist/`
+- Navigation links in `<nav>` resolve to the correct destination from every page regardless of depth, including a working link to the site root from every page
+- The build must complete without errors

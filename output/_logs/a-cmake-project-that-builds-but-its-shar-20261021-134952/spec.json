@@ -1,0 +1,33 @@
+{
+  "name": "cmake-shared-lib-abi-mismatch",
+  "description": "A CMake project that builds cleanly but crashes at runtime because a private compile definition in one shared library changes the Vec3 struct layout, creating an ABI mismatch with a dependent library.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": [
+    "cmake",
+    "abi",
+    "shared-library",
+    "struct-layout",
+    "c",
+    "compile-definitions"
+  ],
+  "expert_time_estimate_min": 15.0,
+  "junior_time_estimate_min": 50.0,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A colleague built a CMake-based geometry processing library and it compiles and links without a single error or warning. But when they run the test program, the computed lighting and triangle area values are complete garbage. They're stumped because the build is perfectly clean. They asked you to figure out what's wrong and fix it. The project lives at /app and the build is already in /app/build.",
+  "environment_setup": "Ubuntu 24.04 with cmake, gcc, and make. The /app directory contains a CMake project with two shared libraries (libmath, librender) and a main program. types.h defines Vec3 conditionally: double by default, float if USE_SINGLE_PRECISION is defined. libmath/CMakeLists.txt has a PRIVATE compile definition USE_SINGLE_PRECISION that changes Vec3 to {float,float,float} (12 bytes) inside libmath only, while librender and main.c see Vec3 as {double,double,double} (24 bytes). The project is pre-built in /app/build so the agent sees a successful build that produces wrong runtime output.",
+  "instruction_summary": "The project at /app builds successfully but ./build/geom_app produces wrong results. The diffuse lighting coefficient for the given inputs should be approximately 0.577350 and the right-triangle area should be exactly 0.5. Diagnose the problem, fix it, rebuild the project (clean the build directory first), and verify the program prints correct values. The fix must ensure the two shared libraries have a consistent view of the Vec3 type.",
+  "solution_outline": [
+    "Identify that libmath/CMakeLists.txt contains 'target_compile_definitions(math PRIVATE USE_SINGLE_PRECISION)' which is not present in librender's or the top-level CMakeLists.txt",
+    "Recognize that USE_SINGLE_PRECISION changes scalar_t from double to float in types.h, altering the Vec3 struct size from 24 to 12 bytes",
+    "Remove or neutralize the PRIVATE compile definition from libmath/CMakeLists.txt so all components use the same Vec3 layout",
+    "Clean the build directory and rebuild the project from scratch",
+    "Run geom_app to verify correct output"
+  ],
+  "test_plan": [
+    "test_program_output: Delete /app/build, run cmake and make to rebuild from scratch, run /app/build/geom_app, assert exit code is 0 and stdout contains 'ALL TESTS PASSED' and 'Diffuse: 0.577' (within tolerance) and 'Area: 0.500'",
+    "test_abi_consistency: Compile a small dlopen-based C program that calls math_get_vec3_size() from libmath.so and render_get_vec3_size() from librender.so, assert both return the same value (24 for double or 12 for float \u2014 either is acceptable as long as they match)"
+  ],
+  "anti_cheat": "The expected output values are not stored anywhere in the image. Hardcoding printf values in main.c won't help because test_abi_consistency independently verifies that both shared libraries agree on the Vec3 layout by calling sizeof-returning functions via dlopen/dlsym \u2014 this cannot be faked by editing main.c. The tests rebuild from scratch, so binary-level tampering is overwritten. The solve.sh performs a sed-based fix on the CMakeLists.txt and a clean rebuild, which is the correct expert-level repair.",
+  "failure_modes": "An agent might waste time investigating symbol visibility with nm/readelf, since the symptoms resemble a visibility problem. Another common mistake is adding USE_SINGLE_PRECISION to librender and main.c but not removing it from libmath \u2014 this still leaves a PRIVATE definition that could confuse future builds. An agent might also try to fix the computation logic in math_ops.c or render.c, not realizing the code is correct but receives garbage data due to the struct layout mismatch. Simply running the program without rebuilding after a source change will also fail."
+}

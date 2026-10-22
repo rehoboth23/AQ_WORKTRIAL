@@ -1,0 +1,29 @@
+{
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-sqlite-migration-corruption",
+  "verdict": "learnable",
+  "passes": 1,
+  "n_valid": 1,
+  "n_invalid": 0,
+  "trials": [
+    {
+      "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-smoke-133016-0/fix-sqlite-migration-corruption__BZacyex",
+      "outcome": "pass",
+      "detail": "",
+      "reward": 1.0,
+      "input_tokens": 25700,
+      "output_tokens": 3887,
+      "cost_usd": 0.0020586313,
+      "episodes": 6
+    }
+  ],
+  "jobs": [
+    "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-smoke-133016-0"
+  ],
+  "tokens": {
+    "input": 25700,
+    "output": 3887
+  },
+  "cost_usd": 0.0021,
+  "seconds": 72.7,
+  "error": ""
+}

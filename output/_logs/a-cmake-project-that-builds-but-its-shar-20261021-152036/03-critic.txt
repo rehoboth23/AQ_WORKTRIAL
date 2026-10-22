@@ -1,0 +1,114 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md → learns aqreport produces incorrect AQI values; formulas and filter specs are given; goal is correct output for all stations including missing altitude.",
+    "Agent runs ./build/src/aqreport/aqreport data/stations.csv data/readings.csv → program runs but all AQI values are near-zero (e.g., ozone shows 0.00 instead of ~88). No crash, no error message naming any symbol.",
+    "Agent computes expected values from the formula and notices output is wildly wrong. Suspects data flow issue in the computation pipeline.",
+    "Agent greps for PollutantFilter definition → finds TWO headers: src/compat/include/aqcore/filters.h (float apply_factor) and src/core/include/aqcore/filters.h (double apply_factor). The compat version shadows the real one.",
+    "Agent checks src/aqreport/CMakeLists.txt include path order → sees compat/include listed BEFORE core/include, so the stale compat header is picked up. The float vs double type difference causes struct ABI mismatch: aqreport writes float bytes, libaqcore reads them as double, interpreting them as denormalized near-zero values.",
+    "Agent fixes include path order in src/aqreport/CMakeLists.txt (moves compat after core, or removes compat include entirely). Rebuilds.",
+    "Agent runs program again → values are no longer near-zero, but some are still ~10-15% off (e.g., S006 pm25 shows ~194 instead of ~222). Fault 0 is fixed; Fault 1 is now visible.",
+    "Agent computes expected values precisely from the documented normalize formula → notices consistent ~10-15% discrepancy for high-value stations.",
+    "Agent greps for 'normalize' or 'AQ_USE_FAST_MATH' in source → finds math::normalize() in math_utils.h has a conditional #ifdef AQ_USE_FAST_MATH that uses scaling constant 0.001 instead of 0.0002.",
+    "Agent finds AQ_USE_FAST_MATH=1 defined only in src/analysis/CMakeLists.txt → libaqanalysis compiles with the wrong constant while libaqcore uses the correct one. With CMAKE_VISIBILITY_INLINES_HIDDEN, each DSO has its own inline copy. Removes the definition. Rebuilds.",
+    "Agent runs program again → most values now match expected, but S004 (empty altitude) still shows wrong AQI (e.g., ozone ~68 instead of ~72). Fault 1 is fixed; Fault 2 is now visible.",
+    "Agent inspects data/stations.csv → sees S004 has an empty altitude field.",
+    "Agent traces altitude parsing in src/core/src/station.cpp → finds empty string is converted to 0.0 instead of NaN. altitude_correction(exp((0-500)/8500)≈0.943) differs from NaN case (correction=1.0).",
+    "Agent fixes empty-string parsing to use std::numeric_limits<double>::quiet_NaN() instead of 0.0. Rebuilds.",
+    "Agent runs program → all values now match expected output. All three faults resolved."
+  ],
+  "too_easy_because": [
+    "Fault 1 (original): The runtime symbol lookup error directly names the mangled symbol _ZN2aq11compute_aqiERKNS_15PollutantFilterEdd, which after demangling points unambiguously to compute_aqi — violating the rule that error messages must not name the faulty symbol.",
+    "Fault 1 (original) can be identified within the agent's first 3 commands: run program (1), see symbol name in error (2), demangle (3). The agent then knows exactly which function and header to inspect.",
+    "The crash from Fault 1 is too dramatic and informative — it immediately tells the agent exactly what class of problem to look for (missing symbol export), narrowing the search space dramatically."
+  ],
+  "spec": {
+    "name": "aqmon-abi-pipeline-debug",
+    "description": "Diagnose and fix a CMake C++ project whose air quality monitoring tool produces wrong output due to a stale compat header causing struct ABI mismatch, inconsistent compile definitions across shared library boundaries, and a data parsing edge case for missing altitude",
+    "difficulty": "hard",
+    "category": "debugging",
+    "tags": [
+      "cmake",
+      "c++",
+      "abi",
+      "shared-library",
+      "odr-violation",
+      "data-parsing",
+      "include-path"
+    ],
+    "expert_time_estimate_min": 35.0,
+    "junior_time_estimate_min": 90.0,
+    "base_image": "ubuntu:24.04",
+    "scenario": "The aqmon project builds an air quality monitoring tool (aqreport) from two shared libraries: libaqcore (data types, filters, AQI math) and libaqanalysis (processing pipeline, report generation). The project compiles and links without errors, but running aqreport produces wrong AQI values — some are near-zero when they should be large, others are subtly off, and one station with missing altitude data always gets incorrect scores. The developer needs all three issues resolved so the tool produces correct output.",
+    "environment_setup": "A CMake C++17 project (~1200 lines across 15+ files) with two shared libraries and one CLI executable. (1) src/aqreport/CMakeLists.txt lists src/compat/include BEFORE src/core/include in target_include_directories; src/compat/include/aqcore/filters.h is a stale legacy header where apply_factor is declared as float instead of double (the real src/core/include/aqcore/filters.h has double). aqreport compiles against the compat layout, writing float bytes for apply_factor; libaqcore.so was compiled with the real header, reading those bytes as double — interpreting the float bit pattern as a denormalized near-zero value. This produces near-zero AQI for all pollutants. The compat directory also contains aqcore/config.h that IS correctly synced with the real version, making the compat layer look partially legitimate. (2) src/analysis/CMakeLists.txt defines AQ_USE_FAST_MATH=1, but libaqcore does not; the inline function math::normalize() in aqcore/math_utils.h uses a different (wrong) scaling constant (0.001 vs 0.0002) under that macro; with CMAKE_VISIBILITY_INLINES_HIDDEN=ON each DSO uses its own copy, so libaqanalysis computes with the fast-wrong formula. (3) In station.cpp, empty altitude fields from CSV are parsed as 0.0 instead of NaN; altitude_correction(exp((0-500)/8500)≈0.943) differs from the NaN case (1.0), so stations with missing altitude get wrong AQI. Decoys: a legacy Makefile in the root directory, an unused AQ_ENABLE_EXPERIMENTAL macro in aqcore/config.h, the CMAKE_VISIBILITY_INLINES_HIDDEN and CMAKE_CXX_VISIBILITY_PRESET=hidden settings in AqmonCommon.cmake (they contribute to Fault 2's mechanism but are not the bug to fix), and the correctly-synced compat config.h. The project is pre-built in /app/build; LD_LIBRARY_PATH is set.",
+    "instruction_summary": "The aqreport tool produces incorrect AQI values. Fix it so it produces correct CSV output for all stations including those with missing altitude. Usage: ./build/src/aqreport/aqreport data/stations.csv data/readings.csv. Output format: station_id,pollutant,aqi,quality_grade. The instruction specifies the exact AQI computation formula (normalize = value/(1+value*0.0002), altitude_correction = exp((alt-500)/8500), NaN altitude → correction 1.0, clamp 0–500), filter specifics (ozone: apply×1000 score×1.5, pm25: identity apply score×2.0, no2: apply×0.5 score×1.8, so2: apply×2.0 score×1.2), and quality grade thresholds (0-50 Good, 51-100 Moderate, 101-150 Unhealthy for Sensitive, 151-200 Unhealthy, 201-300 Very Unhealthy, 301-500 Hazardous). Data files at data/stations.csv and data/readings.csv.",
+    "solution_outline": [
+      "Fix include path order in src/aqreport/CMakeLists.txt: move src/compat/include after src/core/include (or remove the compat include entirely) so the real filters.h is used",
+      "Remove the AQ_USE_FAST_MATH=1 definition from src/analysis/CMakeLists.txt",
+      "Fix the altitude parsing in src/core/src/station.cpp to use quiet_NaN() for empty strings instead of 0.0",
+      "Rebuild the project: cd /app/build && cmake .. && cmake --build . -- -j$(nproc)"
+    ],
+    "test_plan": [
+      "test_program_runs: run aqreport with the data files, assert return code 0 and no crash or error in stderr",
+      "test_output_format: parse stdout CSV, assert header is correct and at least 14 data rows exist",
+      "test_aqi_values: for every (station, pollutant) pair, compute expected AQI in Python using the precise normalize formula (scaling=0.0002) and altitude_correction, compare with program output within 0.01 tolerance",
+      "test_missing_altitude: specifically check S004 (empty altitude in CSV) has AQI computed with correction=1.0 not correction=exp(-500/8500)≈0.943",
+      "test_quality_grades: verify each record's quality_grade matches the grade for its computed AQI per the documented thresholds",
+      "test_no_fast_math_residual: check a high-value station like S006 pm25 produces precise result (~222 with correct normalize) not fast result (~194 with wrong scaling 0.001)",
+      "test_no_struct_mismatch: check that ozone (apply=1000, score=1.5) produces correct AQI — if the float/double mismatch were present, apply_factor would be read as a denormalized near-zero double, producing AQI≈0 instead of the correct value"
+    ],
+    "anti_cheat": "The expected output values are not stored anywhere in the image. The correct AQI values must be computed from the specified formulas and input data. A superficial fix (e.g., hardcoding values) would fail if data changes. Fixing only one or two faults leaves the others active: fixing only Fault 0 leaves Faults 1 and 2 producing wrong values; fixing only Faults 0 and 1 leaves S004 wrong; fixing Faults 1 and 2 but not Fault 0 leaves near-zero values from the float/double ABI mismatch. Changing CMAKE_CXX_VISIBILITY_PRESET to default does not fix any of the three faults. Simply changing the compat header's float to double without fixing the include path order might work by accident but is a fragile fix; the proper fix is correcting the include path.",
+    "failure_modes": [
+      "An agent might find the compat header and think it's just a deprecated artifact not actually in use, not realizing the include path order causes it to shadow the real header",
+      "An agent might change float to double in the compat header instead of fixing the include path order — this fixes the ABI mismatch but leaves aqreport dependent on a stale compat header",
+      "An agent might find AQ_USE_FAST_MATH but assume it's intentional for performance and not remove it",
+      "An agent might fix altitude=0 as NaN but not realize the altitude_correction formula treats 0 and NaN differently",
+      "An agent might be distracted by the decoy Makefile, the unused AQ_ENABLE_EXPERIMENTAL macro, or the correctly-synced compat config.h",
+      "An agent might not rebuild after editing, or rebuild only one library",
+      "An agent might disable hidden visibility globally (CMAKE_CXX_VISIBILITY_PRESET=default) which doesn't fix any of the three actual faults"
+    ],
+    "faults": [
+      {
+        "layer": "config",
+        "where": "src/aqreport/CMakeLists.txt (include path order) + src/compat/include/aqcore/filters.h (stale header with float apply_factor)",
+        "what": "aqreport's include path lists src/compat/include before src/core/include; the stale compat filters.h declares apply_factor as float (4 bytes) while the real filters.h declares it as double (8 bytes); aqreport compiles against the compat layout writing float bytes, libaqcore.so reads them as double, interpreting the float bit pattern as a denormalized near-zero value",
+        "symptom": "All AQI values in the output are near-zero (e.g., ozone shows 0.00 instead of ~88, pm25 shows 0.00 instead of ~44); the program runs without crash or error messages",
+        "how_discovered": "Run the program and see near-zero values; compute expected values from the documented formula and notice massive discrepancy; search for PollutantFilter definition, find two different headers in compat/ and core/; compare them and find the float vs double type difference; check the include path order in aqreport's CMakeLists.txt",
+        "depends_on": null
+      },
+      {
+        "layer": "build",
+        "where": "src/analysis/CMakeLists.txt",
+        "what": "AQ_USE_FAST_MATH=1 is defined for libaqanalysis only; the inline math::normalize() in math_utils.h compiles with a different scaling constant (0.001 vs 0.0002) under that macro; with CMAKE_VISIBILITY_INLINES_HIDDEN each DSO uses its own copy",
+        "symptom": "After Fault 0 is fixed, AQI values are still wrong — e.g. S006 pm25 shows ~194 instead of ~222; quality grades may also differ",
+        "how_discovered": "After program runs with correct struct layout, compare output values against the documented formula; compute expected values and notice ~10-15% discrepancy for high-value stations; search for AQ_USE_FAST_MATH in CMake files and normalize() implementation in math_utils.h",
+        "depends_on": 0
+      },
+      {
+        "layer": "code",
+        "where": "src/core/src/station.cpp",
+        "what": "Empty altitude field parsed as 0.0 instead of NaN; altitude_correction(exp((0-500)/8500)≈0.943) differs from the NaN case (correction=1.0)",
+        "symptom": "After Faults 0 and 1 are fixed, station S004 (empty altitude) still has wrong AQI — e.g. ozone shows ~68 instead of ~72",
+        "how_discovered": "After fixing the first two faults, notice S004 values are still off; examine data/stations.csv and see S004 has empty altitude; trace altitude parsing in station.cpp and find empty string → 0.0 conversion",
+        "depends_on": 1
+      }
+    ],
+    "decoys": [
+      "A legacy Makefile in the root directory with different compiler flags (deprecated, not used by the build)",
+      "An unused AQ_ENABLE_EXPERIMENTAL macro defined in aqcore/config.h but never referenced by any code",
+      "The CMAKE_VISIBILITY_INLINES_HIDDEN=ON setting in AqmonCommon.cmake — it contributes to Fault 1's mechanism (ODR violation for inlines) but is not itself the bug to fix",
+      "CMAKE_CXX_VISIBILITY_PRESET=hidden in AqmonCommon.cmake — a real setting but changing it to default does not fix any of the three faults",
+      "src/compat/include/aqcore/config.h — a compat version of config.h that IS correctly synced with the real version, making the compat directory look partially legitimate and wasting investigation time"
+    ],
+    "hidden_edge_cases": [
+      "S004 has an empty altitude field; the correct behavior is altitude_correction=1.0 (NaN altitude), not altitude_correction≈0.943 (altitude=0)",
+      "S006 has high altitude (2400m) which amplifies the difference between the precise and fast normalize formulas, making Fault 1 most visible there",
+      "The quality grade for S006 pm25 changes from 'Unhealthy' (fast math, aqi≈194) to 'Very Unhealthy' (precise math, aqi≈222)",
+      "The float/double ABI mismatch affects all pollutants but is most dramatic for ozone (apply=1000) where the float 1000.0f bits interpreted as double produce a denormalized ≈1.7e-308, versus no2 (apply=0.5) where float 0.5f bits as double also produce a denormalized near-zero — both result in AQI≈0",
+      "The compat config.h being identical to the real one may cause the agent to assume the entire compat directory is safe, delaying discovery of the filters.h mismatch"
+    ],
+    "why_not_textbook": "This is not a famous bug pattern like a missing 'extern C', vtable issues, or the ANTIALIAS deprecation. The combination of a stale compat header shadowing the real header via include path order (causing float/double struct ABI mismatch without any crash or error message), an ODR-violating conditional compilation in an inline function across DSOs, and a data parsing edge case for missing values is specific to this project's migration history and architecture. The compat directory looks partially legitimate (config.h is correctly synced), making it harder to identify as the source of the problem. The float bit pattern interpreted as double producing a denormalized near-zero value is a non-obvious ABI consequence. The fast-math constant difference (0.001 vs 0.0002) is subtle in the code but produces significantly wrong output values.",
+    "expected_agent_steps": 20
+  }
+}
+```

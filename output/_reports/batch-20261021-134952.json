@@ -1,0 +1,94 @@
+[
+  {
+    "name": "cmake-shared-lib-abi-mismatch",
+    "description": "A CMake project that builds cleanly but crashes at runtime because a private compile definition in one shared library changes the Vec3 struct layout, creating an ABI mismatch with a dependent library.",
+    "difficulty": "hard",
+    "arm": "control",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "decision": "rejected",
+    "why": "too_easy",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/cmake-shared-lib-abi-mismatch",
+      "verdict": "too_easy",
+      "passes": 5,
+      "n_valid": 5,
+      "n_invalid": 0,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0/cmake-shared-lib-abi-mismatch__48LquRT",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 34615,
+          "output_tokens": 3122,
+          "cost_usd": 0.00300342,
+          "episodes": 6
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0/cmake-shared-lib-abi-mismatch__JUQTv5P",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 16585,
+          "output_tokens": 1800,
+          "cost_usd": 0.00155114,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0/cmake-shared-lib-abi-mismatch__KxNWVuh",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 16533,
+          "output_tokens": 1776,
+          "cost_usd": 0.00152834,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0/cmake-shared-lib-abi-mismatch__V5fDF8b",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 37131,
+          "output_tokens": 3071,
+          "cost_usd": 0.0031305400000000002,
+          "episodes": 8
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0/cmake-shared-lib-abi-mismatch__Yixzjb7",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 10416,
+          "output_tokens": 1273,
+          "cost_usd": 0.0010276,
+          "episodes": 4
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0"
+      ],
+      "tokens": {
+        "input": 115280,
+        "output": 11042
+      },
+      "cost_usd": 0.0102,
+      "seconds": 415.1,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/cmake-shared-lib-abi-mismatch",
+    "topic": "a CMake project that builds but its shared library crashes at runtime because of an ABI or symbol-visibility mismatch between two components",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-cmake-project-that-builds-but-its-shar-20261021-134952",
+    "gen_tokens": {
+      "prompt_tokens": 15162,
+      "completion_tokens": 69522
+    }
+  }
+]

@@ -1,0 +1,395 @@
+<<<FILE tests/test_outputs.py>>>
+"""Tests for the Petrify static site generator output."""
+
+import os
+import re
+import subprocess
+from datetime import datetime
+from html.parser import HTMLParser
+
+import pytest
+
+DIST_DIR = '/app/dist'
+
+# The verifier's bare `python3` is a uv-managed Python with only pytest.
+# Use the image's own interpreter for any subprocess that needs the installed packages.
+IMAGE_PYTHON = '/usr/local/bin/python3'
+
+
+class NavLinkExtractor(HTMLParser):
+    """Extract navigation links from HTML."""
+
+    def __init__(self):
+        super().__init__()
+        self.nav_links = []
+        self.in_nav = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'nav':
+            self.in_nav += 1
+        if tag == 'a' and self.in_nav > 0:
+            ad = dict(attrs)
+            if 'href' in ad:
+                self.nav_links.append(ad['href'])
+
+    def handle_endtag(self, tag):
+        if tag == 'nav':
+            self.in_nav = max(0, self.in_nav - 1)
+
+
+class AssetRefExtractor(HTMLParser):
+    """Extract CSS/JS asset references from HTML."""
+
+    def __init__(self):
+        super().__init__()
+        self.css_refs = []
+        self.js_refs = []
+
+    def handle_starttag(self, tag, attrs):
+        ad = dict(attrs)
+        if tag == 'link' and ad.get('rel') == 'stylesheet' and 'href' in ad:
+            self.css_refs.append(ad['href'])
+        if tag == 'script' and 'src' in ad:
+            self.js_refs.append(ad['src'])
+
+
+class PostDateExtractor(HTMLParser):
+    """Extract post dates from the blog index page."""
+
+    def __init__(self):
+        super().__init__()
+        self.dates = []
+        self.in_article = False
+        self.in_time = False
+
+    def handle_starttag(self, tag, attrs):
+        ad = dict(attrs)
+        if tag == 'article':
+            classes = ad.get('class', '').split()
+            if 'post' in classes:
+                self.in_article = True
+        if tag == 'time' and self.in_article:
+            self.in_time = True
+
+    def handle_endtag(self, tag):
+        if tag == 'article':
+            self.in_article = False
+        if tag == 'time':
+            self.in_time = False
+
+    def handle_data(self, data):
+        if self.in_time:
+            self.dates.append(data.strip())
+
+
+def read_html(filepath):
+    with open(filepath, 'r') as f:
+        return f.read()
+
+
+def resolve_path(page_path, href):
+    """Resolve a relative href against a page's directory."""
+    page_dir = os.path.dirname(page_path)
+    resolved = os.path.normpath(os.path.join(page_dir, href))
+    return resolved
+
+
+def target_exists(resolved):
+    """Check if a resolved path points to an existing file or index."""
+    if os.path.isfile(resolved):
+        return True
+    if os.path.isdir(resolved):
+        idx = os.path.join(resolved, 'index.html')
+        return os.path.isfile(idx)
+    return False
+
+
+def _collect_html_files():
+    """Walk dist/ and return all .html file paths."""
+    result = []
+    if os.path.isdir(DIST_DIR):
+        for root, _dirs, files in os.walk(DIST_DIR):
+            for f in files:
+                if f.endswith('.html'):
+                    result.append(os.path.join(root, f))
+    return result
+
+
+class TestBuildIntegrity:
+    def test_build_runs(self):
+        result = subprocess.run(
+            [IMAGE_PYTHON, '/app/build.py'],
+            capture_output=True, text=True, cwd='/app'
+        )
+        assert result.returncode == 0, f"Build failed: {result.stderr}"
+
+    def test_output_directory_exists(self):
+        assert os.path.isdir(DIST_DIR)
+
+    def test_html_pages_exist(self):
+        expected = [
+            'index.html',
+            'about/index.html',
+            'blog/index.html',
+            'blog/whats-new/index.html',
+            'blog/year-in-review/index.html',
+            'blog/migration-guide/index.html',
+            'blog/getting-started/index.html',
+            'blog/architecture-deep-dive/index.html',
+            'projects/index.html',
+            'projects/petrify/index.html',
+            'projects/data-pipeline/index.html',
+            'projects/visualization/index.html',
+            'docs/index.html',
+            'docs/getting-started/index.html',
+            'docs/configuration/index.html',
+            'docs/deployment/index.html',
+            'docs/api/index.html',
+            'docs/api/reference/index.html',
+            'docs/tutorials/index.html',
+            'docs/tutorials/first-site/index.html',
+        ]
+        for page in expected:
+            path = os.path.join(DIST_DIR, page)
+            assert os.path.isfile(path), f"Missing page: {page}"
+
+
+class TestBlogOrdering:
+    def _extract_dates(self):
+        html = read_html(os.path.join(DIST_DIR, 'index.html'))
+        ext = PostDateExtractor()
+        ext.feed(html)
+        return ext.dates
+
+    def test_post_order_reverse_chronological(self):
+        dates = self._extract_dates()
+        assert len(dates) >= 4, f"Expected at least 4 post dates, got {len(dates)}"
+        parsed = [datetime.strptime(d, '%d %B %Y') for d in dates]
+        for i in range(len(parsed) - 1):
+            assert parsed[i] >= parsed[i + 1], \
+                f"Posts not in reverse-chronological order: {dates[i]} before {dates[i+1]}"
+
+    def test_first_post_is_december_2024(self):
+        dates = self._extract_dates()
+        assert len(dates) > 0
+        first = datetime.strptime(dates[0], '%d %B %Y')
+        assert first.month == 12 and first.year == 2024, \
+            f"First post should be December 2024, got {dates[0]}"
+
+
+class TestDateParseable:
+    def test_all_dates_parseable(self):
+        html = read_html(os.path.join(DIST_DIR, 'index.html'))
+        ext = PostDateExtractor()
+        ext.feed(html)
+        assert len(ext.dates) >= 4
+        for d in ext.dates:
+            try:
+                datetime.strptime(d, '%d %B %Y')
+            except ValueError:
+                pytest.fail(f"Date not parseable with '%d %B %Y': '{d}'")
+
+
+class TestAssetHashes:
+    def _all_html_files(self):
+        return _collect_html_files()
+
+    def test_css_refs_contain_hash(self):
+        html_files = self._all_html_files()
+        assert len(html_files) > 0, "No HTML files found in dist/"
+        for fp in html_files:
+            html = read_html(fp)
+            ext = AssetRefExtractor()
+            ext.feed(html)
+            for ref in ext.css_refs:
+                assert re.search(r'\.[0-9a-f]{8}\.css$', ref), \
+                    f"CSS ref '{ref}' in {fp} missing 8-char hex hash"
+
+    def test_js_refs_contain_hash(self):
+        html_files = self._all_html_files()
+        assert len(html_files) > 0, "No HTML files found in dist/"
+        for fp in html_files:
+            html = read_html(fp)
+            ext = AssetRefExtractor()
+            ext.feed(html)
+            for ref in ext.js_refs:
+                assert re.search(r'\.[0-9a-f]{8}\.js$', ref), \
+                    f"JS ref '{ref}' in {fp} missing 8-char hex hash"
+
+    def test_asset_files_exist(self):
+        html_files = self._all_html_files()
+        assert len(html_files) > 0, "No HTML files found in dist/"
+        for fp in html_files:
+            html = read_html(fp)
+            ext = AssetRefExtractor()
+            ext.feed(html)
+            for ref in ext.css_refs + ext.js_refs:
+                resolved = resolve_path(fp, ref)
+                assert os.path.isfile(resolved), \
+                    f"Asset does not exist: {ref} (resolved {resolved}) from {fp}"
+
+    def test_css_hashed_files_in_dist(self):
+        css_dir = os.path.join(DIST_DIR, 'css')
+        assert os.path.isdir(css_dir)
+        css_files = [f for f in os.listdir(css_dir) if f.endswith('.css')]
+        assert len(css_files) >= 3, f"Expected >=3 CSS files, got {len(css_files)}"
+        for f in css_files:
+            assert re.search(r'\.[0-9a-f]{8}\.css$', f), \
+                f"CSS file '{f}' missing hash in name"
+
+    def test_js_hashed_files_in_dist(self):
+        js_dir = os.path.join(DIST_DIR, 'js')
+        assert os.path.isdir(js_dir)
+        js_files = [f for f in os.listdir(js_dir) if f.endswith('.js')]
+        assert len(js_files) >= 2, f"Expected >=2 JS files, got {len(js_files)}"
+        for f in js_files:
+            assert re.search(r'\.[0-9a-f]{8}\.js$', f), \
+                f"JS file '{f}' missing hash in name"
+
+
+class TestNavLinksFromAllPages:
+    def test_all_nav_links_resolve(self):
+        all_links = []
+        html_files = _collect_html_files()
+        assert len(html_files) > 0, "No HTML files found in dist/"
+        for fp in html_files:
+            html = read_html(fp)
+            ext = NavLinkExtractor()
+            ext.feed(html)
+            for href in ext.nav_links:
+                if href.startswith('http') or href.startswith('#'):
+                    continue
+                all_links.append((fp, href))
+                resolved = resolve_path(fp, href)
+                assert target_exists(resolved), \
+                    f"Nav link '{href}' does not resolve from {fp} (tried {resolved})"
+        assert len(all_links) > 0, "No nav links found in any HTML file"
+
+
+class TestHomepageLinkCorrect:
+    def test_homepage_link_from_every_page(self):
+        root_index = os.path.normpath(os.path.join(DIST_DIR, 'index.html'))
+        root_dir = os.path.normpath(DIST_DIR)
+        pages_checked = 0
+        html_files = _collect_html_files()
+        assert len(html_files) > 0, "No HTML files found in dist/"
+        for fp in html_files:
+            html = read_html(fp)
+            ext = NavLinkExtractor()
+            ext.feed(html)
+            if not ext.nav_links:
+                continue
+            pages_checked += 1
+            found = False
+            for href in ext.nav_links:
+                if href.startswith('http') or href.startswith('#'):
+                    continue
+                resolved = resolve_path(fp, href)
+                nr = os.path.normpath(resolved)
+                if nr == root_index or nr == root_dir:
+                    found = True
+                    break
+            assert found, \
+                f"No homepage nav link in {fp}; links: {ext.nav_links}"
+        assert pages_checked > 0, "No pages with nav links found in dist/"
+
+
+class TestNavFromDeepPage:
+    def test_nav_resolves(self):
+        fp = os.path.join(DIST_DIR, 'docs', 'getting-started', 'index.html')
+        assert os.path.isfile(fp)
+        html = read_html(fp)
+        ext = NavLinkExtractor()
+        ext.feed(html)
+        assert len(ext.nav_links) >= 3
+        for href in ext.nav_links:
+            if href.startswith('http') or href.startswith('#'):
+                continue
+            resolved = resolve_path(fp, href)
+            assert target_exists(resolved), \
+                f"Nav '{href}' does not resolve from {fp}"
+
+    def test_homepage_link_depth(self):
+        fp = os.path.join(DIST_DIR, 'docs', 'getting-started', 'index.html')
+        html = read_html(fp)
+        ext = NavLinkExtractor()
+        ext.feed(html)
+        root_index = os.path.normpath(os.path.join(DIST_DIR, 'index.html'))
+        root_dir = os.path.normpath(DIST_DIR)
+        for href in ext.nav_links:
+            resolved = resolve_path(fp, href)
+            nr = os.path.normpath(resolved)
+            if nr == root_index or nr == root_dir:
+                dotdot = href.count('../')
+                assert dotdot == 2, \
+                    f"Homepage link from depth-2 should have 2 '../', got {dotdot} in '{href}'"
+                return
+        pytest.fail("No homepage link found in nav")
+
+
+class TestNavFromDepth3Page:
+    def test_nav_resolves(self):
+        fp = os.path.join(DIST_DIR, 'docs', 'api', 'reference', 'index.html')
+        assert os.path.isfile(fp)
+        html = read_html(fp)
+        ext = NavLinkExtractor()
+        ext.feed(html)
+        for href in ext.nav_links:
+            if href.startswith('http') or href.startswith('#'):
+                continue
+            resolved = resolve_path(fp, href)
+            assert target_exists(resolved), \
+                f"Nav '{href}' does not resolve from {fp}"
+
+    def test_homepage_link_has_three_dotdot(self):
+        fp = os.path.join(DIST_DIR, 'docs', 'api', 'reference', 'index.html')
+        html = read_html(fp)
+        ext = NavLinkExtractor()
+        ext.feed(html)
+        root_index = os.path.normpath(os.path.join(DIST_DIR, 'index.html'))
+        root_dir = os.path.normpath(DIST_DIR)
+        for href in ext.nav_links:
+            resolved = resolve_path(fp, href)
+            nr = os.path.normpath(resolved)
+            if nr == root_index or nr == root_dir:
+                dotdot = href.count('../')
+                assert dotdot == 3, \
+                    f"Homepage link from depth-3 should have 3 '../', got {dotdot} in '{href}'"
+                return
+        pytest.fail("No homepage link found in nav")
+
+
+class TestNavFromHomepage:
+    def test_no_dotdot_prefix(self):
+        fp = os.path.join(DIST_DIR, 'index.html')
+        assert os.path.isfile(fp)
+        html = read_html(fp)
+        ext = NavLinkExtractor()
+        ext.feed(html)
+        for href in ext.nav_links:
+            if href.startswith('http') or href.startswith('#'):
+                continue
+            assert not href.startswith('../'), \
+                f"Nav link from homepage should not have '../': '{href}'"
+
+
+class TestFeedOrdering:
+    def test_feed_reverse_chronological(self):
+        feed_path = os.path.join(DIST_DIR, 'feed.xml')
+        assert os.path.isfile(feed_path)
+        with open(feed_path, 'r') as f:
+            content = f.read()
+        dates = re.findall(r'<pubDate>(.*?)</pubDate>', content)
+        assert len(dates) >= 4, f"Expected >=4 feed items, got {len(dates)}"
+        parsed = []
+        for d in dates:
+            d = d.strip()
+            try:
+                dt = datetime.strptime(d, '%d %B %Y')
+                parsed.append(dt)
+            except ValueError:
+                pytest.fail(f"Cannot parse feed date: '{d}'")
+        for i in range(len(parsed) - 1):
+            assert parsed[i] >= parsed[i + 1], \
+                f"Feed not reverse-chronological: {dates[i]} before {dates[i+1]}"
+<<<END>>>

@@ -1,0 +1,83 @@
+{
+  "name": "pillow-10-resampling-migration",
+  "description": "Fix a thumbnail library whose test suite broke after a Pillow 10.x dependency upgrade removed Image.ANTIALIAS.",
+  "difficulty": "medium",
+  "verdict": "too_easy",
+  "passes": 5,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "too_easy",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/pillow-10-resampling-migration",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__8Ai4tQb",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 21178,
+        "output_tokens": 2483,
+        "cost_usd": 0.0020046,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__8fbkY2C",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 20051,
+        "output_tokens": 1260,
+        "cost_usd": 0.0016498599999999997,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__jDYjdqX",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 17149,
+        "output_tokens": 1166,
+        "cost_usd": 0.00142022,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__rPxhkYr",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 19139,
+        "output_tokens": 1246,
+        "cost_usd": 0.00161474,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__zjZ5TBU",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 33582,
+        "output_tokens": 2424,
+        "cost_usd": 0.00275888,
+        "episodes": 7
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0"
+    ],
+    "tokens": {
+      "input": 111099,
+      "output": 8579
+    },
+    "cost_usd": 0.0094,
+    "seconds": 62.3,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

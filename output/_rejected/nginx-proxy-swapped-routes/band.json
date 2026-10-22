@@ -1,0 +1,83 @@
+{
+  "name": "nginx-proxy-swapped-routes",
+  "description": "Fix an nginx reverse proxy that routes requests to the wrong backend services due to swapped upstream ports and missing path-stripping slashes.",
+  "difficulty": "medium",
+  "verdict": "too_easy",
+  "passes": 5,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "too_easy",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/nginx-proxy-swapped-routes",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__5r5fLV4",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 16170,
+        "output_tokens": 1955,
+        "cost_usd": 0.0016746800000000002,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__CWPZY7W",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 24661,
+        "output_tokens": 3636,
+        "cost_usd": 0.0024538600000000004,
+        "episodes": 6
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__YGk5tdx",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 23379,
+        "output_tokens": 2459,
+        "cost_usd": 0.0022157,
+        "episodes": 6
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__jTb67Qj",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 18389,
+        "output_tokens": 2261,
+        "cost_usd": 0.00204902,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__vEDf5PJ",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 20356,
+        "output_tokens": 2498,
+        "cost_usd": 0.0020124400000000003,
+        "episodes": 5
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0"
+    ],
+    "tokens": {
+      "input": 102955,
+      "output": 12809
+    },
+    "cost_usd": 0.0104,
+    "seconds": 67.3,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

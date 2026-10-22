@@ -1,0 +1,83 @@
+{
+  "name": "fix-sqlite-migration-corruption",
+  "description": "Diagnose and repair a SQLite database where a migration script silently shuffled data into wrong columns during a table recreation.",
+  "difficulty": "medium",
+  "verdict": "too_easy",
+  "passes": 5,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "too_easy",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-sqlite-migration-corruption",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__89caVkf",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 14560,
+        "output_tokens": 1930,
+        "cost_usd": 0.00139348,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__Kr3kDJp",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 18295,
+        "output_tokens": 5938,
+        "cost_usd": 0.00247898,
+        "episodes": 5
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__NTidDLk",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 44381,
+        "output_tokens": 7733,
+        "cost_usd": 0.00462154,
+        "episodes": 7
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__eVXTpYs",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 9737,
+        "output_tokens": 2059,
+        "cost_usd": 0.00110246,
+        "episodes": 4
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__fKrqpVX",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 89659,
+        "output_tokens": 12506,
+        "cost_usd": 0.0085365,
+        "episodes": 9
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0"
+    ],
+    "tokens": {
+      "input": 176632,
+      "output": 30166
+    },
+    "cost_usd": 0.0181,
+    "seconds": 170.9,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

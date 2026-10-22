@@ -1,0 +1,5 @@
+<<<FILE instruction.md>>>
+Since migrating from PostgreSQL to SQLite, the monthly revenue report (report.csv) no longer matches the accounting team's records. Multiple discrepancies have been reported: some totals seem systematically low, certain merchants appear to be missing transactions, some rows have blank values where numbers should appear, and a few transactions appear in the wrong month. The original business rules are documented in the codebase—consult docs/ and source comments to understand the intended pipeline behavior.
+
+Diagnose and fix all issues, then regenerate the report. The output must be a valid CSV at report.csv that breaks down revenue per month and per merchant, showing gross revenue, total refunds, net revenue, and transaction counts. All monetary values must be numeric (never blank or empty), and the report must reflect the correct business logic for currency, eligibility, timezone, and refund handling as specified in the documentation.
+<<<END>>>

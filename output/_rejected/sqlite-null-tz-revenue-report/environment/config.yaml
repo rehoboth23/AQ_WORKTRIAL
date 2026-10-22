@@ -1,0 +1,10 @@
+database:
+  path: data/ledger.db
+
+reporting:
+  currency:
+    code: USD
+    conversion_rate: 0.83
+  timezone:
+    utc_offset: '-05:00'
+    name: US Eastern

@@ -1,0 +1,103 @@
+```json
+{
+  "name": "sqlite-revenue-null-tz-fix",
+  "description": "Fix a migrated PostgreSQL-to-SQLite analytics pipeline whose monthly revenue report is wrong due to NULL handling, timezone sign errors, trailing-space join failures, fiscal year misconfiguration, and a wrong date-field join in Python.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["sqlite", "sql-views", "null-handling", "timezone", "data-pipeline", "postgresql-migration"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A company migrated its sales analytics from PostgreSQL to SQLite. The monthly revenue report at /app/reports/monthly_revenue.csv now produces incorrect figures. The pipeline involves raw tables, several SQL views that were adapted during migration, a YAML config, and a Python report generator. Six distinct defects across data, SQL, config, and code layers interact to produce wrong numbers — some faults partially cancel each other, masking the true extent of the damage. The agent must trace through the full pipeline from raw data through views to the final CSV, identify all six faults, fix them, and regenerate the report.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 image with sqlite3 CLI and pyyaml. A setup script (deleted after build) generates a deterministic SQLite database at /app/data/sales.db with tables: orders (id, customer_id, region_code, created_at UTC, cancelled_at nullable, order_status), order_items (id, order_id, product_id, quantity, unit_price, discount_rate nullable), products, customers, regions, tz_offsets (region_code, utc_offset_hours, effective_from, effective_to), fiscal_calendar (calendar_date, fiscal_year, fiscal_month, fiscal_quarter). About 2000 orders spanning 2024, ~15% have NULL discount_rate, ~10% are cancelled, ~5% have trailing spaces in region_code. The database is seeded with 6 faults baked in. The remaining project files total ~2200 lines across /app/sql/ (schema.sql ~120 lines, views.sql ~280 lines with 7 views including 2 decoy, indexes.sql ~40 lines, legacy_views.sql ~120 lines decoy, functions.sql ~60 lines), /app/analytics/ (report.py ~320 lines, config.py ~90 lines, db.py ~80 lines, validate.py ~200 lines decoy, migrate_from_pg.py ~280 lines decoy, transforms.py ~150 lines, export.py ~110 lines), /app/config/ (report_config.yaml ~55 lines, database.yaml ~35 lines decoy), and /app/run_report.sh (~25 lines). The generate_data.py and setup_db.py scripts are deleted after build. The report output directory /app/reports/ exists but the CSV is initially stale from a previous broken run.",
+  "instruction_summary": "The monthly revenue report at /app/reports/monthly_revenue.csv is wrong after a PostgreSQL-to-SQLite migration. Symptoms: (1) some months show revenue that is too low, (2) some months show revenue that is too high — cancelled orders may still be counted, (3) orders from US-CENTRAL and EU-CENTRAL regions appear in wrong months, (4) fiscal year grouping doesn't match the corporate calendar (starts in January, not April), (5) orders with NULL discount_rate seem to be missing from totals. Database: /app/data/sales.db. Generate report via: bash /app/run_report.sh. Requirements: revenue = sum(quantity × unit_price × (1 - COALESCE(discount_rate, 0))) for non-cancelled orders; order month = timezone-adjusted created_at (using tz_offsets table) grouped by fiscal_calendar; fiscal year starts in January (fiscal_year = calendar year, fiscal_month = calendar month); cancelled orders (cancelled_at IS NOT NULL) must be excluded; CSV columns: fiscal_year, fiscal_month, total_revenue, order_count, avg_order_value; revenue and avg rounded to 2 decimals.",
+  "solution_outline": [
+    "1. Fix tz_offsets sign errors: UPDATE tz_offsets SET utc_offset_hours = -utc_offset_hours WHERE region_code IN ('US-CENTRAL', 'EU-CENTRAL');",
+    "2. Trim trailing spaces from orders.region_code: UPDATE orders SET region_code = TRIM(region_code);",
+    "3. Drop and recreate v_order_line_details view with COALESCE(discount_rate, 0) in the line_total computation",
+    "4. Drop and recreate v_active_order_lines view using WHERE cancelled_at IS NULL instead of the broken COALESCE comparison",
+    "5. Fix report_config.yaml: change fiscal_year_start_month from 4 to 1",
+    "6. Update fiscal_calendar table so fiscal_year = calendar year and fiscal_month = calendar month",
+    "7. Fix report.py: replace date(v.created_at) with date(tza.adjusted_created_at) in the fiscal calendar JOIN",
+    "8. Re-run bash /app/run_report.sh to regenerate the report"
+  ],
+  "test_plan": [
+    "test_csv_exists_and_format: /app/reports/monthly_revenue.csv exists, has headers fiscal_year,fiscal_month,total_revenue,order_count,avg_order_value, all revenue/avg values have 2 decimal places, rows sorted by fiscal_year,fiscal_month",
+    "test_no_cancelled_orders_in_revenue: query SELECT id FROM orders WHERE cancelled_at IS NOT NULL to get cancelled IDs, then query SELECT DISTINCT order_id FROM v_active_order_lines and verify none of the cancelled IDs appear; also sum revenue from cancelled orders directly and confirm it equals 0 in the view",
+    "test_null_discount_included: query SELECT SUM(quantity * unit_price) FROM order_items WHERE discount_rate IS NULL AND order_id NOT IN (SELECT id FROM orders WHERE cancelled_at IS NOT NULL); this amount must appear in the report totals (not zero)",
+    "test_tz_offsets_signs: query tz_offsets for US-CENTRAL and verify utc_offset_hours is negative (either -6 or -5 depending on effective dates); query EU-CENTRAL and verify positive (1 or 2)",
+    "test_fiscal_year_starts_january: query fiscal_calendar WHERE calendar_date = '2024-01-15' and verify fiscal_year=2024, fiscal_month=1; verify December maps to fiscal_month=12",
+    "test_adjusted_date_used_in_report: find an order with created_at near midnight UTC that would shift to a different calendar day/month after timezone adjustment (e.g., 2024-03-01 04:00 UTC → 2024-02-29 23:00 EST); verify it appears in the correct month's revenue in the CSV",
+    "test_region_code_join_integrity: query SELECT COUNT(*) FROM orders o LEFT JOIN tz_offsets t ON o.region_code = t.region_code WHERE t.region_code IS NULL AND o.region_code IS NOT NULL; must be 0 (all orders with a region_code should join successfully after trim)",
+    "test_specific_month_revenue: compute expected total_revenue for a specific month (e.g., 2024-06) from first principles using raw tables with correct logic, then compare against the report CSV value"
+  ],
+  "anti_cheat": "The generate_data.py and setup_db.py scripts are deleted after the Docker build, so the agent cannot read the data generation logic. Expected output values are not stored anywhere in the image — the tests compute them from raw tables using correct SQL logic. The fiscal_calendar and tz_offsets data are in the database, not in any readable seed file. The report_config.yaml contains many settings, only one of which is wrong. The views.sql file has 7 views, only 2 of which are faulty, plus decoy patterns in other views that look similar to the bugs but are actually correct. The legacy_views.sql contains PostgreSQL syntax that fails in SQLite but isn't used, drawing attention away from the real issues.",
+  "failure_modes": "Agent fixes the obvious NULL-discount COALESCE but stops there, missing the cancellation logic bug that adds revenue. Agent reads legacy_views.sql and tries to port those PostgreSQL views, wasting time. Agent notices the fiscal_year_start_month config but only changes the YAML without updating the fiscal_calendar table data. Agent spots date(v.created_at) in report.py but changes it to date(v.adjusted_created_at) which doesn't exist in that view alias, causing a SQL error. Agent finds the tz_offsets sign error but assumes that's the only timezone issue, missing the trailing-space join failure. Agent fixes the trailing spaces but doesn't verify the join actually works afterward. Agent sees the validate.py script and trusts its passing checks, not realizing its checks are incomplete.",
+  "faults": [
+    {
+      "layer": "data",
+      "where": "/app/data/sales.db, table tz_offsets",
+      "what": "utc_offset_hours for US-CENTRAL is +6/+5 (should be -6/-5) and for EU-CENTRAL is -1/-2 (should be +1/+2) — signs are flipped for both standard and DST offsets of these two regions",
+      "symptom": "Orders from Chicago and Berlin offices appear in wrong months because their adjusted timestamps are shifted by 12 hours in the wrong direction",
+      "how_discovered": "Agent queries SELECT * FROM tz_offsets WHERE region_code IN ('US-CENTRAL','EU-CENTRAL') and notices the sign is wrong (positive for US, negative for EU)",
+      "depends_on": 6
+    },
+    {
+      "layer": "code",
+      "where": "/app/sql/views.sql, view v_order_line_details",
+      "what": "line_total computed as quantity * unit_price * (1 - discount_rate) without COALESCE around discount_rate; when discount_rate is NULL the entire expression becomes NULL and SUM() silently skips those rows",
+      "symptom": "Revenue for months with many NULL-discount items is too low — roughly 15% of line items vanish from totals",
+      "how_discovered": "Agent reads the view definition in views.sql and notices the missing COALESCE, or queries SELECT COUNT(*) FROM v_order_line_details WHERE line_total IS NULL and finds non-zero count",
+      "depends_on": 3
+    },
+    {
+      "layer": "code",
+      "where": "/app/sql/views.sql, view v_active_order_lines",
+      "what": "WHERE clause uses COALESCE(cancelled_at, '9999-12-31') > date(adjusted_created_at, 'start of month') instead of WHERE cancelled_at IS NULL; this incorrectly includes cancelled orders whose cancellation date is after the start of their creation month (nearly all cancelled orders)",
+      "symptom": "Revenue is too high because cancelled orders are counted; partially offsets Fault 2's revenue undercount, masking both faults",
+      "how_discovered": "Agent reads the view definition and sees the COALESCE comparison; cross-checks by querying SELECT COUNT(*) FROM v_active_order_lines WHERE cancelled_at IS NOT NULL and finds non-zero rows",
+      "depends_on": null
+    },
+    {
+      "layer": "config",
+      "where": "/app/config/report_config.yaml, key fiscal_year_start_month",
+      "what": "fiscal_year_start_month is set to 4 (April) but the corporate fiscal year starts in January (month 1); the fiscal_calendar table was built from this config so its fiscal_year and fiscal_month columns are also wrong",
+      "symptom": "January-March orders map to fiscal_year N-1 and fiscal_months 10-12; April+ orders get fiscal_months 1-9; the report groups months into wrong fiscal periods",
+      "how_discovered": "Agent reads report_config.yaml and sees fiscal_year_start_month: 4; also checks the fiscal_calendar table and notices January maps to fiscal_month 10 instead of 1",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/analytics/report.py, main SQL query",
+      "what": "The JOIN to fiscal_calendar uses date(v.created_at) (the raw UTC timestamp) instead of date(tza.adjusted_created_at) (the timezone-adjusted timestamp), so orders near midnight UTC are assigned to the wrong calendar date and thus wrong fiscal period",
+      "symptom": "Orders created late in the day UTC (e.g., 11pm UTC = 6pm EST) that cross a month boundary after timezone adjustment are put in the wrong month",
+      "how_discovered": "Agent reads the multi-line SQL query in report.py and notices the fiscal_calendar join uses v.created_at instead of tza.adjusted_created_at; confirmed by checking that orders near midnight UTC land in the wrong month",
+      "depends_on": null
+    },
+    {
+      "layer": "data",
+      "where": "/app/data/sales.db, table orders, column region_code",
+      "what": "About 5% of orders have trailing whitespace in region_code (e.g., 'US-EASTERN ' instead of 'US-EASTERN'), causing the LEFT JOIN in v_order_tz_adjusted to not match tz_offsets rows; those orders fall back to unadjusted UTC timestamps",
+      "symptom": "Some orders get no timezone adjustment (adjusted_created_at = created_at), placing them on the wrong day for US regions; partially reduces the visible impact of Fault 1 by reducing the number of orders affected by wrong offsets",
+      "how_discovered": "Agent queries SELECT region_code, length(region_code) FROM orders and notices some codes have extra length, or queries SELECT COUNT(*) FROM orders o LEFT JOIN tz_offsets t ON o.region_code = t.region_code WHERE t.utc_offset_hours IS NULL and gets non-zero count",
+      "depends_on": null
+    }
+  ],
+  "decoys": [
+    "/app/sql/legacy_views.sql: Contains PostgreSQL-specific syntax (INTERVAL, TIMESTAMPTZ, EXTRACT(EPOCH FROM...)) that would fail in SQLite. Looks like a migration problem but these views are never referenced by the report pipeline.",
+    "/app/analytics/migrate_from_pg.py: The original migration script with comments about 'known NULL handling differences' and 'timezone offset TODOs'. These issues were supposedly resolved but the comments suggest they might not be, drawing attention away from the actual bugs.",
+    "/app/analytics/validate.py: A data validation script with checks for NULL values, timezone consistency, and fiscal period alignment. It has checks that pass on the broken data because its thresholds are too loose or its queries bypass the faulty views.",
+    "/app/sql/views.sql, view v_return_adjusted_revenue: Uses COALESCE(return_date, '1970-01-01') in a pattern that looks identical to Fault 3's bug but is actually correct in its context (returns processed before 1970 should be treated as not returned). Distracts from the real COALESCE misuse in v_active_order_lines.",
+    "/app/config/database.yaml: Contains a timezone: 'UTC' setting that looks like it might override the report timezone, but it's an unused legacy database connection config."
+  ],
+  "hidden_edge_cases": [
+    "Orders created at exactly 2024-03-01 05:00 UTC (midnight EST) should fall on Feb 29 in the report — this tests both the timezone adjustment AND the fiscal-calendar join using adjusted vs raw date",
+    "Orders with quantity=0 should contribute $0 revenue but still count in order_count — the line_total formula must handle this without producing NULL",
+    "Months with no orders should not appear in the CSV (the report only covers months with data)",
+    "The fiscal_calendar table must correctly map December 2024 to fiscal_year=2024 fiscal_month=12, not to some other fiscal period",
+    "Orders from regions not in tz_offsets at all (a few are in the data) should still appear in the report using their raw UTC date — TRIM must not cause new join failures"
+  ],
+  "why_not_textbook": "No single bug here is a well-known migration pitfall. The COALESCE(cancelled_at, '9999-12-31') pattern is common and often correct — it's only wrong because the comparison direction and semantics differ from the original PostgreSQL IS NULL check. The tz_offsets sign error is a data-entry mistake, not a library incompatibility. The trailing-whitespace join failure is a data-quality issue introduced during the migration ETL, not a schema mismatch. The fiscal_year_start_month misconfiguration is a business-rules error. The date-field mix-up in report.py is a subtle variable-name error in a long SQL query. Each fault is plausible individually but the combination is unique to this scenario, and their interactions (partially cancelling symptoms) make it impossible to solve by fixing one textbook bug and declaring victory.",
+  "expected_agent_steps": 35
+}
+```

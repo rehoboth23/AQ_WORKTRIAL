@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/cmake-shared-lib-abi-mismatch"
+description = "A CMake project that builds cleanly but crashes at runtime because a private compile definition in one shared library changes the Vec3 struct layout, creating an ABI mismatch with a dependent library."
+keywords = [ "cmake", "abi", "shared-library", "struct-layout", "c", "compile-definitions",]
+
+[metadata]
+difficulty = "hard"
+category = "debugging"
+tags = [ "cmake", "abi", "shared-library", "struct-layout", "c", "compile-definitions",]
+expert_time_estimate_min = 15.0
+junior_time_estimate_min = 50.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

@@ -1,0 +1,112 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md: 'aqreport tool crashes at runtime. Fix it so it produces correct CSV output for all stations including those with missing altitude.'",
+    "Agent runs ./build/src/aqreport/aqreport data/stations.csv data/readings.csv → symbol lookup error: undefined symbol _ZN2aq11compute_aqiERKNS_15PollutantFilterEdd",
+    "Agent demangles with c++filt → aq::compute_aqi(aq::PollutantFilter const&, double, double) — FAULT 1 FOUND IN 3 COMMANDS: error message directly names the broken function",
+    "Agent greps for compute_aqi, finds src/core/include/aqcore/aqi.h, sees missing AQCORE_API — fix is trivial 1-line addition",
+    "Agent adds AQCORE_API, rebuilds, runs → wrong AQI values for some stations",
+    "Agent computes expected values, notices discrepancy, greps for normalize or AQ_USE_FAST_MATH → finds the #ifdef in math_utils.h and the definition in src/analysis/CMakeLists.txt — FAULT 2 FOUND: macro name 'AQ_USE_FAST_MATH' is obviously suspicious",
+    "Agent removes AQ_USE_FAST_MATH=1, rebuilds, runs → S004 still wrong",
+    "Instruction.md said 'missing altitude' — agent directly checks stations.csv for empty altitude, finds S004, greps altitude parsing in station.cpp, finds empty→0.0 — FAULT 3 FOUND: hint in instruction directly led there",
+    "Agent fixes to quiet_NaN(), rebuilds, runs → correct output"
+  ],
+  "too_easy_because": [
+    "Fault 1 is found within the agent's first 3 commands: running the program produces a symbol lookup error that directly names compute_aqi, and a single grep finds the file",
+    "The error message names the faulty symbol _ZN2aq11compute_aqiERKNS_15PollutantFilterEdd — after demangling the exact function is identified",
+    "AQ_USE_FAST_MATH is an obviously suspicious macro name — any agent searching for why values are wrong will immediately flag it",
+    "instruction.md explicitly mentions 'missing altitude', giving a direct hint that leads straight to fault 3",
+    "Each fix is a trivial 1-line sed — add an attribute, remove a define, change 0.0 to NaN",
+    "The codebase is described as 'two shared libraries and one CLI executable' with no size specification, likely too small to require meaningful search",
+    "No build-configuration root-cause investigation needed — the missing attribute is the root cause and the fix"
+  ],
+  "spec": {
+    "name": "aqmon-visibility-abi-crash",
+    "description": "Diagnose and fix a CMake C++ project whose shared library has runtime failures due to a build-definition typo affecting symbol exports, an ODR-violating conditional compilation hidden behind an innocuous macro name, and a data parsing edge case for missing altitude",
+    "difficulty": "hard",
+    "category": "debugging",
+    "tags": [
+      "cmake",
+      "c++",
+      "abi",
+      "symbol-visibility",
+      "shared-library",
+      "odr-violation"
+    ],
+    "expert_time_estimate_min": 45.0,
+    "junior_time_estimate_min": 120.0,
+    "base_image": "ubuntu:24.04",
+    "scenario": "The aqmon project builds an air quality monitoring tool (aqreport) from two shared libraries: libaqcore (data types, filters, AQI math) and libaqanalysis (processing pipeline, report generation). The project compiles and links without errors, but running aqreport immediately crashes. After fixing that crash, the output values are still wrong for some stations, and certain edge cases in the input data produce incorrect AQI scores. The developer needs all three issues resolved so the tool produces correct output.",
+    "environment_setup": "A CMake C++17 project (~1800 lines across 20+ files) with two shared libraries and one CLI executable. (1) cmake/AqmonCommon.cmake sets CMAKE_CXX_VISIBILITY_PRESET=hidden and CMAKE_VISIBILITY_INLINES_HIDDEN=ON globally. The export header src/core/include/aqcore/export.h checks for AQCORE_BUILDING to expand AQCORE_API to __attribute__((visibility(\"default\"))). However, src/core/CMakeLists.txt defines AQ_CORE_BUILDING=1 (extra underscore after AQ) — the names don't match, so AQCORE_API expands to nothing when compiling libaqcore, making ALL public symbols hidden. The runtime crash is a symbol lookup error for whichever public symbol the dynamic linker resolves first (e.g. a constructor or factory function, not necessarily compute_aqi). (2) src/analysis/CMakeLists.txt defines AQ_STATION_OPTIMIZE=1 (an innocuous-sounding name), but libaqcore does not; the inline function math::normalize() in aqcore/math_utils.h uses a different scaling constant (0.001 vs 0.0002) under that macro, and with hidden inline visibility each DSO uses its own copy, so libaqanalysis computes with the wrong formula. (3) In station.cpp, empty altitude fields from CSV are parsed as 0.0 instead of NaN; the altitude_correction formula exp((alt-500)/8500) gives ~0.943 at alt=0 but 1.0 for NaN, so stations with missing altitude get wrong AQI. Decoys: a legacy Makefile with different compiler flags, an AQ_ENABLE_EXPERIMENTAL macro in config.h (unused), an AQ_HIGH_PRECISION define in analysis CMakeLists.txt (dead code path — the conditional it guards is never reached), a commented-out visibility_preset line in root CMakeLists.txt, a deprecated src/core/include/aqcore/compat/ directory with old headers that define different struct layouts, and a duplicate compute_aqi_stub.cpp in src/analysis/ that provides a fallback implementation (never linked). The project is pre-built in /app/build; LD_LIBRARY_PATH is set.",
+    "instruction_summary": "The aqreport tool crashes when run. After resolving the crash, it must produce correct CSV output for all stations in the input data. Usage: ./build/src/aqreport/aqreport data/stations.csv data/readings.csv. Output format: station_id,pollutant,aqi,quality_grade. AQI computation: normalize(value) = value/(1+value*0.0002); altitude_correction(alt) = exp((alt-500)/8500) if alt is a real number, 1.0 if alt is NaN or missing; raw_aqi = clamp(round(apply_factor * score * altitude_correction(alt) * 100), 0, 500). Filters: ozone: apply×1000, score×1.5; pm25: apply×1, score×2.0; no2: apply×0.5, score×1.8; so2: apply×2.0, score×1.2. Quality grades: 0-50 Good, 51-100 Moderate, 101-150 Unhealthy-Sensitive, 151-200 Unhealthy, 201-300 Very Unhealthy, 301-500 Hazardous. Data files at data/stations.csv and data/readings.csv.",
+    "solution_outline": [
+      "In src/core/CMakeLists.txt, change AQ_CORE_BUILDING to AQCORE_BUILDING (remove extra underscore) so the export macro expands correctly when building libaqcore",
+      "Remove the AQ_STATION_OPTIMIZE=1 definition from src/analysis/CMakeLists.txt (or add it to libaqcore's definitions too, but removal is cleaner)",
+      "Fix the altitude parsing in src/core/src/station.cpp to use std::numeric_limits<double>::quiet_NaN() for empty strings instead of 0.0",
+      "Rebuild the project: cd /app/build && cmake .. && cmake --build . -- -j$(nproc)"
+    ],
+    "test_plan": [
+      "test_program_runs: run aqreport with the data files, assert return code 0 and no symbol lookup error or segfault in stderr",
+      "test_output_format: parse stdout CSV, assert header is correct and all expected data rows exist (6 stations × varying pollutants)",
+      "test_aqi_values: for every (station, pollutant) pair, compute expected AQI in Python using the precise normalize formula (scale=0.0002) and altitude_correction, compare with program output within 0.5 tolerance",
+      "test_missing_altitude: check the station with empty altitude in the CSV has AQI computed with correction=1.0, not correction=exp(-500/8500)≈0.943",
+      "test_quality_grades: verify each record's quality_grade matches the grade for its computed AQI per the documented thresholds",
+      "test_no_optimize_residual: check a high-altitude station (e.g. S006 pm25) produces the precise result (~222) not the optimized result (~194), confirming AQ_STATION_OPTIMIZE is not active",
+      "test_visibility_config_unchanged: verify CMAKE_CXX_VISIBILITY_PRESET is still 'hidden' in CMakeCache.txt — changing it to 'default' as a workaround is not the intended fix"
+    ],
+    "anti_cheat": "Expected output values are not stored anywhere in the image. The correct AQI values must be computed from the specified formulas and input data. A superficial fix (e.g., changing CMAKE_CXX_VISIBILITY_PRESET to default) would fix the crash but is not the intended root-cause fix; the visibility config test checks that it remains 'hidden'. Even if visibility is changed to default, if CMAKE_VISIBILITY_INLINES_HIDDEN remains ON, fault 2 may persist depending on compiler inlining decisions. Fixing faults 1 and 2 but not 3 fails the missing-altitude test. Adding visibility attribute to just one function misses the root cause (ALL symbols are affected by the macro mismatch).",
+    "failure_modes": [
+      "Agent might change CMAKE_CXX_VISIBILITY_PRESET to default in AqmonCommon.cmake instead of fixing the macro name mismatch — this is a broader change that works around fault 1 but is not the root-cause fix; it also may or may not fix fault 2 depending on inline visibility settings",
+      "Agent might add visibility attribute to just the one missing symbol named in the error, missing that ALL public symbols are broken due to the macro mismatch",
+      "Agent might find AQ_STATION_OPTIMIZE but assume it's a legitimate optimization (the name sounds intentional) and not remove it",
+      "Agent might be distracted by the deprecated compat/ headers, the AQ_ENABLE_EXPERIMENTAL macro, the AQ_HIGH_PRECISION define, or the compute_aqi_stub.cpp fallback",
+      "Agent might fix altitude=0 as NaN but not verify the formula treats 0 and NaN differently (exp(-500/8500) vs 1.0)",
+      "Agent might not rebuild all libraries after editing, or might forget to re-run cmake before building",
+      "Agent might see the commented-out visibility_preset line and uncomment it, which is a red herring"
+    ],
+    "faults": [
+      {
+        "layer": "build",
+        "where": "src/core/CMakeLists.txt",
+        "what": "CMake defines AQ_CORE_BUILDING=1 (extra underscore) but export.h checks for AQCORE_BUILDING; the mismatch means AQCORE_API never expands to the visibility attribute when compiling libaqcore, so all public symbols default to hidden",
+        "symptom": "Runtime symbol lookup error for whichever public symbol the dynamic linker resolves first; the error names a mangled symbol that, after demangling, points to a function that already has AQCORE_API in its declaration — the root cause is the build definition, not the source code",
+        "how_discovered": "Run the program, see symbol lookup error; demangle the symbol; find the function in headers and see it already has AQCORE_API; investigate why the macro isn't working — trace AQCORE_API definition to export.h; find the AQCORE_BUILDING guard; check CMake compile definitions for libaqcore; discover AQ_CORE_BUILDING vs AQCORE_BUILDING mismatch",
+        "depends_on": null
+      },
+      {
+        "layer": "build",
+        "where": "src/analysis/CMakeLists.txt",
+        "what": "AQ_STATION_OPTIMIZE=1 is defined for libaqanalysis only; the inline math::normalize() in math_utils.h compiles with a different scaling constant (0.001 vs 0.0002) under that macro; with CMAKE_VISIBILITY_INLINES_HIDDEN each DSO uses its own inlined copy",
+        "symptom": "After Fault 1 is fixed, AQI values for some stations are wrong — e.g. high-altitude S006 pm25 shows ~194 instead of ~222; some quality grades differ",
+        "how_discovered": "After program runs without crashing, compute expected AQI values from the documented formulas and compare with output; notice discrepancies; trace the computation — find normalize() in math_utils.h; find the #ifdef AQ_STATION_OPTIMIZE conditional; search CMakeLists.txt files for who defines AQ_STATION_OPTIMIZE",
+        "depends_on": 0
+      },
+      {
+        "layer": "code",
+        "where": "src/core/src/station.cpp",
+        "what": "Empty altitude field parsed as 0.0 instead of NaN; altitude_correction(exp((0-500)/8500)≈0.943) differs from the NaN case (returns 1.0 per the formula specification)",
+        "symptom": "After Faults 1 and 2 are fixed, the station with empty altitude in the CSV still has wrong AQI — e.g. ozone shows ~68 instead of ~72",
+        "how_discovered": "After fixing the first two faults, compute expected values for all stations and notice one station's values are off by ~4-5%; examine data/stations.csv and find a station with empty altitude field; trace parsing in station.cpp; find empty string converted to 0.0; check altitude_correction(0.0) vs altitude_correction(NaN) per the specification",
+        "depends_on": 1
+      }
+    ],
+    "decoys": [
+      "A legacy Makefile in the root directory with different compiler flags and an older build recipe (deprecated, not used by CMake)",
+      "An unused AQ_ENABLE_EXPERIMENTAL macro defined in aqcore/config.h but never referenced by any source code",
+      "An AQ_HIGH_PRECISION define in src/analysis/CMakeLists.txt that looks related to math precision but guards a dead code path that's never reached",
+      "A commented-out CMAKE_CXX_VISIBILITY_PRESET line in the root CMakeLists.txt suggesting someone considered changing visibility settings",
+      "A deprecated src/core/include/aqcore/compat/ directory with old headers defining different struct layouts — not included by any current code",
+      "A compute_aqi_stub.cpp in src/analysis/ providing a fallback AQI implementation — never compiled or linked (excluded from CMakeLists.txt)",
+      "The CMAKE_VISIBILITY_INLINES_HIDDEN setting in AqmonCommon.cmake — it enables fault 2's mechanism but is not itself the bug to fix"
+    ],
+    "hidden_edge_cases": [
+      "A station with empty altitude: altitude_correction should be 1.0 (NaN case), not ~0.943 (altitude=0 case)",
+      "A high-altitude station (2400m) amplifies the difference between the precise and optimized normalize formulas, making fault 2 most visible there — the quality grade changes from Unhealthy to Very Unhealthy",
+      "A station at altitude=500m has altitude_correction=1.0 (exp(0)=1.0), which coincidentally matches the NaN result — this station is NOT a good test for fault 3",
+      "The symbol that triggers the runtime crash may not be compute_aqi — it could be a constructor, factory function, or any other public symbol from libaqcore, depending on link order and lazy binding"
+    ],
+    "why_not_textbook": "This cannot be solved from memory of a well-known bug. The macro name typo (AQ_CORE_BUILDING vs AQCORE_BUILDING) is a project-specific error where both names look correct at a glance — it requires carefully cross-referencing the CMake definition with the header guard. The AQ_STATION_OPTIMIZE macro is named to sound like a legitimate optimization, not a bug. The altitude NaN vs 0.0 issue requires understanding the domain-specific altitude_correction formula behavior for missing data, not a general null-check pattern. The mangled symbol in the crash requires demangling and doesn't reveal the root cause (build definition mismatch).",
+    "expected_agent_steps": 28
+  }
+}
+```

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}{{ site_name }} — Home{% endblock %}
+
+{% block content %}
+<section class="hero">
+    <h1>{{ site_name }}</h1>
+</section>
+
+<section class="recent-posts">
+    <h2>Recent Posts</h2>
+    {% for post in posts %}
+    <article class="post">
+        <h3><a href="{{ post.url }}">{{ post.title }}</a></h3>
+        <time datetime="{{ post.date }}">{{ post.date }}</time>
+        {% if post.excerpt %}
+        <p class="excerpt">{{ post.excerpt }}</p>
+        {% endif %}
+    </article>
+    {% endfor %}
+</section>
+{% endblock %}

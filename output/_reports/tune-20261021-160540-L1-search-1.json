@@ -1,0 +1,109 @@
+[
+  {
+    "name": "sqlite-null-tz-revenue-report",
+    "description": "Fix a migrated PostgreSQL-to-SQLite analytics pipeline that produces incorrect monthly revenue reports after migration.",
+    "difficulty": "hard",
+    "arm": "treatment",
+    "level": 1.0,
+    "features": {
+      "env_lines": 1368,
+      "solve_lines": 16,
+      "faults": 4,
+      "fault_layers": 2
+    },
+    "verdict": "too_easy",
+    "passes": 4,
+    "n_valid": 4,
+    "n_invalid": 1,
+    "decision": "rejected",
+    "why": "too_easy (stopped early after 4 passes)",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/sqlite-null-tz-revenue-report",
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 4,
+      "n_invalid": 1,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0/sqlite-null-tz-revenue-report__CYeaD8P",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 197813,
+          "output_tokens": 9850,
+          "cost_usd": 0.00893569255,
+          "episodes": 16,
+          "found_step": 2
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0/sqlite-null-tz-revenue-report__NmnKtbW",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 333117,
+          "output_tokens": 7730,
+          "cost_usd": 0.012131496949999997,
+          "episodes": 30,
+          "found_step": 2
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0/sqlite-null-tz-revenue-report__Sy7bTMm",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 182100,
+          "output_tokens": 9914,
+          "cost_usd": 0.008636835,
+          "episodes": 16,
+          "found_step": 2
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0/sqlite-null-tz-revenue-report__WjHEm96",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 335976,
+          "output_tokens": 11023,
+          "cost_usd": 0.015418030100000002,
+          "episodes": 26,
+          "found_step": 2
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0/sqlite-null-tz-revenue-report__gCMnNCc",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 317584,
+          "output_tokens": 11873,
+          "cost_usd": 0.012889900400000003,
+          "episodes": 23,
+          "found_step": 2
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0"
+      ],
+      "tokens": {
+        "input": 1366590,
+        "output": 50390
+      },
+      "cost_usd": 0.058,
+      "median_steps": 19.5,
+      "median_found_step": 2.0,
+      "early_stop": true,
+      "seconds": 415.2,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/sqlite-null-tz-revenue-report",
+    "topic": "a PostgreSQL-style query workload on SQLite whose report is wrong because of NULL handling and a timezone bug across several SQL views",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-postgresql-style-query-workload-on-sql-20261021-160541",
+    "gen_tokens": {
+      "prompt_tokens": 36111,
+      "completion_tokens": 166478
+    }
+  }
+]

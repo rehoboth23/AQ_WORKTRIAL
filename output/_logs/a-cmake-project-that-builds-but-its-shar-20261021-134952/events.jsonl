@@ -1,0 +1,9 @@
+{"time": "2026-10-21T13:49:52", "event": "start", "topic": "a CMake project that builds but its shared library crashes at runtime because of an ABI or symbol-visibility mismatch between two components", "model": "z-ai/glm-5.1", "calibration": "", "control": true}
+{"time": "2026-10-21T13:57:41", "event": "llm_call", "label": "spec", "attempt": 0, "usage": {"prompt_tokens": 1106, "completion_tokens": 39202}, "seconds": 469.3}
+{"time": "2026-10-21T14:02:49", "event": "llm_call", "label": "files", "attempt": 0, "usage": {"prompt_tokens": 1896, "completion_tokens": 28194}, "seconds": 308.1}
+{"time": "2026-10-21T14:03:09", "event": "checks", "round": 0, "passed": false, "results": {"validator": true, "oracle": null}}
+{"time": "2026-10-21T14:03:18", "event": "llm_call", "label": "repair-r1", "attempt": 0, "usage": {"prompt_tokens": 6115, "completion_tokens": 915}, "seconds": 9.5}
+{"time": "2026-10-21T14:03:21", "event": "checks", "round": 1, "passed": false, "results": {"validator": true, "oracle": null}}
+{"time": "2026-10-21T14:03:37", "event": "llm_call", "label": "repair-r2", "attempt": 0, "usage": {"prompt_tokens": 6045, "completion_tokens": 1211}, "seconds": 15.8}
+{"time": "2026-10-21T14:04:23", "event": "checks", "round": 2, "passed": true, "results": {"validator": true, "oracle": 1.0, "nop": 0.0}}
+{"time": "2026-10-21T14:04:23", "event": "finish", "status": "ok"}

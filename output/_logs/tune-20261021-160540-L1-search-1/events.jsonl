@@ -1,0 +1,3 @@
+{"time": "2026-10-21T16:43:30", "event": "band_start", "task": "sqlite-null-tz-revenue-report"}
+{"time": "2026-10-21T16:50:26", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-sqlite-null-tz-revenue-report-20261021-164330-0", "requested": 5, "outcomes": ["pass", "invalid(CancelledError)", "pass", "pass", "pass"]}
+{"time": "2026-10-21T16:50:26", "event": "band_done", "task": "sqlite-null-tz-revenue-report", "verdict": "too_easy", "passes": 4, "decision": "rejected"}

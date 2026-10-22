@@ -1,0 +1,1 @@
+a CMake project that builds but its shared library crashes at runtime because of an ABI or symbol-visibility mismatch between two components

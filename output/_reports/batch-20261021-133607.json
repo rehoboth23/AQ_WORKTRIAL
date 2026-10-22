@@ -1,0 +1,338 @@
+[
+  {
+    "name": "fix-c-makefile-lib-reorg",
+    "description": "Fix a C project's Makefile after a library reorganization broke include paths and linker flags",
+    "difficulty": "medium",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "decision": "rejected",
+    "why": "too_easy",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-c-makefile-lib-reorg",
+      "verdict": "too_easy",
+      "passes": 5,
+      "n_valid": 5,
+      "n_invalid": 0,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__934qxyR",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 24128,
+          "output_tokens": 2073,
+          "cost_usd": 0.00205304,
+          "episodes": 7
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__TLNtLus",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 20658,
+          "output_tokens": 2449,
+          "cost_usd": 0.0018989999999999999,
+          "episodes": 7
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__TnT6VW6",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 32635,
+          "output_tokens": 3495,
+          "cost_usd": 0.0028950319999999996,
+          "episodes": 8
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__cNagpA6",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 23740,
+          "output_tokens": 2525,
+          "cost_usd": 0.0021493992000000003,
+          "episodes": 8
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__rhkYVxd",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 21498,
+          "output_tokens": 2208,
+          "cost_usd": 0.0019143200000000002,
+          "episodes": 7
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0"
+      ],
+      "tokens": {
+        "input": 122659,
+        "output": 12750
+      },
+      "cost_usd": 0.0109,
+      "seconds": 87.9,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/fix-c-makefile-lib-reorg"
+  },
+  {
+    "name": "fix-sqlite-migration-corruption",
+    "description": "Diagnose and repair a SQLite database where a migration script silently shuffled data into wrong columns during a table recreation.",
+    "difficulty": "medium",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "decision": "rejected",
+    "why": "too_easy",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-sqlite-migration-corruption",
+      "verdict": "too_easy",
+      "passes": 5,
+      "n_valid": 5,
+      "n_invalid": 0,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__89caVkf",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 14560,
+          "output_tokens": 1930,
+          "cost_usd": 0.00139348,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__Kr3kDJp",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 18295,
+          "output_tokens": 5938,
+          "cost_usd": 0.00247898,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__NTidDLk",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 44381,
+          "output_tokens": 7733,
+          "cost_usd": 0.00462154,
+          "episodes": 7
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__eVXTpYs",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 9737,
+          "output_tokens": 2059,
+          "cost_usd": 0.00110246,
+          "episodes": 4
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0/fix-sqlite-migration-corruption__fKrqpVX",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 89659,
+          "output_tokens": 12506,
+          "cost_usd": 0.0085365,
+          "episodes": 9
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-sqlite-migration-corruption-20261021-133734-0"
+      ],
+      "tokens": {
+        "input": 176632,
+        "output": 30166
+      },
+      "cost_usd": 0.0181,
+      "seconds": 170.9,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/fix-sqlite-migration-corruption"
+  },
+  {
+    "name": "nginx-proxy-swapped-routes",
+    "description": "Fix an nginx reverse proxy that routes requests to the wrong backend services due to swapped upstream ports and missing path-stripping slashes.",
+    "difficulty": "medium",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "decision": "rejected",
+    "why": "too_easy",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/nginx-proxy-swapped-routes",
+      "verdict": "too_easy",
+      "passes": 5,
+      "n_valid": 5,
+      "n_invalid": 0,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__5r5fLV4",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 16170,
+          "output_tokens": 1955,
+          "cost_usd": 0.0016746800000000002,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__CWPZY7W",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 24661,
+          "output_tokens": 3636,
+          "cost_usd": 0.0024538600000000004,
+          "episodes": 6
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__YGk5tdx",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 23379,
+          "output_tokens": 2459,
+          "cost_usd": 0.0022157,
+          "episodes": 6
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__jTb67Qj",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 18389,
+          "output_tokens": 2261,
+          "cost_usd": 0.00204902,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0/nginx-proxy-swapped-routes__vEDf5PJ",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 20356,
+          "output_tokens": 2498,
+          "cost_usd": 0.0020124400000000003,
+          "episodes": 5
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-nginx-proxy-swapped-routes-20261021-134025-0"
+      ],
+      "tokens": {
+        "input": 102955,
+        "output": 12809
+      },
+      "cost_usd": 0.0104,
+      "seconds": 67.3,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/nginx-proxy-swapped-routes"
+  },
+  {
+    "name": "pillow-10-resampling-migration",
+    "description": "Fix a thumbnail library whose test suite broke after a Pillow 10.x dependency upgrade removed Image.ANTIALIAS.",
+    "difficulty": "medium",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "decision": "rejected",
+    "why": "too_easy",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/pillow-10-resampling-migration",
+      "verdict": "too_easy",
+      "passes": 5,
+      "n_valid": 5,
+      "n_invalid": 0,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__8Ai4tQb",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 21178,
+          "output_tokens": 2483,
+          "cost_usd": 0.0020046,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__8fbkY2C",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 20051,
+          "output_tokens": 1260,
+          "cost_usd": 0.0016498599999999997,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__jDYjdqX",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 17149,
+          "output_tokens": 1166,
+          "cost_usd": 0.00142022,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__rPxhkYr",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 19139,
+          "output_tokens": 1246,
+          "cost_usd": 0.00161474,
+          "episodes": 5
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0/pillow-10-resampling-migration__zjZ5TBU",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 33582,
+          "output_tokens": 2424,
+          "cost_usd": 0.00275888,
+          "episodes": 7
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-pillow-10-resampling-migration-20261021-134133-0"
+      ],
+      "tokens": {
+        "input": 111099,
+        "output": 8579
+      },
+      "cost_usd": 0.0094,
+      "seconds": 62.3,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/pillow-10-resampling-migration"
+  }
+]

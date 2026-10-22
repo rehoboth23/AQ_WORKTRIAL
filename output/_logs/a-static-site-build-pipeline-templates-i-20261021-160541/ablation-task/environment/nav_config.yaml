@@ -1,0 +1,40 @@
+# Navigation structure definition.
+# All navigation is configured via the nav_items key in site.yaml.
+# This file exists as a reference for the intended site structure.
+
+navigation:
+  main:
+    - title: Home
+      url: /
+      icon: home
+      weight: 1
+    - title: About
+      url: /about/
+      weight: 2
+    - title: Blog
+      url: /blog/
+      weight: 3
+    - title: Documentation
+      url: /docs/
+      weight: 4
+      children:
+        - title: Getting Started
+          url: /docs/getting-started/
+        - title: Configuration
+          url: /docs/configuration/
+        - title: API Reference
+          url: /docs/api/
+    - title: Projects
+      url: /projects/
+      weight: 5
+
+  footer:
+    - title: RSS Feed
+      url: /feed.xml
+    - title: Sitemap
+      url: /sitemap.xml
+
+depth_settings:
+  max_depth: 3
+  include_home: true
+  offset: 0

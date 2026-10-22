@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/stale-dns-intermittent-backend"
+description = "Diagnose and fix intermittent DNS resolution causing a client to sometimes reach a decommissioned backend due to stale hosts entries, duplicate dnsmasq address directives, wrong nsswitch order, a faulty fallback in the healthcheck code, and a startup script that re-injects stale configuration via sourced environment variables."
+keywords = [ "dns", "dnsmasq", "nsswitch", "networking", "debugging", "configuration",]
+
+[metadata]
+difficulty = "hard"
+category = "system-administration"
+tags = [ "dns", "dnsmasq", "nsswitch", "networking", "debugging", "configuration",]
+expert_time_estimate_min = 30.0
+junior_time_estimate_min = 90.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

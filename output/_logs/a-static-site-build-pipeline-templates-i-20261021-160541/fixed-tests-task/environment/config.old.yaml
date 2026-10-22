@@ -1,0 +1,13 @@
+# Legacy configuration file — NOT loaded by the current build system.
+# Kept for historical reference only.
+site_name: Petrify Docs
+site_url: https://petrify.dev/
+output_dir: site
+assets_dir: static
+content_dir: pages
+templates_dir: views
+nav_depth_offset: 0
+theme: default
+permalinks: pretty
+paginate: 10
+excerpt_separator: "<!--more-->"

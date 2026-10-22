@@ -1,0 +1,26 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/petrify-static-site-broken-output"
+description = "Fix a static-site generator that builds without errors but produces pages with wrong post ordering, missing asset hashes, and broken navigation links from nested pages."
+keywords = [ "python", "static-site", "asset-hashing", "template-engine", "date-parsing",]
+
+[metadata]
+difficulty = "hard"
+category = "debugging"
+tags = [ "python", "static-site", "asset-hashing", "template-engine", "date-parsing",]
+expert_time_estimate_min = 40.0
+junior_time_estimate_min = 100.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

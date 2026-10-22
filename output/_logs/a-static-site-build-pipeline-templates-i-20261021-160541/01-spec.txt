@@ -1,0 +1,88 @@
+```json
+{
+  "name": "petrify-static-site-broken-output",
+  "description": "Fix a static-site generator that builds without errors but produces pages with wrong post ordering, missing asset hashes, and broken navigation links from nested pages.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["python", "static-site", "asset-hashing", "template-engine", "date-parsing"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 90,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A custom Python static site generator called Petrify builds a documentation/blog site from markdown with YAML frontmatter, Jinja2 templates, and content-based asset hashing for cache-busting. After a recent refactor of the build system, the build runs without errors but the generated site in dist/ has three distinct problems: blog posts appear in a nonsensical order that doesn't match their dates, CSS and JS files fail to load because the HTML references non-existent unhashed filenames while only hashed versions exist in the output, and navigation links work from some pages but break from deeper nested pages like the docs section.",
+  "environment_setup": "The Dockerfile installs PyYAML, Python-Markdown, and Jinja2, then copies the full project: a petrify/ Python package (builder.py, assets.py, links.py, content.py, config.py, utils.py), templates/ (base.html, index.html, page.html, post.html, nav.html, footer.html), 15 content markdown files across blog/, projects/, and docs/ directories, CSS/JS/SVG assets, site.yaml config, a build.py entry point, and decoy files (Makefile with stale targets, config.old.yaml with legacy settings, a plugins/sitemap_gen.py that is never called, .env.example, README.md with misleading troubleshooting hints). Three bugs are planted: (1) builder.py sorts blog posts by string comparison on the date field instead of parsing dates, (2) assets.py computes asset-map keys relative to CWD instead of the assets directory so template lookups fail and fall back to unhashed paths, (3) links.py nav_links() has a variable-shadowing bug where the loop reassigns current_url to page['url'], causing depth to be computed from the target URL instead of the current page. Additionally, one content file has a typo in its date field (Februray) that only manifests as a crash after the sort bug is fixed.",
+  "instruction_summary": "Fix the Petrify static site generator so that: (1) blog posts on the homepage and RSS feed appear in correct reverse-chronological order by publication date, (2) all CSS/JS asset references in generated HTML use hashed filenames matching the actual files in dist/, and (3) navigation links resolve correctly from every page regardless of depth. Run the build with `python3 build.py`. Output goes to `dist/`. Config is `site.yaml`. Build code is in `petrify/`.",
+  "solution_outline": [
+    "Fix date sorting in petrify/builder.py: replace string-based sort key with datetime.strptime(p['date'], '%d %B %Y')",
+    "Fix date typo in content/blog/migration-guide.md: change 'Februray' to 'February'",
+    "Fix asset-map key computation in petrify/assets.py: change os.path.relpath(full_path) to os.path.relpath(full_path, assets_dir)",
+    "Fix variable shadowing in petrify/links.py: remove the line 'current_url = page[\"url\"]' that shadows the function parameter inside the nav_links loop",
+    "Run python3 build.py to regenerate the site with all fixes applied"
+  ],
+  "test_plan": [
+    "TestBuildIntegrity: run python3 build.py and verify it exits 0; check that all 15 expected HTML pages exist in dist/",
+    "TestBlogOrdering: parse dist/index.html, extract <time> dates from <article class=\"post\"> elements, parse with datetime.strptime, verify reverse-chronological order; specifically verify the first post is from December 2024",
+    "TestDateParseable: verify every blog post date in the index can be parsed by datetime.strptime with format '%d %B %Y' (catches the typo if unpatched)",
+    "TestAssetHashes: for every HTML file in dist/, extract <link href> and <script src> for CSS/JS, verify each reference contains an 8-char hex hash pattern (e.g. main.abc12345.css), and that the referenced file exists in dist/",
+    "TestAssetFilesExist: verify dist/css/ has at least 3 hashed .css files and dist/js/ has at least 2 hashed .js files",
+    "TestNavLinksFromAllPages: for every HTML file in dist/, extract <nav> links, resolve each relative href against the page's directory, verify the target path exists in dist/ (catches links like ../about from docs/getting-started that resolve to docs/about/)",
+    "TestNoEmptyNavHrefs: verify no <a href=\"\"> exists inside any <nav> block (catches broken homepage link from nested pages)",
+    "TestNavFromDeepPage: specifically check dist/docs/getting-started/index.html nav links resolve to existing pages",
+    "TestFeedOrdering: parse dist/feed.xml, extract <pubDate> values, verify they are in reverse-chronological order"
+  ],
+  "anti_cheat": "The expected output is never stored in the image. Asset hashes are computed from file content at build time, so the correct hash values are only known by running the build with correct code. The date typo is in content data, not code. The variable shadowing in links.py looks like a normal assignment on quick read. The asset-map key bug is in a different module from where the symptom manifests (template rendering). No solution files or expected outputs are copied into the image.",
+  "failure_modes": "An agent might fix the date sort but miss the 'Februray' typo, causing a build crash after the first fix. An agent might fix the asset-map keys but not realize the copy_assets function already uses the correct relative path, leading to confusion about whether both need changing. An agent might spot the empty href in nav links but not trace it to the variable-shadowing bug, instead trying to patch the template. An agent might be distracted by the decoy absolute_url function in links.py or the format_date utility in utils.py. An agent might waste time investigating config.old.yaml or the disabled sitemap plugin.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "petrify/builder.py",
+      "what": "Sorts blog posts by string comparison on the date field (key=lambda p: p['date']) instead of parsing the date string into a datetime object. Dates in format 'DD Month YYYY' sort alphabetically, e.g. '1 December 2024' comes after '5 January 2024' because '1' < '5'.",
+      "symptom": "Blog posts appear in wrong order on the homepage and in the RSS feed. December post appears below January post.",
+      "how_discovered": "Build the site, inspect dist/index.html, notice post dates are not in chronological order. Search for 'sorted' in the codebase, find the sort in builder.py.",
+      "depends_on": null
+    },
+    {
+      "layer": "data",
+      "where": "content/blog/migration-guide.md",
+      "what": "Frontmatter date field has typo 'Februray' instead of 'February'. After fixing Fault 1 to use datetime.strptime, this malformed date crashes the build.",
+      "symptom": "After fixing the sort to parse dates, build crashes with ValueError on '10 Februray 2024'.",
+      "how_discovered": "Build fails with date parse error after fixing Fault 1. Error message shows the malformed date string. Grep for the string in content files.",
+      "depends_on": 0
+    },
+    {
+      "layer": "code",
+      "where": "petrify/assets.py",
+      "what": "build_asset_map() computes keys with os.path.relpath(full_path) (relative to CWD, yielding 'assets/css/main.css') instead of os.path.relpath(full_path, assets_dir) (yielding 'css/main.css'). Template lookups use 'css/main.css' and miss, falling back to the unhashed path. Meanwhile copy_assets() uses the correct relative path, so hashed files exist in dist/css/ but HTML references dist/css/main.css which doesn't exist.",
+      "symptom": "CSS and JS don't load. HTML references unhashed filenames (e.g. css/main.css) while only hashed files (e.g. css/main.a1b2c3d4.css) exist in dist/.",
+      "how_discovered": "Open dist/index.html, see href='css/main.css', check dist/css/ and find only hashed filenames. Trace asset_url() function, find lookup fails, trace key construction in assets.py.",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "petrify/links.py",
+      "what": "In nav_links(), the loop body contains 'current_url = page[\"url\"]' which shadows the function parameter 'current_url'. The depth computation then uses the target page's depth instead of the current page's depth, generating wrong '../' prefixes. From depth-2 pages, links to depth-1 pages get only one '../' (should be two), resolving into a sibling directory that doesn't exist. The homepage link gets an empty href from non-root pages.",
+      "symptom": "Nav links from docs/getting-started page lead to 404 (e.g. ../about resolves to /docs/about/). Homepage link from any non-root page is an empty href that stays on current page.",
+      "how_discovered": "Check nav links from dist/docs/getting-started/index.html, see ../about which resolves wrong. Open links.py, read nav_links function carefully, spot the parameter shadowing.",
+      "depends_on": null
+    }
+  ],
+  "decoys": [
+    "config.old.yaml with legacy settings and different output_dir ('site' instead of 'dist') - looks like it could cause path confusion but is never loaded",
+    "plugins/sitemap_gen.py - a disabled sitemap generator that uses absolute_url from links.py, suggesting it might be involved in link issues",
+    "Makefile with stale 'clean' target referencing .cache/ directory and 'deploy-staging' target",
+    "README.md troubleshooting section suggesting template/layout errors as a common issue",
+    "petrify/utils.py format_date() function that can parse the correct date format but is never called in the build pipeline",
+    "petrify/links.py absolute_url() function that looks like it should be used for URL construction but isn't called during page rendering",
+    ".env.example with EMBER_BASE_URL variable suggesting environment-based configuration"
+  ],
+  "hidden_edge_cases": [
+    "Pages without a date field (docs, projects) must not crash the date parsing - only blog posts are sorted",
+    "The homepage (url='') must have working nav links - its depth is 0, requiring no '../' prefix",
+    "Navigation from depth-2 pages (docs/getting-started) to depth-1 pages (about) requires exactly two '../' levels",
+    "Asset hash references must use 8-char hex hashes matching the actual copied filenames, not just any hash-like string",
+    "Empty href in nav links is invalid - homepage link must resolve from every page depth",
+    "The RSS feed in dist/feed.xml must also reflect correct reverse-chronological post ordering"
+  ],
+  "why_not_textbook": "None of these bugs are famous or well-known. The variable-shadowing bug in Python is a classic language pitfall but its manifestation (wrong relative URL depth in generated HTML) is specific to this static-site context and doesn't produce an error message naming the fault. The asset-map key mismatch is a project-specific path computation error, not a general framework issue. The date string-sort bug could be mistaken for a data-formatting problem rather than a code logic error. The typo-dependent crash chain (sort fix reveals data fault) is unique to this scenario's data.",
+  "expected_agent_steps": 25
+}
+```

@@ -1,0 +1,78 @@
+```json
+{
+  "name": "sqlite-null-tz-revenue-report",
+  "description": "Fix a migrated PostgreSQL-to-SQLite analytics pipeline where NULL handling, timezone grouping, and a stale currency config produce wrong monthly revenue reports.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["sqlite", "sql-views", "null-handling", "timezone", "config-error", "data-pipeline"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 90,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A company migrated its revenue analytics pipeline from PostgreSQL to SQLite. The monthly revenue report (report.csv) now shows wrong numbers that don't match the accounting system. The pipeline uses cascading SQL views and a Python report generator that reads a YAML config. Three independent bugs across the SQL views and config file combine to produce incorrect totals: a NULL category filter exclusion, UTC-vs-EST date grouping, and a stale currency conversion multiplier. The agent must diagnose all three, fix them, and regenerate the report.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 environment with pyyaml. A seed script creates a SQLite database at data/ledger.db with 4 merchants and ~160 transactions spanning Jan-Mar 2024 (all timestamps UTC). The seed script is deleted after build. SQL views are created from sql/views.sql and sql/reporting_views.sql. The Python project spans ~8 modules in lib/ plus generate_report.py. A stale config.yaml sets currency_multiplier: 0.83 (legacy EUR conversion; data is already USD). The v_eligible_transactions view uses `category <> 'internal'` which excludes NULL categories. The v_daily_revenue view uses `date(created_at)` (UTC) instead of `date(created_at, '-5 hours')` for EST, and uses `SUM(refund_amount)` without COALESCE, producing NULL when all refund_amounts in a group are NULL, propagating to NULL monthly_net. Decoy files include lib/transformations.py (timezone code that isn't used), sql/migrations.sql (old migration notes), and lib/reconciliation.py.",
+  "instruction_summary": "The monthly revenue report (report.csv) is wrong after migrating from PostgreSQL to SQLite. Business rules: (1) business timezone is EST (UTC-5), transactions should be grouped by EST date; (2) all amounts are USD, no conversion; (3) only status='completed' transactions included; (4) category='internal' excluded, but NULL category transactions are regular external and MUST be included; (5) NULL refund_amount means $0 refund; (6) net_revenue = gross - refunds, never NULL. Run `python3 generate_report.py` to produce report.csv with columns month,merchant_id,gross_revenue,total_refunds,net_revenue,transaction_count. Fix whatever is wrong and regenerate so report.csv is correct.",
+  "solution_outline": [
+    "Fix config.yaml: change currency_multiplier from 0.83 to 1.0",
+    "Fix sql/views.sql: change `AND t.category <> 'internal'` to `AND (t.category <> 'internal' OR t.category IS NULL)` in v_eligible_transactions",
+    "Fix sql/reporting_views.sql: change `date(t.created_at)` to `date(t.created_at, '-5 hours')` in v_daily_revenue GROUP BY and SELECT",
+    "Fix sql/reporting_views.sql: change `SUM(t.refund_amount)` to `SUM(COALESCE(t.refund_amount, 0))` in v_daily_revenue",
+    "Open data/ledger.db, DROP views v_monthly_summary, v_daily_revenue, v_eligible_transactions, v_merchant_region_summary",
+    "Re-execute sql/views.sql and sql/reporting_views.sql against the database to recreate views with fixes",
+    "Run python3 generate_report.py to regenerate report.csv"
+  ],
+  "test_plan": [
+    "test_report_exists: report.csv exists and is non-empty valid CSV with correct header columns",
+    "test_currency_multiplier: config.yaml currency_multiplier is 1.0 (or report values match raw DB data without scaling); check a known merchant's monthly gross against SUM(amount) from raw transactions",
+    "test_null_category_included: query DB for completed transactions with NULL category and category<>'internal'; verify their amounts contribute to report totals by comparing report sum to raw DB sum including NULL-category rows",
+    "test_timezone_est_grouping: transactions with UTC timestamps between 00:00-04:59 should belong to the previous EST day; check that 2024-02-01 00:30 UTC appears in January report month, not February",
+    "test_month_boundary_crossing: a transaction at 2024-02-01 00:30 UTC (EST Jan 31) must appear in month 2024-01 totals; a transaction at 2024-03-01 01:00 UTC (EST Feb 29) must appear in 2024-02 totals",
+    "test_refund_null_handling: for any merchant-month where all refund_amounts are NULL, monthly_net must equal monthly_gross (not NULL/empty); report CSV must have numeric net_revenue for every row",
+    "test_internal_excluded: transactions with category='internal' must not contribute to any report totals; verify by comparing report counts to DB counts excluding internal",
+    "test_full_report_correctness: compute the expected report by querying raw transactions with corrected logic (COALESCE refunds, EST dates, NULL category included, internal excluded, no multiplier) and compare every row of report.csv to expected values"
+  ],
+  "anti_cheat": "The seed script is deleted after Dockerfile build, so the agent cannot see how data was generated. Expected values are not stored anywhere in the image. The tests recompute correct results from first principles by querying the raw transaction table with corrected SQL. The config multiplier 0.83 could plausibly be a real EUR/USD rate, making it non-obvious it's wrong. The NULL category issue only affects ~15% of transactions, and the timezone issue only affects transactions between midnight-5AM UTC, making neither immediately obvious from a quick glance at report numbers.",
+  "failure_modes": "An agent might: (1) fix the config multiplier but miss the SQL view bugs; (2) fix the NULL category but not realize date() groups by UTC; (3) fix the timezone but use the wrong offset or apply it in the wrong direction; (4) fix the SQL files but forget to DROP and recreate the views in the database; (5) fix views but forget to regenerate the report; (6) waste time investigating decoy files like lib/transformations.py or sql/migrations.sql which contain timezone and migration code but are not used in the report pipeline; (7) fix one bug, regenerate, see improvement but not verify all values are now correct, missing remaining bugs.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "sql/views.sql, v_eligible_transactions view, WHERE clause",
+      "what": "Uses `t.category <> 'internal'` which evaluates to NULL (not TRUE) for rows where category IS NULL, excluding legitimate uncategorized external transactions",
+      "symptom": "Report totals are too low because ~15% of eligible transactions (those with NULL category) are silently dropped from the pipeline",
+      "how_discovered": "Agent queries the database directly to count completed non-internal transactions and notices the view returns fewer rows than expected; examining the view definition reveals the WHERE clause doesn't handle NULL",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "sql/reporting_views.sql, v_daily_revenue view, date grouping and refund aggregation",
+      "what": "Uses `date(t.created_at)` which groups by UTC date instead of EST (should be `date(t.created_at, '-5 hours')`); also uses `SUM(t.refund_amount)` without COALESCE, returning NULL when all refund_amounts in a day-group are NULL, which propagates to NULL monthly_net in v_monthly_summary",
+      "symptom": "Transactions between midnight-5AM UTC appear in the wrong month's totals (e.g., a Jan 1 00:30 UTC transaction appears in January but should be in December EST); for merchant-months with no refunds at all, monthly_net shows as empty/NULL in the CSV",
+      "how_discovered": "Agent examines the reporting views after suspecting date issues, notices no timezone offset in date() call, and sees the config specifies UTC-5 but the view ignores it; the COALESCE issue is discovered when checking why some monthly_net values are NULL",
+      "depends_on": null
+    },
+    {
+      "layer": "config",
+      "where": "config.yaml, reporting.currency_multiplier",
+      "what": "Set to 0.83 (a legacy EUR-to-USD conversion factor from before the PostgreSQL migration), but all transaction amounts are already stored in USD, so the multiplier should be 1.0",
+      "symptom": "All monetary values in report.csv are multiplied by 0.83, making them ~17% too low across the board",
+      "how_discovered": "Agent reads config.yaml and notices the currency_multiplier field; checking lib/exchange.py shows it's applied to every monetary column; the instruction states amounts are in USD with no conversion needed, so 0.83 is wrong",
+      "depends_on": null
+    }
+  ],
+  "decoys": [
+    "lib/transformations.py: Contains a DateTransformer class with utc_to_local() and get_business_date() methods that look like they should handle timezone conversion, but are never called by the report pipeline",
+    "sql/migrations.sql: Contains comments about the PostgreSQL-to-SQLite migration and notes about 'AT TIME ZONE -> manual offset adjustment', suggesting the timezone issue might be a migration artifact, but the actual fix is in the view definitions",
+    "lib/reconciliation.py: Contains reconciliation logic that compares report data to accounting data, with a commented-out test that once caught the multiplier issue but was disabled during migration",
+    "lib/exchange.py: Contains HISTORICAL_RATES dict with EUR/USD rates by month; the 0.83 multiplier doesn't match any of these rates, which could mislead an agent into thinking the multiplier was intentionally different from the historical rates",
+    "config.yaml timezone.utc_offset field: Correctly set to '-05:00' for EST, but is never read by any code; an agent might think fixing this field would fix the timezone bug, but the views don't use it"
+  ],
+  "hidden_edge_cases": [
+    "Month boundary crossing: A transaction at 2024-02-01 00:30 UTC becomes 2024-01-31 19:30 EST, so it must appear in January's monthly totals, not February's",
+    "Leap year: 2024-02-29 exists; a transaction at 2024-03-01 01:00 UTC becomes 2024-02-29 20:00 EST, belonging to February's totals",
+    "All-NULL refund groups: For merchant-months where no transactions have any refund (all refund_amount IS NULL), SUM(refund_amount) returns NULL, making monthly_net NULL instead of equal to monthly_gross",
+    "Zero-amount edge: Some transactions have small amounts (< $10); the currency multiplier and NULL bugs affect these proportionally, but rounding after multiplication can cause penny-level discrepancies",
+    "Multiple merchants per month: The report must have a row for every (month, merchant_id) pair that has at least one eligible transaction after all fixes"
+  ],
+  "why_not_textbook": "The NULL handling in WHERE clauses is a well-known SQL gotcha, but discovering it requires tracing through a cascading view hierarchy (v_eligible_transactions → v_daily_revenue → v_monthly_summary) and recognizing that the symptom is missing data, not an error. The timezone issue is specific to this business's EST requirement and the PostgreSQL-to-SQLite migration context; there's no standard fix to memorize. The config multiplier 0.83 is a domain-specific legacy value, not a well-known misconfiguration. The three faults interact to produce compound wrong numbers that can't be diagnosed by fixing any single issue.",
+  "expected_agent_steps": 18
+}
+```

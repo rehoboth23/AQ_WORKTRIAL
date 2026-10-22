@@ -1,0 +1,95 @@
+```json
+{
+  "name": "sqlite-null-tz-analytics-report",
+  "description": "Fix a SQLite analytics report broken by NULL-handling, timezone conversion, and integer division bugs across cascading SQL views and a Python report generator",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["sqlite", "null-handling", "timezone", "sql-views", "integer-division", "reporting"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "DataPulse Analytics migrated their daily revenue and session report from PostgreSQL to SQLite. The report at /app/output/report.csv is now wrong — daily totals don't match accounting, averages look truncated, some days are missing entirely, and session durations seem off. The team suspects the migration introduced subtle incompatibilities but isn't sure where. The database, SQL view definitions, and Python report generator all need investigation.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 image with sqlite3 CLI installed. A seed script (deleted after build) creates /app/data/analytics.db with three tables: users (30 users, 6 with NULL tz_offset_hours), transactions (~300 rows with integer amounts, some near midnight UTC), and sessions (~200 rows, ~25 with NULL ended_utc). Four SQL views are defined in /app/sql/views.sql with bugs: v_daily_revenue groups by UTC day and uses integer division; v_daily_active has NULL timezone concatenation dropping users; v_daily_sessions uses COALESCE on ended_utc (treating active sessions as 0-min) and also has the NULL timezone bug. The Python report generator /app/generate_report.py reads views.sql, recreates views, queries them, and writes report.csv using set intersection (losing days only in one view). Decoy files include legacy_views.sql, settings.ini with a timezone config, models.py with a correct get_local_day method, and MIGRATION.md claiming UTC grouping was intentional. The initial report.csv is generated at build time with all bugs active.",
+  "instruction_summary": "The daily analytics report at /app/output/report.csv is incorrect. Fix it so it follows these rules:\n\n- One row per calendar day (ascending) for every day that has at least one transaction OR at least one completed session (ended_utc IS NOT NULL)\n- Columns: day,paying_users,total_revenue,avg_revenue_per_user,avg_session_min\n- day: YYYY-MM-DD in each user's LOCAL timezone using users.tz_offset_hours (default 0 if NULL) applied to the UTC timestamps\n- paying_users: distinct users with transactions on that local day\n- total_revenue: sum of transaction amounts on that local day\n- avg_revenue_per_user: total_revenue / paying_users as a REAL number (not integer-truncated), rounded to 2 decimal places; 0.00 for days with no transactions\n- avg_session_min: average duration in minutes of completed sessions (ended_utc IS NOT NULL) on that local day, rounded to 2 decimal places; 0.00 for days with no completed sessions\n\nRun `python3 /app/generate_report.py` to regenerate after fixes. The script reads /app/sql/views.sql each run.",
+  "solution_outline": [
+    "Fix /app/sql/views.sql: In v_daily_revenue, change strftime('%Y-%m-%d', t.txn_utc) to strftime('%Y-%m-%d', datetime(t.txn_utc, '+' || COALESCE(u.tz_offset_hours, 0) || ' hours')) for local-day grouping, and change SUM(t.amount) / COUNT(DISTINCT t.user_id) to SUM(t.amount) * 1.0 / COUNT(DISTINCT t.user_id) for float division",
+    "Fix /app/sql/views.sql: In v_daily_sessions, change u.tz_offset_hours to COALESCE(u.tz_offset_hours, 0) in the datetime modifier, remove the COALESCE wrapper around the julianday subtraction (so NULL durations from NULL ended_utc are naturally excluded by AVG), and add WHERE s.ended_utc IS NOT NULL",
+    "Fix /app/sql/views.sql: In v_daily_active, change u.tz_offset_hours to COALESCE(u.tz_offset_hours, 0) in the datetime modifier (decoy view but fix for completeness)",
+    "Fix /app/generate_report.py: Change set(revenue.keys()) & set(sessions.keys()) to set(revenue.keys()) | set(sessions.keys()) so all days appear, and handle missing data gracefully with 0 defaults",
+    "Run python3 /app/generate_report.py to regenerate the corrected report"
+  ],
+  "test_plan": [
+    "test_report_exists: /app/output/report.csv exists and is non-empty with at least a header and one data row",
+    "test_report_format: Header is exactly day,paying_users,total_revenue,avg_revenue_per_user,avg_session_min; every data row has 5 columns; day matches YYYY-MM-DD",
+    "test_all_days_present: Query DB with corrected timezone SQL for transaction days and completed-session days, take union, compare to report days — must match exactly",
+    "test_revenue_correct: For each report day, recompute paying_users, total_revenue, and avg_revenue_per_user using COALESCE timezone and float division; assert exact match (total_revenue as int, avg within 0.005)",
+    "test_avg_revenue_is_float: At least one avg_revenue_per_user in the report has a non-zero fractional part (proves integer division was fixed)",
+    "test_sessions_exclude_active: Recompute avg_session_min with WHERE ended_utc IS NOT NULL vs without; report must match the former (active sessions excluded)",
+    "test_no_null_day_rows: No row in report has empty, 'None', or 'null' as the day value",
+    "test_days_ascending: Days in the report are in ascending chronological order",
+    "test_null_tz_users_included: For days where users with NULL tz_offset_hours had transactions, those transactions must appear (counted under UTC/day-offset-0); verify by querying transactions for NULL-tz users and checking their days appear with non-zero paying_users",
+    "test_session_days_without_revenue: At least one day that has completed sessions but zero transactions should appear in the report with paying_users=0, total_revenue=0, avg_revenue_per_user=0.00"
+  ],
+  "anti_cheat": "The seed script is deleted after build, so the exact data values cannot be discovered from source. The expected report values depend on correctly applying timezone offsets, float division, and NULL filtering across the deterministic data — an agent cannot guess the right numbers without actually computing them. Tests recompute expected values from the database using corrected SQL, so hardcoding any particular numbers would fail. The decoy files (legacy_views.sql, settings.ini, MIGRATION.md) contain plausible but incorrect information that would lead to wrong fixes if followed blindly.",
+  "failure_modes": "An agent might: (1) accept the misleading comment 'UTC day for cross-timezone consistency' and not fix the timezone grouping; (2) fix one view but miss that the same NULL-timezone bug exists in another; (3) add COALESCE for timezone but forget integer division, producing days that look right but have wrong averages; (4) fix SQL views but miss the Python intersection bug, losing days with only sessions; (5) waste time on decoy files like settings.ini or legacy_views.sql; (6) add COALESCE to wrap the entire AVG expression instead of removing it from the inner argument, still producing wrong averages; (7) fix the timezone but use a hardcoded offset from settings.ini (5) instead of per-user offsets.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "/app/sql/views.sql — v_daily_revenue",
+      "what": "Day column uses strftime('%Y-%m-%d', t.txn_utc) grouping by UTC day instead of converting to each user's local timezone",
+      "symptom": "Revenue for events near midnight UTC appears on the wrong local day; individual amounts are correct but daily totals don't match accounting",
+      "how_discovered": "Compare view definition to the instruction's requirement for local-day grouping; query transactions near midnight UTC and see they're assigned to the wrong day",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/sql/views.sql — v_daily_revenue",
+      "what": "SUM(t.amount) / COUNT(DISTINCT t.user_id) performs integer division in SQLite because amount is INTEGER type; PostgreSQL would do float division",
+      "symptom": "avg_revenue_per_user values are truncated (e.g., 33 instead of 33.33); always whole numbers",
+      "how_discovered": "Inspect the avg_revenue_per_user column in the report and notice all values are integers; check the view definition and see no float cast",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/sql/views.sql — v_daily_sessions",
+      "what": "datetime(s.started_utc, '+' || u.tz_offset_hours || ' hours') returns NULL when tz_offset_hours is NULL because NULL concatenation yields NULL, causing those sessions to have NULL day and be dropped from GROUP BY or placed in a NULL-day group",
+      "symptom": "Sessions from users with NULL timezone_offset are missing from daily counts, lowering session-day coverage; a NULL-day row may appear or those rows may vanish depending on the query path",
+      "how_discovered": "Query the users table for NULL tz_offset_hours, then check if those users' sessions appear in the view; test datetime(ts, '+' || NULL || ' hours') in SQLite",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/sql/views.sql — v_daily_sessions",
+      "what": "AVG(COALESCE((julianday(s.ended_utc) - julianday(s.started_utc)) * 1440, 0)) wraps the duration in COALESCE defaulting to 0, so sessions with NULL ended_utc (still active) contribute 0 minutes to the average instead of being excluded",
+      "symptom": "avg_session_min is too low because active (un-ended) sessions drag the average toward 0",
+      "how_discovered": "Query sessions with NULL ended_utc, count them, then compare AVG with and without COALESCE; the COALESCE version produces a lower average",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/generate_report.py — day-set computation",
+      "what": "Uses set(revenue.keys()) & set(sessions.keys()) (intersection) to determine which days appear, dropping days that exist in only one view",
+      "symptom": "Days with completed sessions but no transactions (or vice versa, once timezone bugs misalign days between views) are entirely missing from the report",
+      "how_discovered": "Read the Python source; compare days in v_daily_revenue vs v_daily_sessions; notice days present in one but not the other are absent from the CSV",
+      "depends_on": 1
+    }
+  ],
+  "decoys": [
+    "/app/sql/legacy_views.sql — contains older view definitions with similar but different bugs; not loaded or used by generate_report.py",
+    "/app/settings.ini — has [timezone] section with default_offset=5 that looks relevant but is never read by any code",
+    "/app/models.py — defines User class with get_local_day() method that does correct timezone conversion, but this class is never imported or used by the report pipeline",
+    "/app/docs/MIGRATION.md — claims 'timezone handling was consolidated to use UTC for consistency across regions', suggesting the UTC grouping might be intentional",
+    "/app/db_manager.py — has get_user_timezone() helper that returns COALESCE(tz_offset_hours, 0), showing the correct pattern, but is not called from views.sql",
+    "Comments in views.sql saying '-- Group by UTC day for cross-timezone consistency' and '-- COALESCE ensures no NULL durations break the average'"
+  ],
+  "hidden_edge_cases": [
+    "Days with only completed sessions and zero transactions should still appear with paying_users=0, total_revenue=0, avg_revenue_per_user=0.00",
+    "Users with NULL tz_offset_hours must be treated as UTC (offset 0); their transactions/sessions must appear under the correct UTC-derived local day",
+    "Integer division must be fixed so avg_revenue_per_user has fractional parts when totals don't divide evenly — at least one row must show a non-integer average",
+    "Sessions with NULL ended_utc must be completely excluded from avg_session_min, not counted as 0-minute sessions",
+    "No row in the report should have a NULL or empty day value"
+  ],
+  "why_not_textbook": "While NULL handling differences between PostgreSQL and SQLite are documented, the specific combination here is bespoke: NULL concatenation in datetime modifiers (not a common pattern), COALESCE wrapping an AVG argument instead of the conventional WHERE IS NOT NULL filter, integer division hiding behind a seemingly correct SUM/COUNT expression, and the cascading effect where UTC-day grouping in one view misaligns with local-day grouping in another view to amplify a Python set-intersection bug. No single well-known PostgreSQL-to-SQLite migration guide covers this intersection of issues.",
+  "expected_agent_steps": 20
+}
+```

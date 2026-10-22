@@ -1,0 +1,84 @@
+{
+  "name": "cmake-visibility-plugin-crash",
+  "description": "Diagnose and fix a CMake C++ project whose shared library hides symbols needed by dynamically loaded plugins, causing runtime symbol-resolution failures",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "verdict": "too_easy",
+  "passes": 5,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "too_easy",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/cmake-visibility-plugin-crash",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0/cmake-visibility-plugin-crash__5DYRCEp",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 43862,
+        "output_tokens": 3035,
+        "cost_usd": 0.00368452,
+        "episodes": 6
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0/cmake-visibility-plugin-crash__H5k7WJz",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 43257,
+        "output_tokens": 2869,
+        "cost_usd": 0.00435534,
+        "episodes": 6
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0/cmake-visibility-plugin-crash__RRichCP",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 56545,
+        "output_tokens": 3818,
+        "cost_usd": 0.0050617,
+        "episodes": 7
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0/cmake-visibility-plugin-crash__gv4tnZ3",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 43451,
+        "output_tokens": 2831,
+        "cost_usd": 0.0036103000000000003,
+        "episodes": 6
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0/cmake-visibility-plugin-crash__rQyYXkN",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 42881,
+        "output_tokens": 3441,
+        "cost_usd": 0.004133540000000001,
+        "episodes": 7
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0"
+    ],
+    "tokens": {
+      "input": 229996,
+      "output": 15994
+    },
+    "cost_usd": 0.0208,
+    "seconds": 1530.1,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

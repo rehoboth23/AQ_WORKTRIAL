@@ -1,0 +1,1 @@
+a local DNS and service setup where a client intermittently hits the wrong backend because of a stale hosts entry and a misconfigured resolver order

@@ -1,0 +1,29 @@
+```json
+{
+  "name": "cmake-visibility-plugin-crash",
+  "description": "Diagnose and fix a CMake C++ project whose shared library hides symbols needed by dynamically loaded plugins, causing runtime symbol-resolution failures",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["cmake", "c++", "symbol-visibility", "dlopen", "shared-library", "abi"],
+  "expert_time_estimate_min": 20,
+  "junior_time_estimate_min": 60,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A C++ CSV processing tool called csvtools uses a plugin architecture where filter plugins (trim, uppercase) are loaded at runtime via dlopen. The project builds cleanly with no errors, but when run, the plugins fail to load with cryptic 'undefined symbol' errors from the dynamic linker. The root cause is a symbol-visibility mismatch: the CMakeLists.txt sets CMAKE_CXX_VISIBILITY_PRESET to hidden, and the export macro system that should override this for public API symbols is broken in two ways — a typo in the compile definition name that prevents the macro from ever activating, and a missing export annotation on the register_filter function that plugins must call. A C API layer (with manually-applied visibility attributes) works fine, masking the problem from the main executable's perspective.",
+  "environment_setup": "The Dockerfile builds an ubuntu:24.04 image with build-essential and cmake, copies the full project source tree into /app, and pre-builds it into /app/build. The project has: top-level CMakeLists.txt with CMAKE_CXX_VISIBILITY_PRESET hidden; an include/csvtools/export.h defining CSVTOOLS_API based on CSVTOOLS_BUILDING; a src/CMakeLists.txt that defines CSVTOOLS_BUILD=1 (typo — should be CSVTOOLS_BUILDING); a filter.h where register_filter() lacks the CSVTOOLS_API attribute; a capi.h/capi.cpp with extern C functions manually marked __attribute__((visibility(\"default\"))); plugins built as MODULE libraries (not linked against libcsvtools.so at build time); and a main executable that uses only the C API. Two sample plugins (trim_filter, uppercase_filter) call register_filter and inherit from the Filter base class. A data/sample.csv file with trailing whitespace provides test input. An internal helper csvtools::detail::validate_plugin_path exists to verify that internal symbols stay hidden.",
+  "instruction_summary": "The csvtools project compiles without errors but fails at runtime — filter plugins cannot load. Fix it so that running `./app/csvtools ../data/sample.csv` from /app/build correctly processes the CSV through the trim and uppercase filters. Requirements: (1) Program exits with code 0 with no 'Failed to load plugin' errors on stderr. (2) The shared library build/src/libcsvtools.so must export its public API symbols (visible via nm -D), including register_filter and the typeinfo for csvtools::Filter. (3) Internal implementation symbols from the csvtools::detail namespace must NOT be exported. The project source is in /app and has been pre-built in /app/build.",
+  "solution_outline": [
+    "Fix the typo in src/CMakeLists.txt: change CSVTOOLS_BUILD=1 to CSVTOOLS_BUILDING=1 so the export macro activates during library compilation",
+    "Add the CSVTOOLS_API attribute to the register_filter declaration in include/csvtools/filter.h",
+    "Rebuild the project from /app/build with cmake .. && make -j$(nproc)"
+  ],
+  "test_plan": [
+    "test_register_filter_exported: run nm -D on libcsvtools.so and verify a symbol containing 'register_filter' appears in the dynamic symbol table",
+    "test_filter_typeinfo_exported: run nm -D piped through c++filt on libcsvtools.so and verify 'typeinfo for csvtools::Filter' is present in the demangled output",
+    "test_internal_symbols_not_exported: run nm -D on libcsvtools.so and verify 'validate_plugin_path' is absent from the dynamic symbol table (enforces hidden visibility is maintained)",
+    "test_program_no_plugin_errors: run the csvtools executable with sample.csv from /app/build with LD_LIBRARY_PATH set, check exit code is 0 and stderr contains no 'Failed to load plugin'",
+    "test_output_correct: run the csvtools executable with sample.csv and verify stdout exactly matches the expected trimmed+uppercased output: NAME,AGE,CITY\\nALICE,30,NYC\\nBOB,25,LA\\nCHARLIE,35,CHICAGO\\n"
+  ],
+  "anti_cheat": "The typo (CSVTOOLS_BUILD vs CSVTOOLS_BUILDING) is a single-character difference easily missed when scanning the CMakeLists.txt. The missing CSVTOOLS_API on register_filter requires careful comparison between declared functions and their export annotations. The expected output is computed from first principles (sample.csv content + deterministic filter behavior), not stored anywhere. The test for internal symbols not being exported prevents the easy workaround of simply removing CMAKE_CXX_VISIBILITY_PRESET hidden, forcing the agent to properly fix the export macro system.",
+  "failure_modes": "An agent might: (1) remove CMAKE_CXX_VISIBILITY_PRESET hidden entirely, which makes all symbols visible and the program works, but the internal-symbol test catches this; (2) fix only the typo and rebuild without noticing the missing CSVTOOLS_API on register_filter, leading to a second round of 'undefined symbol' errors that are more specific but still require diagnosis; (3) add __attribute__((visibility(\"default\"))) manually to individual functions instead of fixing the macro system, which works but is fragile and error-prone; (4) fail to rebuild after editing source, running the stale binary; (5) misinterpret the mangled symbol name in the dlopen error and chase the wrong function."
+}
+```

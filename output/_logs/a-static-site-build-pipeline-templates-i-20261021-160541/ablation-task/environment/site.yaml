@@ -1,0 +1,20 @@
+site_name: Petrify Docs
+site_url: https://petrify.dev/
+output_dir: dist
+assets_dir: assets
+content_dir: content
+templates_dir: templates
+cache_bust: true
+nav_depth_offset: 1
+
+nav_items:
+  - title: Home
+    url: /
+  - title: About
+    url: /about/
+  - title: Blog
+    url: /blog/
+  - title: Docs
+    url: /docs/
+  - title: Projects
+    url: /projects/

@@ -1,0 +1,83 @@
+{
+  "name": "fix-c-makefile-lib-reorg",
+  "description": "Fix a C project's Makefile after a library reorganization broke include paths and linker flags",
+  "difficulty": "medium",
+  "verdict": "too_easy",
+  "passes": 5,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "too_easy",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/fix-c-makefile-lib-reorg",
+    "verdict": "too_easy",
+    "passes": 5,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__934qxyR",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 24128,
+        "output_tokens": 2073,
+        "cost_usd": 0.00205304,
+        "episodes": 7
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__TLNtLus",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 20658,
+        "output_tokens": 2449,
+        "cost_usd": 0.0018989999999999999,
+        "episodes": 7
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__TnT6VW6",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 32635,
+        "output_tokens": 3495,
+        "cost_usd": 0.0028950319999999996,
+        "episodes": 8
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__cNagpA6",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 23740,
+        "output_tokens": 2525,
+        "cost_usd": 0.0021493992000000003,
+        "episodes": 8
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0/fix-c-makefile-lib-reorg__rhkYVxd",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 21498,
+        "output_tokens": 2208,
+        "cost_usd": 0.0019143200000000002,
+        "episodes": 7
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-fix-c-makefile-lib-reorg-20261021-133607-0"
+    ],
+    "tokens": {
+      "input": 122659,
+      "output": 12750
+    },
+    "cost_usd": 0.0109,
+    "seconds": 87.9,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

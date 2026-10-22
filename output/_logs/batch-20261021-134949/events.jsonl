@@ -1,0 +1,3 @@
+{"time": "2026-10-21T14:16:17", "event": "band_start", "task": "cmake-visibility-plugin-crash"}
+{"time": "2026-10-21T14:41:47", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-visibility-plugin-crash-20261021-141617-0", "requested": 5, "outcomes": ["pass", "pass", "pass", "pass", "pass"]}
+{"time": "2026-10-21T14:41:47", "event": "band_done", "task": "cmake-visibility-plugin-crash", "verdict": "too_easy", "passes": 5, "decision": "rejected"}

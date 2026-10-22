@@ -1,0 +1,66 @@
+{
+  "topic": "a PostgreSQL-style query workload on SQLite whose report is wrong because of NULL handling and a timezone bug across several SQL views",
+  "run_id": "a-postgresql-style-query-workload-on-sql-20261021-160541",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-postgresql-style-query-workload-on-sql-20261021-160541",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/sqlite-null-tz-revenue-report",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md names shipped source/config files (generate_report.py); which points the agent at the fault; describe the symptom and goal instead and let the agent find the location",
+        "instruction.md pastes 3 expected values from the tests (e.g. ['gross_revenue', 'total_refunds', 'transaction_count']); state the rule that produces them instead"
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-postgresql-style-query-workload-on-sql-20261021-160541-r1-oracle",
+          "seconds": 18.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-postgresql-style-query-workload-on-sql-20261021-160541-r1-oracle/sqlite-null-tz-revenue-report__oq6Ud5N",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-postgresql-style-query-workload-on-sql-20261021-160541-r1-nop",
+          "seconds": 14.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-postgresql-style-query-workload-on-sql-20261021-160541-r1-nop/sqlite-null-tz-revenue-report__8fRPnSe",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": []
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 36111,
+    "completion_tokens": 166478
+  },
+  "seconds": 2269.5,
+  "task_name": "afterquery/sqlite-null-tz-revenue-report"
+}

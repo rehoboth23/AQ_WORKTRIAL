@@ -1,0 +1,3 @@
+{"time": "2026-10-21T14:04:23", "event": "band_start", "task": "cmake-shared-lib-abi-mismatch"}
+{"time": "2026-10-21T14:11:18", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-cmake-shared-lib-abi-mismatch-20261021-140423-0", "requested": 5, "outcomes": ["pass", "pass", "pass", "pass", "pass"]}
+{"time": "2026-10-21T14:11:18", "event": "band_done", "task": "cmake-shared-lib-abi-mismatch", "verdict": "too_easy", "passes": 5, "decision": "rejected"}

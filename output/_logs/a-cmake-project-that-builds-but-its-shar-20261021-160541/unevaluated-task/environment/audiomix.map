@@ -1,0 +1,8 @@
+AUDIOMIX_1.0 {
+    global:
+        audiomix_init_*;
+        audiomix_free_*;
+        audiomix_process_*;
+    local:
+        *;
+};

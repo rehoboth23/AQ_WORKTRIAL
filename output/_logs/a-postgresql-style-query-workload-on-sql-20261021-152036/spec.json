@@ -1,0 +1,98 @@
+{
+  "name": "sqlite-null-tz-report-fix",
+  "description": "Fix a SQLite reporting pipeline whose daily shipment report is wrong due to a NULL-excluding filter, a bad average formula hidden by that filter, incorrect timezone offset data, and a broken view rebuild mechanism.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": [
+    "sqlite",
+    "sql-views",
+    "null-handling",
+    "timezone",
+    "aggregation",
+    "build-pipeline"
+  ],
+  "expert_time_estimate_min": 35.0,
+  "junior_time_estimate_min": 90.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A logistics company runs a daily shipment report from a SQLite database through a chain of SQL views. The finance team found that the report at /app/report.csv has wrong numbers but has not pinpointed the causes: daily totals seem low compared to what operations staff count, certain average weight values don't match independent calculations, and at least one regional office reports that their daily shipment breakdowns show shipments on the wrong calendar day. The system uses several layered SQL views, a Python script to generate the CSV, a rebuild script, and config/reference files. The agent must diagnose why the report is wrong across multiple layers and produce a corrected report.csv.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 environment with sqlite3 CLI. An init script (deleted after build) creates /app/shipments.db with tables: shipments (id INTEGER PRIMARY KEY, tracking_number TEXT, weight_kg REAL, status TEXT, region_id INTEGER, created_utc TEXT) and regions (id INTEGER PRIMARY KEY, code TEXT UNIQUE, name TEXT, tz_offset TEXT). It populates ~250 shipments across 5 regions (NA-EST at -05:00, NA-NFL at -02:30 (WRONG, should be -03:30), EU-LON at +00:00, AS-KOL at +05:30, AP-SYD at +10:00) over 2024-03-13 to 2024-03-16. About 12% of shipments have status='cancelled'; all cancelled shipments have NULL weight_kg; a few active shipments also have NULL weight_kg for data-entry reasons. Newfoundland shipments include events at UTC times like 2024-03-14T02:45:00Z (which at -03:30 is March 13 local, but at -02:30 erroneously shows March 14). At least one (date, region) group has ONLY cancelled shipments (all NULL weights). There are mixed groups with both cancelled and active shipments. The init script creates all views by executing the SQL files from /app/queries/ in order. SQL view files in /app/queries/ (all use CREATE VIEW IF NOT EXISTS): 01_raw_events.sql (joins shipments + regions), 02_local_dates.sql (adds local_date via DATE(created_utc, tz_offset)), 03_valid_events.sql (has WHERE status!='cancelled' with comment '-- Business rule: only include shipments with valid status for reporting' \u2014 FAULT 1), 04_daily_rollup.sql (GROUP BY local_date, region_code with COUNT(*) AS shipment_count, SUM(weight_kg) AS total_weight, SUM(CASE WHEN weight_kg IS NOT NULL THEN 1 ELSE 0 END) AS measured_count with comment '-- measured_count: quality metric for tracking data completeness' \u2014 FAULT 2 part 1), 05_report_metrics.sql (computes ROUND(total_weight * 1.0 / NULLIF(shipment_count, 0), 2) AS avg_weight from v_daily_rollup \u2014 FAULT 2 part 2), 06_final_report.sql (selects final columns from v_report_metrics). Decoy view files: 07_legacy_summary.sql (groups by status, references v_raw_events), 08_audit_trail.sql (timestamp analysis, references v_raw_events), 09_regional_breakdown.sql (different regional grouping), 10_data_quality.sql (quality metrics per region), 11_historical_comparison.sql (compare periods), 12_weight_distribution.sql (weight percentiles). /app/rebuild_views.sh loops through /app/queries/*.sql running sqlite3 for each, and prints 'Views rebuilt successfully.' \u2014 FAULT 4: since all SQL files use CREATE VIEW IF NOT EXISTS, existing views are never replaced when SQL files are edited. /app/report.py queries SELECT * FROM v_final_report and writes /app/report.csv; it imports only sqlite3 and csv from stdlib. /app/config/reference.json contains {\"reference_regions\": [{\"code\": \"NA-EST\", \"tz_offset\": \"-05:00\"}, {\"code\": \"NA-NFL\", \"tz_offset\": \"-03:30\"}, {\"code\": \"EU-LON\", \"tz_offset\": \"+00:00\"}, {\"code\": \"AS-KOL\", \"tz_offset\": \"+05:30\"}, {\"code\": \"AP-SYD\", \"tz_offset\": \"+10:00\"}]}. /app/config/report_settings.json contains display formatting settings (decoy). /app/lib/tz_helpers.py has Python timezone conversion functions (decoy, not imported by report.py). /app/lib/db_utils.py has database helper functions (decoy, not imported). /app/lib/formatters.py has CSV formatting helpers (decoy, not imported). /app/legacy/legacy_config.json has old timezone strings in a different format (decoy). /app/legacy/old_report.py is a previous report version (decoy). /app/migrations/ contains 001_initial.sql, 002_add_tz.sql, 003_weight_column.sql (decoys). The initial report.csv is generated with wrong data during build.",
+  "instruction_summary": "The daily shipment report at /app/report.csv contains incorrect figures. The finance team verified it against the raw shipment records and found discrepancies: (1) daily shipment counts in the report are lower than the actual number of shipments recorded in the database, (2) average weight values are wrong for certain date/region groups, and (3) at least one region's local date assignments don't match what local staff report for their calendar days.\n\nInvestigate the full report generation pipeline, identify all root causes, and produce a corrected report.\n\nRequirements for the correct report:\n- The report must count every shipment recorded in the database, regardless of its status.\n- Average weight must be the mean of non-NULL weight values only; shipments without a recorded weight must not affect the average. If a group has no non-NULL weights, avg_weight should be empty in the CSV.\n- Each shipment must appear on its correct local calendar date based on its region's true UTC offset.\n\nThe database is at /app/shipments.db. The report is generated by: python3 /app/report.py. After any changes to SQL view definitions, run: bash /app/rebuild_views.sh. The corrected report must be at /app/report.csv.",
+  "solution_outline": [
+    "Edit /app/queries/03_valid_events.sql to remove the WHERE status != 'cancelled' clause (or change to comment it out)",
+    "Edit /app/queries/05_report_metrics.sql to compute avg_weight correctly: either change to ROUND(total_weight * 1.0 / NULLIF(measured_count, 0), 2) AS avg_weight (using measured_count from v_daily_rollup), or restructure to use AVG(weight_kg) directly",
+    "Fix the rebuild mechanism so view definitions actually update: either (a) add 'DROP VIEW IF EXISTS v_xxx;' before each CREATE VIEW in all 6 real SQL files, or (b) modify rebuild_views.sh to drop all views before recreating them, or (c) manually drop views in sqlite3 then rebuild",
+    "Run bash /app/rebuild_views.sh to recreate all views with the fixed definitions",
+    "Update the regions table: sqlite3 /app/shipments.db \"UPDATE regions SET tz_offset = '-03:30' WHERE code = 'NA-NFL';\"",
+    "Run python3 /app/report.py to regenerate report.csv with correct data"
+  ],
+  "test_plan": [
+    "test_report_format: report.csv exists with headers local_date,region_code,region_name,shipment_count,total_weight,avg_weight",
+    "test_total_count: SUM(shipment_count) from report equals COUNT(*) from shipments table (verifies fault 1 fixed)",
+    "test_views_actually_updated: the SQL definition of v_valid_events in sqlite_master does NOT contain the word 'cancelled', confirming the view was actually updated in the database, not just the SQL file (verifies fault 4 fixed)",
+    "test_per_group_counts: for each (local_date, region_code) in report, shipment_count matches the raw count computed with correct timezone offsets (verifies fault 1 and 3 fixed)",
+    "test_avg_weight_mixed_nulls: for each report group that contains both NULL and non-NULL weights, avg_weight matches AVG(weight_kg) computed from raw data ignoring NULLs (verifies fault 2 fixed for mixed groups)",
+    "test_avg_weight_all_null: any group where all weights are NULL has avg_weight as empty string in CSV (edge case for NULL handling)",
+    "test_regional_dates: for each region, shipment dates in the report match dates computed using the correct UTC offset from /app/config/reference.json (verifies fault 3 fixed for all regions)",
+    "test_newfoundland_boundary: Newfoundland shipments near the UTC midnight boundary appear on the correct local date using -03:30 offset (specifically checks the 1-hour offset difference changes the date)",
+    "test_zero_offset_unchanged: EU-LON (+00:00) dates are unaffected by any timezone fix (regression check)"
+  ],
+  "anti_cheat": "The init_db.py script that generates the seed data is deleted after build, so the agent cannot see the data generation logic or the intentional wrong offset. The SQL view files contain the bugs but not comments indicating they are wrong \u2014 comments are plausible developer notes (e.g., 'Business rule: only include shipments with valid status' and 'measured_count: quality metric'). The correct timezone offsets are only in /app/config/reference.json, which the agent must discover by exploring the config directory \u2014 it is not mentioned in the instruction. The rebuild_views.sh script prints 'Views rebuilt successfully.' even when no views are actually updated, giving false confirmation. The report.csv initially produced has plausible-looking numbers that are not obviously broken. The measured_count column in v_daily_rollup is a plausible red herring \u2014 it looks like it handles NULLs but is not used for the average calculation.",
+  "failure_modes": "An agent might fix only the WHERE clause (fault 1), run rebuild, and think it's done \u2014 not realizing the views weren't actually updated (fault 4). An agent might fix the SQL files and run rebuild_views.sh, see 'Views rebuilt successfully', and assume it worked without verifying at the database level \u2014 then be confused when the report doesn't change. An agent might be distracted by /app/lib/tz_helpers.py or /app/legacy/ and waste time on irrelevant code. An agent might fix the SQL views but never check the regions table data, leaving the timezone dates wrong. An agent might notice measured_count in v_daily_rollup and assume it's already being used correctly for the average, missing fault 2. An agent might try to fix the timezone issue by editing the Python script instead of the database data. An agent might update the database but forget to rebuild views or regenerate the report. An agent might try to fix the avg_weight by using COALESCE(weight_kg, 0) which would handle NULLs incorrectly (0 \u2260 excluded).",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "/app/queries/03_valid_events.sql",
+      "what": "WHERE status != 'cancelled' clause excludes cancelled shipments from the view pipeline; the file is named 'valid_events' with a comment about 'valid status' making it seem intentional",
+      "symptom": "Total shipment counts in the report are lower than the raw shipment count in the database",
+      "how_discovered": "Agent queries COUNT(*) FROM shipments and compares with SUM(shipment_count) from the report, noticing the discrepancy. Then must trace the view chain (starting from report.py \u2192 v_final_report \u2192 v_report_metrics \u2192 v_daily_rollup \u2192 v_valid_events) to find the filter.",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/queries/04_daily_rollup.sql and /app/queries/05_report_metrics.sql",
+      "what": "avg_weight is computed as total_weight / shipment_count across two views. shipment_count = COUNT(*) includes rows with NULL weight_kg, deflating the average. The measured_count column (COUNT of non-NULL weights) exists in v_daily_rollup but is not used for the average \u2014 a red herring that makes the code look like it handles NULLs.",
+      "symptom": "After fault 0 is fixed and cancelled shipments with NULL weight appear in the pipeline, average weights for groups containing those shipments are too low",
+      "how_discovered": "After fixing fault 0 and discovering fault 3 (rebuild doesn't work), agent notices avg_weight values don't match manual AVG calculations for groups containing cancelled/NULL-weight shipments. Must trace avg_weight computation across v_daily_rollup (where shipment_count and total_weight are defined) and v_report_metrics (where the division happens), and realize measured_count should be the denominator or AVG should be used directly.",
+      "depends_on": 0
+    },
+    {
+      "layer": "data",
+      "where": "regions table in /app/shipments.db",
+      "what": "tz_offset for NA-NFL (Newfoundland) is '-02:30' instead of the correct '-03:30'. The SQL view parses this offset correctly via DATE(created_utc, tz_offset), but the wrong value shifts events by 1 hour, causing some near-midnight shipments to appear on the wrong date.",
+      "symptom": "Newfoundland shipments that should appear on one local date show up on the adjacent date in the report",
+      "how_discovered": "Agent notices date discrepancies for at least one region, checks the SQL view logic (which is correct), then must find reference timezone data by exploring /app/config/reference.json and compare tz_offset values in the database against the reference. Must determine which region has the wrong offset.",
+      "depends_on": null
+    },
+    {
+      "layer": "build",
+      "where": "/app/queries/*.sql (all view definition files use CREATE VIEW IF NOT EXISTS) and /app/rebuild_views.sh (no DROP step)",
+      "what": "All SQL view files use CREATE VIEW IF NOT EXISTS, and rebuild_views.sh has no step to drop existing views before recreating them. Since the views already exist from the initial database setup, running rebuild_views.sh after editing a SQL file does nothing \u2014 the old view definition persists. The script prints 'Views rebuilt successfully.' regardless.",
+      "symptom": "After editing a SQL file and running rebuild_views.sh and report.py, the report doesn't change because the view definition in the database was not updated",
+      "how_discovered": "Agent edits a SQL file, runs rebuild_views.sh (sees 'Views rebuilt successfully.'), runs report.py, and finds the report is unchanged. Must then query sqlite_master (e.g., SELECT sql FROM sqlite_master WHERE type='view' AND name='v_valid_events') to discover the view definition is still the old one, realizing CREATE VIEW IF NOT EXISTS is a no-op when the view exists.",
+      "depends_on": 0
+    }
+  ],
+  "decoys": [
+    "/app/config/report_settings.json \u2014 contains display formatting settings for the report, looks like it might affect output values but only controls cosmetic formatting",
+    "/app/lib/tz_helpers.py \u2014 Python timezone utility module with conversion functions, not imported by report.py; might seem relevant to the date issue",
+    "/app/lib/db_utils.py \u2014 database helper functions, not imported by report.py",
+    "/app/lib/formatters.py \u2014 CSV formatting helpers, not imported by report.py",
+    "/app/legacy/legacy_config.json \u2014 old configuration with different timezone string formats (e.g., 'UTC-3:30'), not used by any current code",
+    "/app/legacy/old_report.py \u2014 previous version of the report script that used different aggregation logic, not the current pipeline",
+    "/app/migrations/ \u2014 directory with old schema migration scripts suggesting tz_offset was added later, implying possible schema issues (irrelevant)",
+    "/app/queries/07_legacy_summary.sql through 12_weight_distribution.sql \u2014 six unused views that reference v_raw_events and look like they could be part of the pipeline but are not used by v_final_report",
+    "The measured_count column in /app/queries/04_daily_rollup.sql \u2014 correctly counts non-NULL weights but is not used for avg_weight; its presence makes it look like NULL handling was considered",
+    "Comment in 03_valid_events.sql: '-- Business rule: only include shipments with valid status for reporting' \u2014 seems to justify the WHERE clause but 'valid' is ambiguous and not the same as 'non-cancelled'",
+    "Comment in 04_daily_rollup.sql: '-- measured_count: quality metric for tracking data completeness' \u2014 makes measured_count seem like an unrelated metric rather than the correct denominator for avg_weight"
+  ],
+  "hidden_edge_cases": [
+    "A (date, region) group where ALL shipments are cancelled and have NULL weight \u2014 avg_weight should be empty/NULL in CSV, not zero or '0.00'",
+    "Newfoundland events at UTC times that fall exactly on the local midnight boundary with the correct offset (-03:30) but not with the wrong offset (-02:30), demonstrating the 1-hour shift changes the date assignment",
+    "Multiple cancelled/NULL-weight shipments in the same (date, region) group alongside active shipments, creating the mixed-NULL scenario that exposes the total_weight/shipment_count bug",
+    "Active (non-cancelled) shipments with NULL weight_kg \u2014 these are also excluded by AVG(weight_kg) but included by COUNT(*), further deflating the buggy average",
+    "Regions with +00:00 offset (EU-LON) must be unaffected by any timezone data fix, serving as a regression check",
+    "After fixing the rebuild mechanism, all dependent views in the chain must be updated (not just the one the agent edited) \u2014 partial updates could leave intermediate views stale"
+  ],
+  "why_not_textbook": "The faults are domain-specific and interact: the NULL-excluding filter is a business logic error disguised with a plausible comment about 'valid status'; the AVG bug is split across two views with a red-herring measured_count column that makes it look handled \u2014 it's a coincidental-correctness trap where the filter hides the formula bug, not a single-file SQL antipattern. The timezone data error requires cross-referencing a reference config file against database contents with no instruction naming the file. The rebuild mechanism fault requires understanding that SQLite's CREATE VIEW IF NOT EXISTS is a silent no-op for existing views, which is an idempotency trap common in dev scripts but not a named pattern. No single fault is a famous textbook bug, and the four faults chain across three layers (code, data, build).",
+  "expected_agent_steps": 25.0
+}

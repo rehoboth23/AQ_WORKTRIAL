@@ -1,0 +1,98 @@
+```json
+{
+  "name": "wavekit-abi-visibility-crash",
+  "description": "Diagnose and fix a refactored CMake audio processing library that builds cleanly but crashes at runtime due to multiple ABI, symbol-visibility, and configuration mismatches between its components.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["cmake", "abi", "visibility", "shared-library", "dlopen"],
+  "expert_time_estimate_min": 50,
+  "junior_time_estimate_min": 180,
+  "base_image": "ubuntu:24.04",
+  "scenario": "Your colleague refactored WaveformKit, an audio processing library, from a single monolithic shared library into separate core, DSP, plugin, and utility components. The CMake build completes without errors or warnings. However, the CLI tool `wkproc` crashes with a segmentation fault at runtime. The colleague says it worked perfectly before the refactoring split. They need you to find and fix everything that broke during the refactor so the tool works correctly again. The project is at /app, organized into src/core, src/dsp, src/plugins, src/utils, and src/cli subdirectories, with configuration in config/ and test data in data/.",
+  "environment_setup": "Ubuntu 24.04 with build-essential, cmake, gdb, and binutils installed. The WaveformKit CMake project at /app has ~2200 lines of C++ source across ~35 files. A test WAV file (440Hz sine, 44100Hz, mono, 16-bit, 1 second) is generated at Dockerfile build time and placed at /app/data/test_input.wav; the generator script is deleted. The project builds to /app/build/ with the CLI at /app/build/wkproc and shared libraries in /app/build/src/. Six faults are baked into the source across build (CMakeLists static vs shared), code (pragma-pack ABI mismatch, missing export macro), config (stale symbol name in JSON), data (trailing whitespace in CSV), and runtime (dlopen RTLD_LOCAL flag) layers. A decoy legacy pipeline config and old architecture docs are included. The export macro system (WK_EXPORT/WK_IMPORT) is defined in src/core/export.h and used correctly in most places but missing on one critical plugin entry point.",
+  "instruction_summary": "Fix the WaveformKit audio processing library so that `wkproc process -i data/test_input.wav -o /tmp/output.wav --pipeline standard` exits with code 0 and produces a valid WAV output file. All codecs listed in data/codecs.csv must be loadable. Error handling for invalid inputs must produce stderr messages instead of crashes. Build with: `cmake -B build -S . && cmake --build build`. The tool binary is at /app/build/wkproc. The pipeline config is at config/pipeline_v2.json. The codec registry data is at data/codecs.csv.",
+  "solution_outline": [
+    "In src/utils/CMakeLists.txt, change add_library(wk_utils STATIC) to add_library(wk_utils SHARED) to eliminate dual CodecStore singletons",
+    "In src/core/CMakeLists.txt, remove the line target_compile_definitions(wk_core PRIVATE WK_PACKED=1) so AudioFrame has consistent layout across all libraries",
+    "In src/plugins/plugin_api.h, add WK_EXPORT before the declaration of create_reverb_node() so dlsym can find the symbol",
+    "In config/pipeline_v2.json, change the compressor entry_point from \"wk_create_compressor\" to \"create_compressor_node\" to match the actual exported symbol name",
+    "In data/codecs.csv, trim trailing whitespace from codec ID strings (especially the 'compressor' entry which has trailing spaces)",
+    "In src/core/plugin_loader.cpp, change RTLD_LOCAL to RTLD_GLOBAL in the dlopen call so cross-library exception type resolution works",
+    "Rebuild the project: rm -rf build && cmake -B build -S . && cmake --build build"
+  ],
+  "test_plan": [
+    "test_build_succeeds: Run cmake build from /app and assert exit code 0",
+    "test_process_exits_zero: Run wkproc process -i data/test_input.wav -o /tmp/test_output.wav --pipeline standard and assert exit code 0",
+    "test_output_valid_wav: Read /tmp/test_output.wav with Python wave module, verify it's a valid WAV with correct channels, sample width, and framerate",
+    "test_output_samples_correct: Read input WAV and output WAV, apply the same DSP chain in Python (reverb delay + compressor gain), and assert output samples match within tolerance",
+    "test_all_codecs_loadable: Run wkproc list-codecs and assert all codec IDs from data/codecs.csv appear in the output",
+    "test_error_handling_no_crash: Create a file with invalid WAV header, run wkproc process on it, assert exit code is non-zero but not a signal (no SIGSEGV/SIGABRT), and stderr contains an error message"
+  ],
+  "anti_cheat": "No solution files or expected output files exist in the image. The test WAV generator script is deleted after build. Expected output is computed dynamically in the test from the input WAV and known DSP algorithm parameters, so an agent cannot hardcode a pass. The symbol visibility issues require actual code fixes, not just linker flags, because the export macro is the designed mechanism. The struct packing issue requires removing a compile definition, not just adding a compiler flag globally.",
+  "failure_modes": "An agent that adds -fvisibility=default globally will fix the missing export but won't fix the ABI struct layout mismatch. An agent that fixes the dlsym crash may not notice garbled audio output from the ABI mismatch. An agent that doesn't understand the static-library dual-singleton problem may try to fix missing codecs by modifying registration logic instead of changing the library type. An agent that misses the CSV trailing whitespace will see 'compressor codec not found' and may chase code paths instead of inspecting raw data. An agent that doesn't test error handling will miss the RTLD_LOCAL issue since normal processing doesn't throw exceptions.",
+  "faults": [
+    {
+      "layer": "build",
+      "where": "src/utils/CMakeLists.txt",
+      "what": "wk_utils is built as a STATIC library instead of SHARED. Both libwk_core and libwk_plugins link it statically, creating two independent copies of the CodecStore singleton. Core registers codecs into its copy; plugins query their own empty copy.",
+      "symptom": "After initial crash is fixed, pipeline reports missing codecs that are supposed to be registered. Running with --verbose shows 'codec not found' for codecs that the core library definitely registers.",
+      "how_discovered": "After fixing the dlsym crash and ABI issue, the tool runs but reports missing codecs. Inspecting CodecStore::instance() addresses in gdb shows two different addresses in core vs plugin. Checking CMakeLists.txt for utils reveals STATIC linkage.",
+      "depends_on": 2
+    },
+    {
+      "layer": "code",
+      "where": "src/core/CMakeLists.txt and src/core/audio_frame.h",
+      "what": "Core's CMakeLists defines WK_PACKED=1 as a private compile definition. audio_frame.h wraps the AudioFrame struct in #ifdef WK_PACKED / #pragma pack(push,1). Core compiles AudioFrame as packed (13 bytes), while DSP and plugins compile it unpacked (16 bytes with padding after 'flags'). When core passes an array of packed frames to DSP, DSP reads with the wrong stride.",
+      "symptom": "After dlsym crash is fixed, processing runs but produces severely garbled/distorted audio output, or crashes with misaligned access in the DSP processing loop.",
+      "how_discovered": "After fixing the initial crash, the output file exists but sounds corrupted. Adding debug prints of sizeof(AudioFrame) in different compilation units reveals the mismatch. Checking compile definitions across CMakeLists files shows WK_PACKED is only defined for core.",
+      "depends_on": 2
+    },
+    {
+      "layer": "code",
+      "where": "src/plugins/plugin_api.h",
+      "what": "The create_reverb_node() factory function declaration is missing the WK_EXPORT macro. With CMAKE_CXX_VISIBILITY_PRESET set to hidden, this function has hidden visibility. dlsym cannot find it, returning NULL. The code dereferences the NULL pointer, causing SIGSEGV.",
+      "symptom": "Immediate segmentation fault when running wkproc. With --verbose or under gdb, the crash occurs in the pipeline initialization when trying to call a plugin factory function that is NULL.",
+      "how_discovered": "Running the tool shows segfault. Under gdb, the crash is at a call through a NULL function pointer returned by dlsym. Running nm -D on the plugin .so shows create_reverb_node is missing from the dynamic symbol table, while create_compressor_node is present (has WK_EXPORT).",
+      "depends_on": null
+    },
+    {
+      "layer": "config",
+      "where": "config/pipeline_v2.json",
+      "what": "The compressor plugin entry lists entry_point as \"wk_create_compressor\" but the actual exported symbol name is \"create_compressor_node\". The config was not updated after a function rename during refactoring. dlsym looks for the wrong name and returns NULL.",
+      "symptom": "Same as fault 3: dlsym returns NULL for the compressor plugin entry point. Combined with fault 3, both plugin lookups fail, causing the NULL-pointer crash.",
+      "how_discovered": "After discovering dlsym failure, checking nm -D on the plugin .so shows the actual exported symbols. Comparing with the entry_point names in pipeline_v2.json reveals the mismatch for compressor. The reverb entry point name matches but isn't exported (fault 3).",
+      "depends_on": null
+    },
+    {
+      "layer": "data",
+      "where": "data/codecs.csv",
+      "what": "Several codec ID entries in codecs.csv have trailing whitespace (e.g., 'compressor ' instead of 'compressor'). When the code looks up a codec by ID using exact string match, the trailing-space entries are not found.",
+      "symptom": "After fixing the CodecStore singleton and plugin loading, the tool reports 'codec compressor not found' even though the CSV lists it. The lookup key 'compressor' doesn't match the stored key 'compressor '.",
+      "how_discovered": "After fixing earlier faults, a 'codec not found' error appears for specific codecs. Inspecting codecs.csv with cat -A or od reveals trailing whitespace on affected lines. Alternatively, hexdumping the file or using sed -n 'l' shows the trailing spaces.",
+      "depends_on": 0
+    },
+    {
+      "layer": "runtime",
+      "where": "src/core/plugin_loader.cpp",
+      "what": "dlopen is called with RTLD_LAZY | RTLD_LOCAL instead of RTLD_LAZY | RTLD_GLOBAL. With RTLD_LOCAL, symbols from the plugin (including RTTI typeinfo for exception classes that inherit from wk::DspError defined in core) are not added to the global symbol scope. When a plugin throws a DspError-derived exception, the catch handler in the CLI cannot match the type across library boundaries, causing std::terminate.",
+      "symptom": "Normal processing works fine, but when an error occurs (e.g., invalid input file, unsupported format), the program aborts with SIGABRT instead of printing an error message. The abort comes from std::terminate after an unhandled exception.",
+      "how_discovered": "After fixing all other faults, processing valid files works. Testing with an invalid input file causes SIGABRT. Running under gdb shows 'terminate called after throwing an instance of...' with a type that should have a catch handler. Checking dlopen flags in plugin_loader.cpp reveals RTLD_LOCAL.",
+      "depends_on": 0
+    }
+  ],
+  "decoys": [
+    "config/pipeline_legacy.json: An older pipeline config referencing v1-style symbol names. It looks like it could be the source of the wrong symbol names but is not actually loaded by the current code.",
+    "docs/ARCHITECTURE.md: Describes the pre-refactor monolithic architecture and mentions 'all symbols are default visibility'. An agent might try to restore default visibility globally instead of fixing the specific missing export.",
+    "A commented-out line in the top-level CMakeLists.txt: '# set(CMAKE_CXX_VISIBILITY_PRESET default)' — suggests changing visibility globally, which would mask the missing WK_EXPORT but not fix the ABI issue.",
+    "src/dsp/legacy/old_filter.h and old_filter.cpp: Unused legacy DSP code with a different AudioFrame definition. An agent might think this is causing the ABI conflict, but it's not compiled or linked."
+  ],
+  "hidden_edge_cases": [
+    "Empty WAV file (0 samples): should produce a clear error message to stderr and exit non-zero, not crash or loop infinitely",
+    "Unknown codec ID: if the pipeline config references a codec not in the registry, the tool should report the missing codec, not segfault",
+    "Pipeline with zero nodes: should copy input to output without processing (identity pipeline)",
+    "Very short audio (1 frame): the reverb plugin must handle the case where delay offset exceeds buffer length without reading out of bounds"
+  ],
+  "why_not_textbook": "While individual issues like dlopen flags and symbol visibility are documented, this task requires diagnosing six interacting faults where the immediate crash symptom has two independent causes (missing export + wrong symbol name), the secondary symptom (garbled audio) has a non-obvious root cause (conditional pragma pack triggered by a private compile definition in only one library), and the tertiary symptom (missing codecs) requires understanding C++ singleton semantics across static vs shared library boundaries. No single textbook pattern covers this combination, and the faults mask each other in a specific order that must be untangled.",
+  "expected_agent_steps": 35
+}
+```

@@ -1,0 +1,75 @@
+```json
+{
+  "name": "sqlite-null-tz-report-fix",
+  "description": "Fix a SQLite reporting pipeline whose daily shipment report is wrong due to a NULL-excluding filter, a bad average formula hidden by that filter, and incorrect timezone offset data.",
+  "difficulty": "medium",
+  "category": "data-processing",
+  "tags": ["sqlite", "sql-views", "null-handling", "timezone", "aggregation"],
+  "expert_time_estimate_min": 25,
+  "junior_time_estimate_min": 60,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A logistics company runs a daily shipment report from a SQLite database through a chain of SQL views. The finance team found that the report at /app/report.csv has wrong numbers: total counts are lower than the raw data, average weights don't match manual calculations for some groups, and shipment dates for the Newfoundland region don't align with what local staff see on their calendars. The system uses several layered SQL views defined in /app/queries/, a Python script to generate the CSV, and a config file with reference data. The agent must diagnose why the report is wrong across multiple layers and produce a corrected report.csv.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 environment with sqlite3 CLI. An init script (deleted after build) creates /app/shipments.db with tables: shipments (id, tracking_number, weight_kg, status, region_id, created_utc) and regions (id, code, name, tz_offset). It populates ~70 shipments across 5 regions (NA-EST at -05:00, NA-NFL at -02:30 (WRONG, should be -03:30), EU-LON at +00:00, AS-KOL at +05:30, AP-SYD at +10:00) over 2024-03-14 to 2024-03-16. Cancelled shipments all have NULL weight_kg; some Newfoundland shipments are near the UTC midnight boundary. Six layered SQL views are created from files in /app/queries/: v_raw_events, v_local_dates, v_filtered_events (has WHERE status!='cancelled'), v_daily_stats (has SUM/COUNT* instead of AVG), v_report_data, v_final_report. Decoy views and files are included. The Python report.py script queries v_final_report and writes report.csv. The initial report.csv is generated with the wrong data.",
+  "instruction_summary": "The daily shipment report at /app/report.csv has incorrect numbers. The finance team found: (1) total shipment counts per day/region are lower than raw data—some shipments are missing, (2) average weight values don't match independent calculations for groups where some shipments lack recorded weight, (3) shipment dates for the Newfoundland (NA-NFL) region are wrong—some appear on the wrong calendar day. The correct report must: count every shipment regardless of status; compute average weight as the mean of non-NULL weights only (shipments without recorded weight must not deflate the average); show each shipment on its correct local calendar date based on its region's actual UTC offset. SQL view definitions are in /app/queries/. After SQL changes run: bash /app/rebuild_views.sh. Database: /app/shipments.db. Reference timezone data: /app/config.json under reference_regions. Regenerate with: python3 /app/report.py. The corrected report must be at /app/report.csv.",
+  "solution_outline": [
+    "Remove the WHERE s.status != 'cancelled' line from /app/queries/03_filtered_events.sql",
+    "Replace SUM(weight_kg) / COUNT(*) AS avg_weight with AVG(weight_kg) AS avg_weight in /app/queries/04_daily_stats.sql",
+    "Update the regions table: sqlite3 /app/shipments.db \"UPDATE regions SET tz_offset = '-03:30' WHERE code = 'NA-NFL';\"",
+    "Run bash /app/rebuild_views.sh to recreate all views from the fixed SQL files",
+    "Run python3 /app/report.py to regenerate report.csv with correct data"
+  ],
+  "test_plan": [
+    "test_report_format: report.csv exists with headers local_date,region_code,region_name,shipment_count,total_weight,avg_weight",
+    "test_total_count: SUM(shipment_count) from report equals COUNT(*) from shipments table (verifies fault 1 fixed)",
+    "test_per_group_counts: for each (local_date, region_code) in report, shipment_count matches the raw count computed with correct timezone offsets (verifies fault 1 and 3 fixed)",
+    "test_avg_weight: for each report group, avg_weight matches AVG(weight_kg) computed from raw data ignoring NULLs (verifies fault 2 fixed)",
+    "test_newfoundland_dates: Newfoundland shipments near midnight UTC appear on the correct local date using -03:30 offset, not shifted by 1 hour (verifies fault 3 fixed)",
+    "test_all_null_weight_group: any group where all weights are NULL has avg_weight as empty string in CSV (edge case for NULL handling)",
+    "test_other_regions_unchanged: dates for non-Newfoundland regions match expected values using their correct offsets (regression check)"
+  ],
+  "anti_cheat": "The init_db.py script that generates the seed data is deleted after build, so the agent cannot see the data generation logic or the intentional wrong offset. The SQL view files contain the bugs but not comments indicating they are wrong—comments are plausible developer notes. The correct timezone offset for Newfoundland is only in config.json under reference_regions, which the agent must discover and cross-reference against the database. The report.csv initially produced has plausible-looking numbers, not obviously broken values.",
+  "failure_modes": "An agent might fix only the WHERE clause (fault 1) and see counts improve but miss that averages are now wrong (fault 2), thinking the task is done. An agent might fix the SQL views but never check the regions table data, leaving Newfoundland dates wrong. An agent might update the database data but forget to rebuild views or regenerate the report. An agent might be distracted by the decoy legacy views, tz_helpers.py, or legacy_config.json and waste time on irrelevant code. An agent might try to fix the timezone issue in the Python script instead of the data.",
+  "faults": [
+    {
+      "layer": "code",
+      "where": "/app/queries/03_filtered_events.sql",
+      "what": "WHERE s.status != 'cancelled' clause excludes cancelled shipments from the view pipeline",
+      "symptom": "Total shipment counts in the report are lower than the raw shipment count in the database",
+      "how_discovered": "Agent queries COUNT(*) FROM shipments and compares with SUM(shipment_count) from the report, noticing the discrepancy. Then traces through the view chain to find the filter.",
+      "depends_on": null
+    },
+    {
+      "layer": "code",
+      "where": "/app/queries/04_daily_stats.sql",
+      "what": "Uses SUM(weight_kg) / COUNT(*) AS avg_weight instead of AVG(weight_kg) AS avg_weight. COUNT(*) includes rows with NULL weight, deflating the average.",
+      "symptom": "After fault 1 is fixed and cancelled shipments with NULL weight appear, average weights for affected groups are too low",
+      "how_discovered": "After fixing fault 1, the agent notices avg_weight values don't match manual AVG calculations for groups containing cancelled shipments. Examining v_daily_stats reveals the SUM/COUNT(*) formula.",
+      "depends_on": 0
+    },
+    {
+      "layer": "data",
+      "where": "regions table in /app/shipments.db",
+      "what": "tz_offset for NA-NFL (Newfoundland) is '-02:30' instead of the correct '-03:30'. The SQL view parses this offset correctly, but the wrong value shifts events by 1 hour, causing some near-midnight shipments to appear on the wrong date.",
+      "symptom": "Newfoundland shipments that should appear on one local date show up on the next day in the report",
+      "how_discovered": "Agent notices Newfoundland dates are off, checks the SQL view logic (which is correct), then checks the actual tz_offset value in the regions table against the reference data in config.json.",
+      "depends_on": null
+    }
+  ],
+  "decoys": [
+    "/app/legacy_config.json — old configuration with different timezone strings, not used by any current code",
+    "/app/queries/07_legacy_summary.sql — an old unused view that groups by status differently, plausible suspect for the count discrepancy",
+    "/app/queries/08_audit_trail.sql — unused audit view referencing shipment timestamps, looks relevant to date issues",
+    "/app/lib/tz_helpers.py — Python timezone utility module with conversion functions, not actually imported by report.py",
+    "/app/migrations/ — directory with old schema migration scripts suggesting the tz_offset column was added later, implying possible schema issues",
+    "Comments in 03_filtered_events.sql mentioning 'business rule: exclude void shipments' that seem to justify the WHERE clause but refer to a different concept than 'cancelled'"
+  ],
+  "hidden_edge_cases": [
+    "A (date, region) group where ALL shipments are cancelled and have NULL weight—avg_weight should be empty/NULL, not zero",
+    "Newfoundland events at UTC times that fall exactly on the midnight boundary with the correct offset (-03:30), demonstrating the 1-hour shift changes the date",
+    "Multiple cancelled shipments in the same (date, region) group alongside active shipments, creating the mixed-NULL scenario that exposes the SUM/COUNT(*) bug",
+    "Regions with +00:00 offset (EU-LON) must be unaffected by any timezone fix, serving as a regression check"
+  ],
+  "why_not_textbook": "The faults are domain-specific: the NULL-excluding filter is a business logic error disguised with a comment about 'void' shipments; the AVG bug is hidden by the filter and only manifests when NULLs flow through—a classic coincidental-correctness trap, not a textbook SQL antipattern with a named pattern. The timezone data error requires cross-referencing a config file against database contents, not applying a known timezone library fix.",
+  "expected_agent_steps": 20
+}
+```

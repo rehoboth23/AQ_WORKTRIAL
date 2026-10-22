@@ -1,0 +1,69 @@
+```json
+{
+  "name": "aqmon-visibility-abi-crash",
+  "description": "Diagnose and fix a CMake C++ project whose shared library crashes at runtime due to missing symbol exports and inconsistent ABI-affecting compile definitions across components",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["cmake", "c++", "abi", "symbol-visibility", "shared-library", "odr-violation"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 90,
+  "base_image": "ubuntu:24.04",
+  "scenario": "The aqmon project builds an air quality monitoring tool (aqreport) from two shared libraries: libaqcore (data types, filters, AQI math) and libaqanalysis (processing pipeline, report generation). The project compiles and links without errors, but running aqreport immediately crashes with a symbol lookup error. After fixing that crash, the output values are still wrong for some stations, and certain stations with missing altitude data produce incorrect AQI scores. The developer needs all three issues resolved so the tool produces correct output.",
+  "environment_setup": "A CMake C++17 project with two shared libraries and one CLI executable. (1) cmake/AqmonCommon.cmake sets CMAKE_CXX_VISIBILITY_PRESET=hidden and CMAKE_VISIBILITY_INLINES_HIDDEN=ON globally. libaqcore uses an AQCORE_API export macro on all public symbols EXCEPT the free function compute_aqi() declared in aqcore/aqi.h — this omission makes it hidden, causing a runtime symbol lookup error when libaqanalysis calls it. (2) src/analysis/CMakeLists.txt defines AQ_USE_FAST_MATH=1, but libaqcore does not; the inline function math::normalize() in aqcore/math_utils.h uses a different (wrong) scaling constant under that macro, and with hidden inline visibility each DSO uses its own copy, so libaqanalysis computes with the fast-wrong formula. (3) In station.cpp, empty altitude fields from CSV are parsed as 0.0 instead of NaN; the altitude_correction formula exp((alt-500)/8500) gives 0.943 at alt=0 but 1.0 for NaN, so stations with missing altitude get wrong AQI. A decoy legacy Makefile and unused AQ_ENABLE_EXPERIMENTAL macro in a config header provide plausible distractions. The project is pre-built in /app/build; LD_LIBRARY_PATH is set.",
+  "instruction_summary": "The aqreport tool crashes at runtime. Fix it so it produces correct CSV output for all stations including those with missing altitude. Usage: ./build/src/aqreport/aqreport data/stations.csv data/readings.csv. Output format: station_id,pollutant,aqi,quality_grade. The instruction specifies the exact AQI computation formula (normalize = value/(1+value*0.0002), altitude_correction = exp((alt-500)/8500), NaN altitude → correction 1.0, clamp 0–500), filter specifics (ozone: apply×1000 score×1.5, pm25: identity apply score×2.0, no2: apply×0.5 score×1.8, so2: apply×2.0 score×1.2), and quality grade thresholds. Data files at data/stations.csv and data/readings.csv.",
+  "solution_outline": [
+    "Add AQCORE_API attribute to the compute_aqi declaration in src/core/include/aqcore/aqi.h",
+    "Remove the AQ_USE_FAST_MATH=1 definition from src/analysis/CMakeLists.txt",
+    "Fix the altitude parsing in src/core/src/station.cpp to use quiet_NaN() for empty strings instead of 0.0",
+    "Rebuild the project: cd /app/build && cmake .. && cmake --build . -- -j$(nproc)"
+  ],
+  "test_plan": [
+    "test_program_runs: run aqreport with the data files, assert return code 0 and no symbol lookup error in stderr",
+    "test_output_format: parse stdout CSV, assert header is correct and at least 14 data rows exist (6 stations × varying pollutants)",
+    "test_aqi_values: for every (station, pollutant) pair, compute expected AQI in Python using the precise normalize formula and altitude_correction, compare with program output within 0.01 tolerance",
+    "test_missing_altitude: specifically check S004 (empty altitude in CSV) has AQI computed with correction=1.0 not correction=exp(-500/8500)≈0.943",
+    "test_quality_grades: verify each record's quality_grade matches the grade for its computed AQI per the documented thresholds",
+    "test_no_fast_math_residual: check a high-value station like S006 pm25 produces precise result (≈221 with correct normalize) not fast result (≈194 with wrong scaling)"
+  ],
+  "anti_cheat": "The expected output values are not stored anywhere in the image. The correct AQI values must be computed from the specified formulas and input data. A superficial fix (e.g., commenting out the compute_aqi call) would cause empty or zero output, failing the value checks. Changing the visibility preset to default without fixing the fast-math macro would leave Fault 2 active, producing wrong numbers. Fixing Faults 1 and 2 but not Fault 3 would fail the S004 altitude test.",
+  "failure_modes": "An agent might change CMAKE_CXX_VISIBILITY_PRESET to default in AqmonCommon.cmake instead of adding the export macro — this fixes Fault 1 but is a broader change; it still leaves Fault 2 and 3. An agent might find AQ_USE_FAST_MATH but assume it's intentional for performance. An agent might fix altitude=0 as NaN but not realize the altitude_correction formula treats 0 and NaN differently. An agent might be distracted by the decoy Makefile or the unused AQ_ENABLE_EXPERIMENTAL macro. An agent might not rebuild after editing, or rebuild only one library.",
+  "faults": [
+    {
+      "layer": "build",
+      "where": "src/core/include/aqcore/aqi.h",
+      "what": "compute_aqi() declaration is missing the AQCORE_API export attribute; with CMAKE_CXX_VISIBILITY_PRESET=hidden the symbol is not exported from libaqcore.so",
+      "symptom": "Runtime symbol lookup error: undefined symbol _ZN2aq11compute_aqiERKNS_15PollutantFilterEdd when aqreport calls Processor::process()",
+      "how_discovered": "Run the program, see the symbol lookup error, demangle the symbol name (c++filt), search for the function in headers, notice all other public declarations have AQCORE_API but this one doesn't",
+      "depends_on": null
+    },
+    {
+      "layer": "build",
+      "where": "src/analysis/CMakeLists.txt",
+      "what": "AQ_USE_FAST_MATH=1 is defined for libaqanalysis only; the inline math::normalize() in math_utils.h compiles with a different scaling constant (0.001 vs 0.0002) under that macro; with CMAKE_VISIBILITY_INLINES_HIDDEN each DSO uses its own copy",
+      "symptom": "After Fault 1 is fixed, AQI values are wrong — e.g. S006 pm25 shows ~194 instead of ~222; some quality grades differ too",
+      "how_discovered": "After program runs, compare output values against the documented formula; compute expected values and notice discrepancy; search for AQ_USE_FAST_MATH in CMake files and normalize() implementation",
+      "depends_on": 0
+    },
+    {
+      "layer": "code",
+      "where": "src/core/src/station.cpp",
+      "what": "Empty altitude field parsed as 0.0 instead of NaN; altitude_correction(exp((0-500)/8500)≈0.943) differs from the NaN case (returns 1.0)",
+      "symptom": "After Faults 1 and 2 are fixed, station S004 (empty altitude) still has wrong AQI — e.g. ozone shows ~68 instead of ~72",
+      "how_discovered": "After fixing the first two faults, notice S004 values are off; examine data/stations.csv and see S004 has empty altitude; trace parsing in station.cpp and find empty string → 0.0 conversion",
+      "depends_on": 1
+    }
+  ],
+  "decoys": [
+    "A legacy Makefile in the root directory with different compiler flags (deprecated, not used by the build)",
+    "An unused AQ_ENABLE_EXPERIMENTAL macro defined in aqcore/config.h but never referenced by any code",
+    "The CMAKE_VISIBILITY_INLINES_HIDDEN setting in AqmonCommon.cmake — it contributes to Fault 2's mechanism but is not itself the bug to fix"
+  ],
+  "hidden_edge_cases": [
+    "S004 has an empty altitude field; the correct behavior is altitude_correction=1.0 (NaN altitude), not altitude_correction≈0.943 (altitude=0)",
+    "S006 has high altitude (2400m) which amplifies the difference between the precise and fast normalize formulas, making Fault 2 most visible there",
+    "The quality grade for S006 pm25 changes from 'Unhealthy' (fast math, aqi≈194) to 'Very Unhealthy' (precise math, aqi≈222)"
+  ],
+  "why_not_textbook": "This is not a famous bug pattern like a missing 'extern C' or a classic vtable issue. The combination of a missing export macro on a free function (hidden visibility), an ODR-violating conditional compilation in an inline function across DSOs, and a data parsing edge case is specific to this project's architecture. The mangled symbol name requires demangling to identify. The fast-math constant difference (0.001 vs 0.0002) is subtle in the code but produces significantly wrong output values.",
+  "expected_agent_steps": 22
+}
+```
