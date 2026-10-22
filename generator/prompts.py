@@ -232,6 +232,13 @@ goal requires what the failing assertion checks, it is "task" (a test checking a
 choice), even if every other test passed. Example: the goal is "each event affects the balance
 exactly once"; the failing assertion requires the receiver to print "duplicate" for a retry; the
 balance was correct; nothing asks for that output -> "task".
+Two more rules. A test input that violates the stated property (a CRLF in a header value, a path
+with "..") is NOT "legitimate functionality": rejecting it does not break a "keep everything
+working" clause. And when two fixes are both valid (reject with an error vs sanitise and answer;
+strip vs escape) and instruction.md does not say which, a test that pins one of them is "task"
+(ambiguous-spec), even if the other runs happened to pick the tested one. Also "task": the
+verifier's own server or fixture failing (connection refused or closed on every request,
+including requests unrelated to the fix) when the agent's code is otherwise correct.
 Reply with ONE JSON object and nothing else:
 {"fault": "model" or "task" or "unknown", "category": "short label, e.g. wrong-diagnosis,
  incomplete-fix, gave-up, broke-something, ambiguous-spec, untested-requirement, broken-env",
