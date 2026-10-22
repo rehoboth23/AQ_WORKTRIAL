@@ -44,13 +44,14 @@ from config import (
     EVAL_PRICE_IN_PER_M,
     EVAL_PRICE_OUT_PER_M,
     EVAL_REASONING_EFFORT,
+    FAST_SOLVE_STEPS,
     GEN_PRICE_IN_PER_M,
     GEN_PRICE_OUT_PER_M,
     LOGS_DIR,
-    MAX_FAULTS,
+    MAX_RULES,
     MAX_LEAKED_LITERALS,
-    MIN_FAULT_LAYERS,
-    MIN_FAULTS,
+    MIN_RULES,
+    MIN_THEMES,
     MODEL,
     N_RUNS,
     REJECTED_DIR,
@@ -65,7 +66,7 @@ from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text
 # difficulty.toml can change between runs.
 ORPHAN_POLL_SEC = float(os.environ.get("ORPHAN_POLL_SEC", "15"))  # resume: check an adopted harbor job
 
-KNOBS = {"min_faults": MIN_FAULTS, "max_faults": MAX_FAULTS, "min_fault_layers": MIN_FAULT_LAYERS,
+KNOBS = {"min_rules": MIN_RULES, "max_rules": MAX_RULES, "min_themes": MIN_THEMES,
          "max_leaked_literals": MAX_LEAKED_LITERALS, "critic_found_within": CRITIC_FOUND_WITHIN}
 
 
@@ -116,6 +117,8 @@ def task_features(task_dir: str, spec: dict | None = None) -> dict:
         solve = ""
     faults = (spec or {}).get("faults") or []
     return {"env_lines": env_lines(files), "solve_lines": solve_lines(solve),
+            "rules": len((spec or {}).get("requirements") or []) if spec else None,
+            "themes": len({str(r.get("theme")) for r in (spec or {}).get("requirements") or [] if isinstance(r, dict)}) if spec else None,
             "faults": len(faults) if spec else None,
             "fault_layers": len({str(f.get("layer")) for f in faults if isinstance(f, dict)}) if spec else None}
 
@@ -144,7 +147,8 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
 
     if band.verdict != "learnable":
         decision, why = "rejected", band.verdict + (
-            f" (stopped early after {band.passes} passes)" if band.early_stop else "")
+            f" (stopped early after {band.passes} passes)" if band.early_stop else "") + (
+            f" (fast: every pass took <= {FAST_SOLVE_STEPS} steps)" if band.fast_solve else "")
         if task_faults:  # too hard, but because of the task: say so in the record
             why += "; unfair: " + "; ".join(f["reason"] for f in task_faults)[:250]
     elif task_faults:

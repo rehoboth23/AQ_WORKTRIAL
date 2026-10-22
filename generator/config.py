@@ -56,7 +56,7 @@ MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
 DIFFICULTY_FILE = os.environ.get(
     "DIFFICULTY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "difficulty.toml"))
 _DIFFICULTY_DEFAULTS = {
-    "knobs": {"min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
+    "knobs": {"min_rules": 12, "max_rules": 20, "min_themes": 4, "min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
               "max_leaked_literals": 1, "critic_found_within": 3},
     "discovery": {"min_gap": 2, "hard_gap": 4, "very_hard_gap": 7, "too_hard_above": 9,
                   "timeout_risk_steps": 60},
@@ -86,7 +86,10 @@ def _knob(name: str) -> int:
     return int(env) if env is not None else int(DIFFICULTY["knobs"][name])
 
 
-MIN_FAULTS = _knob("min_faults")                     # different faults in the spec
+MIN_RULES = _knob("min_rules")                       # stated requirements in a specification task
+MAX_RULES = _knob("max_rules")
+MIN_THEMES = _knob("min_themes")                     # distinct themes the rules must span
+MIN_FAULTS = _knob("min_faults")                     # (hidden-fault genre, retired; kept for old records)
 MAX_FAULTS = _knob("max_faults")                     # cap: more faults = longer proofreading, not harder
 MIN_FAULT_LAYERS = _knob("min_fault_layers")         # build/code/config/data/runtime
 MAX_LEAKED_LITERALS = _knob("max_leaked_literals")   # test literals allowed in instruction.md
@@ -104,6 +107,9 @@ MUTATION_CHECK = os.environ.get("MUTATION_CHECK", "1") == "1"
 # result favours lucky draws. Each in-band task gets this many extra band evals; it is "confirmed" if
 # every one also lands in band. The verdict stays the first eval (README); 0 disables.
 CONFIRM_EVALS = int(os.environ.get("CONFIRM_EVALS", "1"))
+# Report-only flag: a too-easy task whose passing runs all took at most this many agent steps is
+# marked 'fast' in the record (the verdict is never changed by it).
+FAST_SOLVE_STEPS = int(os.environ.get("FAST_SOLVE_STEPS", "12"))
 # Optional glm-5.1 reasoning effort per stage (e.g. GEN_REASONING_SPEC=medium); unset = gateway default.
 GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
@@ -114,7 +120,7 @@ CALIBRATION_WINDOW = int(os.environ.get("CALIBRATION_WINDOW", "8"))
 # Tag for the task-design rules in prompts.py. History lines record it, and the spec prompt is
 # shown only lines from the current design, so examples from older rules (e.g. 7-fault tasks
 # with step-count notes) never steer a new design. Bump it when the design rules change.
-DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-22-no-oracle")
+DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-22-spec")
 
 # --- Paths -----------------------------------------------------------------
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))

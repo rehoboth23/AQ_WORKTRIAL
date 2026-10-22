@@ -5,6 +5,12 @@
 # agents first diagnosed a fault at step 3-6, with 2-8 steps between later diagnoses.
 
 [knobs]
+# Specification tasks (2026-10-22): the agent must satisfy every stated rule; difficulty comes
+# from breadth (min_rules..max_rules independent rules over min_themes themes), not hidden faults.
+min_rules = 12
+max_rules = 20
+min_themes = 4
+# Hidden-fault genre knobs, retired (every such task scored 4-5/5); kept so old records parse.
 # One central challenge with a few faults that all serve it (2026-10-21): a 5-fault quota
 # produced filler bugs (wrong interpreter path, main() never called) that add steps, not
 # difficulty; 7 faults in 4 layers still scored 4/4. Layers are no longer required.

@@ -34,6 +34,7 @@ from config import (
     EVAL_CONCURRENCY,
     EVAL_MODEL,
     EVAL_REASONING_EFFORT,
+    FAST_SOLVE_STEPS,
     JOBS_DIR,
     MAX_INVALID_RERUNS,
     N_RUNS,
@@ -59,6 +60,7 @@ class BandResult:
     median_steps: float | None = None
     median_found_step: float | None = None  # first step that mentions a file the fix touches
     early_stop: bool = False  # stopped once BAND_HIGH+1 passes made "too_easy" certain
+    fast_solve: bool = False  # too_easy and every passing run took <= FAST_SOLVE_STEPS (report only)
     seconds: float = 0.0
     error: str = ""
 
@@ -247,6 +249,8 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
     steps = [t["episodes"] for t in valid if t["episodes"]]
     found = [t["found_step"] for t in valid if t["found_step"]]
     res.median_steps = statistics.median(steps) if steps else None
+    pass_steps = [t["episodes"] for t in valid if t["outcome"] == "pass" and t["episodes"]]
+    res.fast_solve = res.verdict == "too_easy" and bool(pass_steps) and max(pass_steps) <= FAST_SOLVE_STEPS
     res.median_found_step = statistics.median(found) if found else None
     costs = [t["cost_usd"] for t in res.trials if t["cost_usd"] is not None]
     res.cost_usd = round(sum(costs), 4) if costs else None

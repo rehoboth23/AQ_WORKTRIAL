@@ -122,7 +122,10 @@ class Spec(BaseModel):
     anti_cheat: str = ""
     failure_modes: str = ""
     # Difficulty profile (prompts.DIFFICULTY_SPEC_FIELDS), checked by difficulty.spec_gate().
-    faults: list[dict] = Field(default_factory=list)
+    faults: list[dict] = Field(default_factory=list)  # hidden-fault genre (retired)
+    requirements: list[dict] = Field(default_factory=list)
+    themes: list[str] = Field(default_factory=list)
+    starter: str = ""
     decoys: list[dict | str] = Field(default_factory=list)
     hidden_edge_cases: list[dict | str] = Field(default_factory=list)
     why_not_textbook: str = ""
@@ -138,7 +141,7 @@ class Spec(BaseModel):
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
-                     "failure_modes", "why_not_textbook", "static_read", "crux", "challenge_kind",
+                     "failure_modes", "why_not_textbook", "static_read", "crux", "challenge_kind", "starter",
                      "sequence_invariant", "nameable_fix", "self_check_blind_spot", "reference_in_environment", "interaction", "runnable_reference",
                      "base_image", "category",
                      mode="before")
@@ -152,7 +155,7 @@ class Spec(BaseModel):
             return json.dumps(v)
         return v
 
-    @field_validator("tags", mode="before")
+    @field_validator("tags", "themes", mode="before")
     @classmethod
     def _str_list(cls, v):
         if isinstance(v, str):
@@ -193,7 +196,7 @@ def parse_spec(text: str) -> dict:
 
 def parse_critic(text: str) -> dict:
     obj = parse_json_object(text)
-    if not isinstance(obj.get("spec"), dict) and "faults" in obj and "name" in obj:
+    if not isinstance(obj.get("spec"), dict) and ("faults" in obj or "requirements" in obj) and "name" in obj:
         # glm-5.1 sometimes writes the walkthrough as prose and returns the revised spec bare;
         # keep it rather than throw away a 40k-token reply.
         obj = {"walkthrough": [text[:text.find("{")].strip()[:4000]], "too_easy_because": [], "spec": obj}
@@ -259,7 +262,7 @@ def review_instruction(spec: dict, files: dict[str, str], log) -> dict[str, str]
     on a model error the instruction is kept and the gates and band eval still apply."""
     try:
         review, _, _ = chat(prompts.INSTRUCTION_REVIEW_SYSTEM,
-                            prompts.instruction_review_user(files["instruction.md"], spec.get("faults") or [],
+                            prompts.instruction_review_user(files["instruction.md"], mutation_items(spec),
                                                             files.get("tests/test_outputs.py", ""),
                                                             spec.get("crux", "")),
                             parse_review, log.llm, "review")
@@ -272,15 +275,30 @@ def review_instruction(spec: dict, files: dict[str, str], log) -> dict[str, str]
     return files
 
 
+def mutation_items(spec: dict) -> list[dict]:
+    """What the mutation check drops one at a time: a requirement (the mutant produces its default
+    behaviour) or, for old hidden-fault specs, a fault's wrong_fix. One shape for both."""
+    items = []
+    for r in spec.get("requirements") or []:
+        if isinstance(r, dict) and str(r.get("rule") or "").strip():
+            items.append({"where": r.get("id"), "what": r.get("rule"),
+                          "wrong_fix": "produce the default behaviour instead: " + str(r.get("default_behaviour") or ""),
+                          "counterexample": r.get("hidden_test_input"), "caught_by_test": r.get("id")})
+    for f in spec.get("faults") or []:
+        if isinstance(f, dict) and f.get("wrong_fix"):
+            items.append(f)
+    return items
+
+
 def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_prefix: str) -> dict:
     """Run each fault's `wrong_fix` as a mutant solve.sh in a copy of the task; the tests must
     fail it. A mutant the tests pass means that trap is not real. A mutant that fails EVERY test
     probably broke something unrelated, so it proves nothing either way ("broken")."""
-    faults = [f for f in spec.get("faults") or [] if isinstance(f, dict) and f.get("wrong_fix")]
+    faults = mutation_items(spec)
     if not faults:
         return {"survived": [], "results": []}
     try:
-        blocks, _, _ = chat(prompts.MUTANT_SYSTEM, prompts.mutants_user(spec.get("faults") or [], files["solution/solve.sh"]),
+        blocks, _, _ = chat(prompts.MUTANT_SYSTEM, prompts.mutants_user(faults, files["solution/solve.sh"]),
                             parse_file_blocks, log.llm, "mutants")
     except LLMError as e:
         log.event("mutation_error", error=str(e)[:300])
@@ -288,7 +306,7 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
     results = []
     for path in sorted(blocks):
         m = re.fullmatch(r"mutants/(\d+)\.sh", path.strip())
-        if not m or int(m.group(1)) >= len(spec.get("faults") or []):
+        if not m or int(m.group(1)) >= len(faults):
             continue
         idx = int(m.group(1))
         mdir = os.path.join(log.dir, "mutants", f"{idx}-{time.strftime('%H%M%S')}")
@@ -299,10 +317,10 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
         failed, total = _ctrf_counts(r.details.get("trial_dir"))
         verdict = ("survived" if r.reward == 1.0 else "broken" if total and failed == total
                    else "killed" if r.reward is not None else "error")
-        result = {"fault": idx, "wrong_fix": spec["faults"][idx].get("wrong_fix"), "verdict": verdict,
+        result = {"fault": idx, "wrong_fix": faults[idx].get("wrong_fix"), "verdict": verdict,
                   "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir}
         if verdict == "survived":  # a gap in the tests, or a partial fix that is in fact correct?
-            eq = _equivalence(spec["faults"][idx], files, blocks[path], log, idx)
+            eq = _equivalence(faults[idx], files, blocks[path], log, idx)
             result.update(eq)
             if eq.get("equivalent"):
                 result["verdict"] = "equivalent"

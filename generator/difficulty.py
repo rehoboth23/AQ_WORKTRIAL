@@ -21,6 +21,9 @@ from config import (
     CRITIC_FOUND_WITHIN,
     DISCOVERY,
     MAX_FAULTS,
+    MAX_RULES,
+    MIN_RULES,
+    MIN_THEMES,
     MAX_LEAKED_LITERALS,
     MIN_FAULT_LAYERS,
     MIN_FAULTS,
@@ -108,56 +111,50 @@ def meta_leaks(files: dict[str, str]) -> list[str]:
     return hits
 
 
+SPEC_KINDS = {"build_from_spec", "exact_data_transform", "large_corpus_migration"}
+
+
 def spec_gate(spec: dict) -> list[str]:
-    faults = spec.get("faults") or []
-    if not isinstance(faults, list):
-        return ["`faults` must be a list of fault objects"]
+    """Specification tasks: enough independent, precisely stated rules over several themes, a
+    hidden input per rule, and no oracle in the environment."""
+    rules = spec.get("requirements") or []
+    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
+        return ["`requirements` must be a list of requirement objects"]
     problems = []
-    if len(faults) < MIN_FAULTS:
-        problems.append(f"needs at least {MIN_FAULTS} different faults, has {len(faults)}")
-    layers = {str(f.get("layer", "")).lower() for f in faults if isinstance(f, dict)} & LAYERS
-    if len(layers) < MIN_FAULT_LAYERS:
-        problems.append(f"faults must span at least {MIN_FAULT_LAYERS} layers of "
-                        f"{sorted(LAYERS)}, found {sorted(layers) or 'none'}")
-    # "One fault repeated" means the same KIND of bug fixed in several places (e.g. one sed in
-    # four files), not several different bugs that happen to share a file or view.
-    whats = [_words(f.get("what", "")) for f in faults if isinstance(f, dict)]
-    if any(_similar(a, b) for i, a in enumerate(whats) for b in whats[i + 1:]):
-        problems.append("faults must be different bugs, not the same fix repeated in several places")
-    if not spec.get("hidden_edge_cases"):
-        problems.append("needs at least one hidden edge case the tests check")
-    if len(faults) > MAX_FAULTS:
-        problems.append(f"has {len(faults)} faults; at most {MAX_FAULTS} (more faults make a longer "
-                        "proofreading list, not a harder task)")
-    trap_keys = ("wrong_fix", "counterexample", "caught_by_test")
-    traps = [f for f in faults if isinstance(f, dict) and all(str(f.get(k) or "").strip() for k in trap_keys)]
-    if len(traps) < min(2, len(faults)):
-        problems.append("at least 2 central faults need `wrong_fix` (the plausible incomplete fix a strong "
-                        "agent tries first), `counterexample` (the exact input or sequence on which it is "
-                        "wrong) and `caught_by_test` (the hidden test that runs it)")
+    if len(rules) < MIN_RULES:
+        problems.append(f"needs at least {MIN_RULES} independent requirements, has {len(rules)}")
+    if len(rules) > MAX_RULES:
+        problems.append(f"has {len(rules)} requirements; at most {MAX_RULES}")
+    incomplete = [str(r.get("id") or i) for i, r in enumerate(rules)
+                  if not all(str(r.get(k) or "").strip() for k in ("rule", "default_behaviour", "hidden_test_input"))]
+    if incomplete:
+        problems.append("every requirement needs `rule`, `default_behaviour` (what the agent gets without it) and "
+                        f"`hidden_test_input` (the input its test uses); missing on {', '.join(incomplete[:6])}")
+    texts = [_words(r.get("rule", "")) for r in rules]
+    dupes = [(rules[i].get("id") or i, rules[j].get("id") or j) for i in range(len(texts))
+             for j in range(i + 1, len(texts)) if _similar(texts[i], texts[j])]
+    if dupes:
+        problems.append("requirements must be different rules, not one rule restated: " + ", ".join(f"{a}~{b}" for a, b in dupes[:4]))
+    themes = {str(r.get("theme") or "").strip().lower() for r in rules} - {"", "other"}
+    if len(themes) < MIN_THEMES:
+        problems.append(f"rules must span at least {MIN_THEMES} distinct themes (formatting, arithmetic, ordering, "
+                        f"unicode_width, structure, input_tolerance, error_handling, edge_inputs); found {sorted(themes) or 'none'}")
+    if rules and max(sum(1 for r in rules if str(r.get("theme") or "").lower() == t) for t in themes | {""}) > len(rules) // 2:
+        problems.append("more than half the rules share one theme; once the agent gets the theme it gets them all")
     kind = str(spec.get("challenge_kind") or "").strip().lower()
-    if kind not in CHALLENGE_KINDS:
-        problems.append(f"`challenge_kind` must be one of {sorted(CHALLENGE_KINDS)}; build the task around "
-                        "a defect that shows only over a sequence of runs or events, not a named technique")
-    for key, why in (("static_read", "what reading the code alone reveals, and why it is not enough"),
-                     ("crux", "the domain insight the complete fix depends on"),
-                     ("sequence_invariant", "the invariant over sequences that instruction.md states"),
-                     ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
-                     ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it"),
-                     ("reference_in_environment", "what in the environment already computes the correct handling (must be none)"),
-                     ("interaction", "the components or runs whose interaction causes the defect, each correct on its own"),
-                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)")):
+    if kind not in SPEC_KINDS:
+        problems.append(f"`challenge_kind` must be one of {sorted(SPEC_KINDS)} (specification tasks; hidden-fault "
+                        "tasks are not generated any more)")
+    for key, why in (("self_check_blind_spot", "which rules an agent is likely to forget or misread, and why"),
+                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)"),
+                     ("reference_in_environment", "what in the environment already produces the correct output (must be none)")):
         if not str(spec.get(key) or "").strip():
             problems.append(f"needs `{key}`: {why}")
-    runnable = str(spec.get("runnable_reference") or "").strip()
-    if runnable and not re.match(r"(?i)[\s*-]*none\b", runnable):
-        problems.append(f"the agent can run a reference that computes the correct answer ({runnable[:160]}) and "
-                        "fuzz its fix against it; remove it, or make it share the flaw")
-    ref = str(spec.get("reference_in_environment") or "").strip()
-    if ref and not re.match(r"(?i)[\s*-]*none\b", ref):  # "none", "- none" (a list reply), "None: ..."
-        problems.append("the environment already contains the correct handling of the tricky case "
-                        f"({ref[:160]}); the agent would copy it. Make the reference path share the flaw, "
-                        "or make the reference a stated behaviour, not working code")
+    for key, what in (("runnable_reference", "run a reference that computes the correct answer"),
+                      ("reference_in_environment", "read the correct output or a reference implementation")):
+        v = str(spec.get(key) or "").strip()
+        if v and not re.match(r"(?i)[\s*-]*none\b", v):
+            problems.append(f"the agent can {what} ({v[:160]}); remove it from the environment")
     return problems
 
 
@@ -326,9 +323,9 @@ _COMMON = {"code", "file", "files", "value", "values", "function", "returns", "r
 
 def _fault_words(spec: dict) -> list[set[str]]:
     out = []
-    for f in spec.get("faults") or []:
+    for f in (spec.get("faults") or []) + (spec.get("requirements") or []):
         if isinstance(f, dict):
-            words = {w for w in _words(f"{f.get('what', '')} {f.get('wrong_fix', '')}")
+            words = {w for w in _words(f"{f.get('what', '')} {f.get('wrong_fix', '')} {f.get('rule', '')}")
                      if len(w) > 3 and w not in _COMMON}
             if words:
                 out.append(words)
@@ -400,6 +397,48 @@ def reference_copies(files: dict[str, str]) -> list[str]:
     return hits
 
 
+_ORACLE_CMD = re.compile(r"""(?:add_parser|add_command|subparsers?\.add_parser|choices\s*=\s*\[[^\]]*|command\s*==|cmd\s*==|args?\.command\s*==|case\s+)\s*['"]?(verify|check|validate|compare|diff|selftest|self-test|lint)['"]?\b""", re.I)
+_ORACLE_FILE = re.compile(r"(^|/)(verify|check|validate|compare|selftest|self_test|expected[_-]?output|reference)[\w.-]*$", re.I)
+_ORACLE_INSTR = re.compile(r"\b(run|use|until)\b[^.\n]{0,80}\b(verify|check|validate|compare|diff|self-?test)\b[^.\n]{0,60}\b(ok|pass|clean|match|no (mismatch|discrepanc|error))", re.I)
+
+
+def oracle_leaks(files: dict[str, str]) -> list[str]:
+    """Commands, files or instructions that hand the agent a pass/fail oracle for the graded result."""
+    hits = []
+    for path, body in files.items():
+        if not path.startswith("environment/") or path == "environment/Dockerfile":
+            continue
+        name = path[len("environment/"):]
+        code = is_code_or_config(posixpath.basename(name)) and posixpath.splitext(name)[1].lower() not in _DOC_EXTS
+        if (code and _ORACLE_FILE.search(name)) or re.search(r"expected[_-]?output", name, re.I):
+            hits.append(f"{path}: file name suggests a reference or self-check")
+            continue
+        if code:
+            for n, line in enumerate(body.splitlines(), 1):
+                m = _ORACLE_CMD.search(line)
+                if m:
+                    hits.append(f"{path}:{n}: exposes a '{m.group(1)}' command: {line.strip()[:80]}")
+                    break
+    m = _ORACLE_INSTR.search(files.get("instruction.md", ""))
+    if m:
+        hits.append(f"instruction.md tells the agent how to confirm completion: '{m.group(0)[:90]}'")
+    return hits
+
+
+def rule_coverage(instruction: str, spec: dict | None) -> list[str]:
+    """Requirements whose distinctive words are mostly absent from instruction.md: the tests would
+    check a rule the agent was never told (unfair by construction)."""
+    missing = []
+    inst = _words(instruction)
+    for i, r in enumerate((spec or {}).get("requirements") or []):
+        if not isinstance(r, dict):
+            continue
+        words = {w for w in _words(r.get("rule", "")) if len(w) > 3 and w not in _COMMON}
+        if len(words) >= 3 and len(words & inst) < len(words) * 0.5:
+            missing.append(f"{r.get('id') or i}: {str(r.get('rule'))[:90]}")
+    return missing
+
+
 def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     instruction = files.get("instruction.md", "")
     solve_sh = files.get("solution/solve.sh", "")
@@ -431,6 +470,14 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if ids:
         problems.append(f"instruction.md names code symbols where faults live ({', '.join(ids)}); "
                         "describe behaviour, not code")
+    oracle = oracle_leaks(files)
+    if oracle:
+        problems.append("the environment or instruction gives the agent an oracle for the graded result; remove it "
+                        "(no verify/check/diff/self-test commands, no expected output, no reference): " + "; ".join(oracle[:4]))
+    uncovered = rule_coverage(instruction, spec)
+    if uncovered:
+        problems.append("these requirements are not stated in instruction.md (the tests would check a rule the agent "
+                        "was never told); state each one precisely: " + "; ".join(uncovered[:5]))
     refs = reference_copies(files)
     if refs:
         problems.append("the environment keeps a reference copy of the correct code (git history, "
