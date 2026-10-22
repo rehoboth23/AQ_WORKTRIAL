@@ -45,7 +45,7 @@ from config import (
     EVAL_PRICE_IN_PER_M,
     EVAL_PRICE_OUT_PER_M,
     EVAL_REASONING_EFFORT,
-    FAST_SOLVE_STEPS,
+    EARLY_STOP_PASSES,
     GEN_PRICE_IN_PER_M,
     GEN_PRICE_OUT_PER_M,
     LOGS_DIR,
@@ -60,7 +60,7 @@ from config import (
     WAVE_POLL_SEC,
 )
 from difficulty import env_lines, solve_lines
-from evaluate import TRIAL_WALL_SEC, _collect, prior_band_jobs, run_band, triage
+from evaluate import TRIAL_WALL_SEC, _collect, early_stop_reached, prior_band_jobs, run_band, triage
 from generate import RunLog, chat, generate_task
 from llm import LLMError, parse_json_object
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
@@ -128,7 +128,7 @@ def task_features(task_dir: str, spec: dict | None = None) -> dict:
 
 
 def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict | None = None,
-                  run_id: str | None = None, on_start=None, mutation: list | None = None) -> dict:
+                  run_id: str | None = None, on_start=None, mutation: list | None = None, genre: str = "spec") -> dict:
     """Band-eval one task, triage it if learnable, then keep or reject it.
     Control-arm results are recorded but kept out of the calibration history.
     With the run_id of a killed eval, its finished trials are reused (evaluate.run_band)."""
@@ -151,8 +151,8 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
 
     if band.verdict != "learnable":
         decision, why = "rejected", band.verdict + (
-            f" (stopped early after {band.passes} passes)" if band.early_stop else "") + (
-            f" (fast: every pass took <= {FAST_SOLVE_STEPS} steps)" if band.fast_solve else "")
+            f" (stopped early: {band.passes} passes, no failure yet; EARLY_STOP_PASSES={EARLY_STOP_PASSES})"
+            if band.early_stop else "")
         if task_faults:  # too hard, but because of the task: say so in the record
             why += "; unfair: " + "; ".join(f["reason"] for f in task_faults)[:250]
     elif task_faults:
@@ -174,7 +174,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     confirmed = bool(confirmations) and all(c["verdict"] == "learnable" for c in confirmations)
     pm = postmortem(spec, mutation, band, failures, log)
 
-    record = {**meta, "arm": arm, "run_id": run_id, "features": features, "verdict": band.verdict,
+    record = {**meta, "arm": arm, "genre": genre, "run_id": run_id, "features": features, "verdict": band.verdict,
               "confirmations": confirmations, "confirmed": confirmed, "lesson": pm.get("lesson", ""), "postmortem": pm,
               "passes": band.passes, "n_valid": band.n_valid, "n_invalid": band.n_invalid,
               "decision": decision, "why": why, "triage": failures, "band": band.to_dict(),
@@ -200,7 +200,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
                         "design_version": DESIGN_VERSION,
                         "name": meta["name"], "description": meta["description"],
                         "difficulty": meta["difficulty"], "passes": band.passes, "n": N_RUNS,
-                        "challenge_kind": (spec or {}).get("challenge_kind"), "lesson": pm.get("lesson", ""),
+                        "challenge_kind": (spec or {}).get("challenge_kind"), "genre": genre, "lesson": pm.get("lesson", ""),
                         "verdict": band.verdict, "note": note, "features": features,
                         "median_steps": band.median_steps, "median_found_step": band.median_found_step,
                         "cost_usd": band.cost_usd})
@@ -357,8 +357,8 @@ def _adopt_orphan_harbor(pid: int | None, run_id: str, ledger: Ledger, topic: st
     ledger.audit("adopt_orphan_harbor", topic=topic, harbor_pid=pid, run_id=run_id)
     deadline = time.time() + TRIAL_WALL_SEC + 600
     while ours():
-        passes = sum(t["outcome"] == "pass" for j in prior_band_jobs(run_id) for t in _collect(j))
-        if passes > BAND_HIGH or time.time() > deadline:  # verdict certain, or the job hung
+        done = [t for j in prior_band_jobs(run_id) for t in _collect(j)]
+        if early_stop_reached(done) or time.time() > deadline:  # verdict decided, or the job hung
             kill_tree(pid)
             break
         time.sleep(ORPHAN_POLL_SEC)
@@ -381,14 +381,15 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
     if st["stage"] in ("done", "gen_failed"):
         return st["record"]
 
+    genre, bare = prompts.split_topic(topic)
     if st["stage"] in ("pending", "generating"):
         if "calibration" not in st:  # fixed at first start, so a resumed spec prompt is identical
             calibration = "" if control else prompts.calibration_block(load_history())
-            st = ledger.set(topic, "generating", calibration=calibration, arm=arm)
+            st = ledger.set(topic, "generating", calibration=calibration, arm=arm, genre=genre)
         else:
             ledger.audit("resume", topic=topic, key=st["key"], stage=st["stage"], logs_dir=st.get("logs_dir"))
-        gen = generate_task(topic, calibration=st["calibration"], control=control,
-                            resume_dir=st.get("logs_dir"), on_start=lambda d: ledger.update(topic, logs_dir=d))
+        gen = generate_task(bare, calibration=st["calibration"], control=control,
+                            resume_dir=st.get("logs_dir"), on_start=lambda d: ledger.update(topic, logs_dir=d), genre=genre)
         gen = {k: gen.get(k) for k in ("status", "task_dir", "logs_dir", "run_id", "rounds", "error",
                                        "tokens", "seconds", "task_name")}
         if gen["status"] != "ok":
@@ -397,7 +398,7 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
                       "logs_dir": gen["logs_dir"]}
             if not control:  # a design glm-5.1 can't build is recorded too
                 append_history({"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "run_id": gen["run_id"],
-                                "knobs": KNOBS, "design_version": DESIGN_VERSION, "name": topic[:60],
+                                "knobs": KNOBS, "design_version": DESIGN_VERSION, "name": bare[:60], "genre": genre,
                                 "verdict": "gen_failed", "passes": None})
             st = ledger.set(topic, "gen_failed", why=record["why"][:120], gen=gen, record=record)
             write_text_atomic(os.path.join(gen["logs_dir"], "VERDICT.md"), verdict_md(st))
@@ -428,7 +429,7 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
     slot = _acquire_band_slot(ledger, topic)
     try:
         rec = evaluate_task(gen["task_dir"], log, arm, spec, run_id=st["run_id"],
-                            on_start=lambda pid: ledger.update(topic, harbor_pid=pid), mutation=mutation)
+                            on_start=lambda pid: ledger.update(topic, harbor_pid=pid), mutation=mutation, genre=genre)
     finally:
         _release_band_slot(ledger, topic, slot)
     record = {**rec, "topic": topic, "stage": "eval", "gen_logs_dir": gen["logs_dir"]}
@@ -565,13 +566,13 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
               f"{MODEL} ${GEN_PRICE_IN_PER_M} in / ${GEN_PRICE_OUT_PER_M} out, "
               f"{EVAL_MODEL} ${EVAL_PRICE_IN_PER_M} / ${EVAL_PRICE_OUT_PER_M} (eval uses Harbor's reported cost when present).",
               "", "## Tasks", "",
-              "| topic | task | stage | verdict | passes | decision | gen $ / min | eval $ / min | why | verdict file |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "| topic | genre | task | stage | verdict | passes | decision | gen $ / min | eval $ / min | why | verdict file |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         s, rec = r["state"], r["rec"]
         vfile = os.path.join(rec["task_dir"], "VERDICT.md") if rec.get("task_dir") else (
             os.path.join(rec["logs_dir"], "VERDICT.md") if rec.get("logs_dir") else "")
-        lines.append(f"| {s['topic'][:60]} | {rec.get('name') or '-'} | {s.get('stage')} | {rec.get('verdict', '-')} | "
+        lines.append(f"| {s['topic'][:60]} | {s.get('genre') or 'spec'} | {rec.get('name') or '-'} | {s.get('stage')} | {rec.get('verdict', '-')} | "
                      f"{rec.get('passes', '-')}/{rec.get('n_valid', '-')} | {rec.get('decision', '-')} | "
                      f"${r['gen_cost']['cost_usd']:.2f} / {r['gen_sec'] / 60:.0f} | ${r['eval_cost']:.2f} / {r['eval_sec'] / 60:.0f} | "
                      f"{str(rec.get('why', '')).replace('|', '/')[:160]} | {vfile or '-'} |")

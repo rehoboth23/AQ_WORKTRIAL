@@ -34,7 +34,7 @@ from config import (
     EVAL_CONCURRENCY,
     EVAL_MODEL,
     EVAL_REASONING_EFFORT,
-    FAST_SOLVE_STEPS,
+    EARLY_STOP_PASSES,
     JOBS_DIR,
     MAX_INVALID_RERUNS,
     N_RUNS,
@@ -59,8 +59,7 @@ class BandResult:
     cost_usd: float | None = None
     median_steps: float | None = None
     median_found_step: float | None = None  # first step that mentions a file the fix touches
-    early_stop: bool = False  # stopped once BAND_HIGH+1 passes made "too_easy" certain
-    fast_solve: bool = False  # too_easy and every passing run took <= FAST_SOLVE_STEPS (report only)
+    early_stop: bool = False  # stopped once early_stop_reached() held (see config.EARLY_STOP_PASSES)
     seconds: float = 0.0
     error: str = ""
 
@@ -82,6 +81,14 @@ def classify_trial(trial: dict) -> tuple[str, str]:
     if reward is None:
         return "invalid", "no reward"
     return ("pass", "") if float(reward) >= 1.0 else ("fail", "")
+
+
+def early_stop_reached(trials: list[dict], prior_passes: int = 0) -> bool:
+    """too_easy is certain once more than BAND_HIGH runs passed; by configuration the eval also
+    stops once EARLY_STOP_PASSES runs passed with no valid failure yet ("the first N passed")."""
+    passes = prior_passes + sum(t["outcome"] == "pass" for t in trials)
+    fails = sum(t["outcome"] == "fail" for t in trials)
+    return passes > BAND_HIGH or (passes >= EARLY_STOP_PASSES and fails == 0)
 
 
 def verdict_for(passes: int, n_valid: int, n_runs: int = N_RUNS) -> str:
@@ -195,7 +202,7 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
         # Same totals as an uninterrupted eval: at most n_runs + MAX_INVALID_RERUNS finished trials.
         budget = n_runs + MAX_INVALID_RERUNS - len(res.trials)
         valid = [t for t in res.trials if t["outcome"] != "invalid"]
-        too_easy = sum(t["outcome"] == "pass" for t in res.trials) > BAND_HIGH
+        too_easy = early_stop_reached(res.trials)
         res.early_stop = too_easy and len(valid) < n_runs  # stopped before n_runs valid trials
         to_run = 0 if too_easy else max(0, min(n_runs - len(valid), budget))
         extra_left = max(0, budget - to_run)
@@ -207,11 +214,10 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
                 "--n-attempts", str(to_run), "--n-concurrent", str(conc),
                 "--env-file", ENV_FILE]
         timeout = math.ceil(to_run / conc) * TRIAL_WALL_SEC + 600
-        prior_passes = sum(t["outcome"] == "pass" for t in res.trials)
+        prior = list(res.trials)
 
-        def too_easy_certain(jd, prior=prior_passes):
-            # BAND_HIGH+1 valid passes means too_easy whatever the remaining runs do.
-            return prior + sum(t["outcome"] == "pass" for t in _collect(jd)) > BAND_HIGH
+        def too_easy_certain(jd, prior=prior):
+            return early_stop_reached(prior + _collect(jd))
 
         cli_out, job_dir = harbor_run(task_dir, job_name, args, timeout=timeout, stop_when=too_easy_certain,
                                       on_start=on_start)
@@ -224,7 +230,7 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
             res.error = "harbor produced no trials:\n" + _tail(cli_out, 3000)
             break
         res.trials.extend(trials)
-        if sum(t["outcome"] == "pass" for t in res.trials) > BAND_HIGH:
+        if early_stop_reached(res.trials):
             res.early_stop = "stopped early" in cli_out
             break
         valid = [t for t in res.trials if t["outcome"] != "invalid"]
@@ -239,7 +245,7 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
     res.n_valid = len(valid)
     res.n_invalid = sum(t["outcome"] == "invalid" for t in res.trials)
     res.passes = sum(t["outcome"] == "pass" for t in valid)
-    res.verdict = ("error" if res.error else "too_easy" if res.passes > BAND_HIGH
+    res.verdict = ("error" if res.error else "too_easy" if early_stop_reached(res.trials)
                    else verdict_for(res.passes, res.n_valid, n_runs))
     res.tokens = {"input": sum(t["input_tokens"] for t in res.trials),
                   "output": sum(t["output_tokens"] for t in res.trials)}
@@ -249,8 +255,6 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
     steps = [t["episodes"] for t in valid if t["episodes"]]
     found = [t["found_step"] for t in valid if t["found_step"]]
     res.median_steps = statistics.median(steps) if steps else None
-    pass_steps = [t["episodes"] for t in valid if t["outcome"] == "pass" and t["episodes"]]
-    res.fast_solve = res.verdict == "too_easy" and bool(pass_steps) and max(pass_steps) <= FAST_SOLVE_STEPS
     res.median_found_step = statistics.median(found) if found else None
     costs = [t["cost_usd"] for t in res.trials if t["cost_usd"] is not None]
     res.cost_usd = round(sum(costs), 4) if costs else None

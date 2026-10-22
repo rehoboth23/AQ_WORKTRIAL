@@ -126,6 +126,11 @@ class Spec(BaseModel):
     requirements: list[dict] = Field(default_factory=list)
     themes: list[str] = Field(default_factory=list)
     starter: str = ""
+    # Judgement genre
+    property: str = ""
+    reported_symptom: str = ""
+    sites: list[dict] = Field(default_factory=list)
+    partial_fix: str = ""
     decoys: list[dict | str] = Field(default_factory=list)
     hidden_edge_cases: list[dict | str] = Field(default_factory=list)
     why_not_textbook: str = ""
@@ -142,6 +147,7 @@ class Spec(BaseModel):
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
                      "failure_modes", "why_not_textbook", "static_read", "crux", "challenge_kind", "starter",
+                     "property", "reported_symptom", "partial_fix",
                      "sequence_invariant", "nameable_fix", "self_check_blind_spot", "reference_in_environment", "interaction", "runnable_reference",
                      "base_image", "category",
                      mode="before")
@@ -196,7 +202,7 @@ def parse_spec(text: str) -> dict:
 
 def parse_critic(text: str) -> dict:
     obj = parse_json_object(text)
-    if not isinstance(obj.get("spec"), dict) and ("faults" in obj or "requirements" in obj) and "name" in obj:
+    if not isinstance(obj.get("spec"), dict) and ("faults" in obj or "requirements" in obj or "sites" in obj) and "name" in obj:
         # glm-5.1 sometimes writes the walkthrough as prose and returns the revised spec bare;
         # keep it rather than throw away a 40k-token reply.
         obj = {"walkthrough": [text[:text.find("{")].strip()[:4000]], "too_easy_because": [], "spec": obj}
@@ -211,7 +217,7 @@ class SpecRejected(Exception):
     """The design still fails the difficulty spec gate after every attempt."""
 
 
-def design_spec(topic: str, calibration: str, control: bool, systems: dict, log) -> dict:
+def design_spec(topic: str, calibration: str, control: bool, systems: dict, log, genre: str = "spec") -> dict:
     """Spec call(s), then the difficulty gate and the red-team critic (both skipped for control).
     Raises SpecRejected if no design passes the gate, before any files or Docker are spent."""
     user = prompts.spec_user(topic, calibration)
@@ -219,7 +225,7 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log)
         spec, _, _ = chat(systems["spec"], user, parse_spec, log.llm, "spec" if attempt == 0 else f"spec-a{attempt}")
         if control:
             return spec
-        problems = difficulty.spec_gate(spec)
+        problems = difficulty.spec_gate(spec, genre)
         log.event("spec_gate", attempt=attempt, problems=problems)
         if not problems:
             break
@@ -227,16 +233,16 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log)
 
     if SPEC_CRITIC:
         try:
-            critic, _, _ = chat(prompts.CRITIC_SYSTEM, prompts.critic_user(spec, calibration), parse_critic, log.llm, "critic")
+            critic, _, _ = chat(systems["critic"], prompts.critic_user(spec, calibration), parse_critic, log.llm, "critic")
             log.write_json("critic.json", critic)
-            revised_problems = difficulty.spec_gate(critic["spec"])
+            revised_problems = difficulty.spec_gate(critic["spec"], genre)
             log.event("critic", too_easy_because=critic["too_easy_because"], revised_gate=revised_problems)
             if not revised_problems:
                 spec = critic["spec"]
         except LLMError as e:  # the critic is an improvement step; keep the gated spec without it
             log.event("critic_error", error=str(e)[:300])
 
-    problems = difficulty.spec_gate(spec)
+    problems = difficulty.spec_gate(spec, genre)
     if problems:
         raise SpecRejected("spec failed the difficulty gate: " + "; ".join(problems))
     return spec
@@ -257,14 +263,14 @@ def parse_review(text: str) -> dict:
     return {"verdict": "leaks", "leaks": leaks, "instruction": blocks["instruction.md"]}
 
 
-def review_instruction(spec: dict, files: dict[str, str], log) -> dict[str, str]:
+def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | None = None, genre: str = "spec") -> dict[str, str]:
     """Rewrite instruction.md if it diagnoses a hidden fault (keeps requirements). Best effort:
     on a model error the instruction is kept and the gates and band eval still apply."""
     try:
-        review, _, _ = chat(prompts.INSTRUCTION_REVIEW_SYSTEM,
+        review, _, _ = chat((systems or {}).get("review") or prompts.INSTRUCTION_REVIEW_SYSTEM,
                             prompts.instruction_review_user(files["instruction.md"], mutation_items(spec),
                                                             files.get("tests/test_outputs.py", ""),
-                                                            spec.get("crux", "")),
+                                                            spec.get("crux", ""), genre),
                             parse_review, log.llm, "review")
     except LLMError as e:
         log.event("review_error", error=str(e)[:300])
@@ -287,10 +293,15 @@ def mutation_items(spec: dict) -> list[dict]:
     for f in spec.get("faults") or []:
         if isinstance(f, dict) and f.get("wrong_fix"):
             items.append(f)
+    for i, x in enumerate(spec.get("sites") or []):
+        if isinstance(x, dict) and str(x.get("mechanism") or "").strip():
+            items.append({"where": x.get("where"), "what": f"site {i}: {x.get('mechanism')}",
+                          "wrong_fix": "fix every other site but leave this one as it is",
+                          "counterexample": x.get("hidden_test_input"), "caught_by_test": f"site {i}"})
     return items
 
 
-def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_prefix: str) -> dict:
+def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_prefix: str, mutant_system: str | None = None) -> dict:
     """Run each fault's `wrong_fix` as a mutant solve.sh in a copy of the task; the tests must
     fail it. A mutant the tests pass means that trap is not real. A mutant that fails EVERY test
     probably broke something unrelated, so it proves nothing either way ("broken")."""
@@ -298,7 +309,7 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
     if not faults:
         return {"survived": [], "results": []}
     try:
-        blocks, _, _ = chat(prompts.MUTANT_SYSTEM, prompts.mutants_user(faults, files["solution/solve.sh"]),
+        blocks, _, _ = chat(mutant_system or prompts.MUTANT_SYSTEM, prompts.mutants_user(faults, files["solution/solve.sh"]),
                             parse_file_blocks, log.llm, "mutants")
     except LLMError as e:
         log.event("mutation_error", error=str(e)[:300])
@@ -526,7 +537,7 @@ class RunLog:
 
 
 def generate_task(topic: str, output_dir: str | None = None, calibration: str = "",
-                  control: bool = False, resume_dir: str | None = None, on_start=None) -> dict:
+                  control: bool = False, resume_dir: str | None = None, on_start=None, genre: str = "spec") -> dict:
     """Generate a Harbor task for the given topic.
 
     Args:
@@ -554,9 +565,9 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
     log = RunLog(resume_dir or os.path.join(os.path.abspath(LOGS_DIR), run_id))
     if on_start:
         on_start(log.dir)
-    systems = prompts.CONTROL_SYSTEMS if control else prompts.SYSTEMS
+    systems = prompts.systems_for(genre, control)
     log.event("resume" if resume_dir else "start", topic=topic, model=MODEL, calibration=calibration,
-              control=control, pid=os.getpid())
+              control=control, pid=os.getpid(), genre=genre)
     summary = {"topic": topic, "run_id": run_id, "logs_dir": log.dir, "task_dir": None,
                "status": "failed", "rounds": []}
 
@@ -567,7 +578,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         return summary
 
     try:
-        spec = design_spec(topic, calibration, control, systems, log)
+        spec = design_spec(topic, calibration, control, systems, log, genre)
         log.write_json("spec.json", spec)
         project = write_project(spec, systems, log)
         core, _, _ = chat(systems["files"], prompts.files_user(spec, project), parse_file_blocks, log.llm, "files")
@@ -597,7 +608,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         record = {"round": rnd, "dropped_paths": dropped, "checks": []}
         if (INSTRUCTION_REVIEW and not control and files.get("instruction.md", "").strip()
                 and files["instruction.md"] != reviewed):
-            files = review_instruction(spec, files, log)
+            files = review_instruction(spec, files, log, systems, genre)
             reviewed = files["instruction.md"]
         missing = missing_files(files) + [f"environment/{p} (the Dockerfile COPYs it, but it was never written)"
                                           for p in missing_copy_sources(files)]
@@ -619,7 +630,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
             record["checks"] = [r.to_dict() for r in results]
             error = next((r.error for r in results if not r.passed), "")
             if not error and MUTATION_CHECK and not control:
-                mut = mutation_check(task_dir, spec, files, log, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}")
+                mut = mutation_check(task_dir, spec, files, log, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}", systems.get("mutants"))
                 record["mutation"] = mut["results"]
                 if mut["survived"]:
                     mutation_only = True

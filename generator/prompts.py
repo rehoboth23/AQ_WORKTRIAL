@@ -10,8 +10,9 @@ never sees or edits them.
 """
 
 import json
+import re
 
-from config import MAX_RULES, MIN_RULES, MIN_THEMES
+from config import MAX_FAULTS, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_RULES, MIN_SITES, MIN_THEMES
 
 # Paths the model is allowed to write. Anything else in a reply is dropped.
 MODEL_FILES = ("instruction.md", "environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py")
@@ -178,7 +179,7 @@ def calibration_block(history: list[dict]) -> str:
         return ""
     by_kind = {}
     for h in history:
-        by_kind.setdefault(h.get("challenge_kind") or "other", []).append(f"{h['passes']}/{h['n']}")
+        by_kind.setdefault(f"{h.get('genre') or 'spec'}/{h.get('challenge_kind') or 'other'}", []).append(f"{h['passes']}/{h['n']}")
     lines = ["Calibration: recent tasks under these rules and how often the reference agent solved them "
              "(target: 1-3 of 5 runs).",
              "Per kind: " + "; ".join(f"{k}: {len(v)} task(s), {', '.join(v)}" for k, v in sorted(by_kind.items()))]
@@ -405,8 +406,10 @@ is the problem and must be reported.
 """
 
 
-def instruction_review_user(instruction: str, requirements: list, tests: str, crux: str = "") -> str:
-    return ("Requirements the tests check (each must be stated in instruction.md):\n" + json.dumps(requirements, indent=2)
+def instruction_review_user(instruction: str, requirements: list, tests: str, crux: str = "", genre: str = "spec") -> str:
+    head = ("Requirements the tests check (each must be stated in instruction.md):\n" if genre == "spec"
+            else "Hidden faults / sites (never reveal these):\n")
+    return (head + json.dumps(requirements, indent=2)
             + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
             + "\n\ninstruction.md to review:\n" + instruction)
 
@@ -506,6 +509,343 @@ SYSTEMS = {"spec": SPEC_SYSTEM, "project": PROJECT_SYSTEM, "files": FILES_SYSTEM
 CONTROL_SYSTEMS = {k: v.replace(DIFFICULTY_RULE, "").replace(DIFFICULTY_SPEC_FIELDS, "")
                    for k, v in SYSTEMS.items()}
 assert all(DIFFICULTY_RULE not in v and DIFFICULTY_SPEC_FIELDS not in v for v in CONTROL_SYSTEMS.values())
+
+
+# ---------------------------------------------------------------------------------------------
+# Other genres, chosen per topic with a [genre] tag on the topic line. "spec" (above) is the
+# default. "hidden_fault" is the retired bug-hunt genre (every such task scored 4-5/5), kept so a
+# batch can sprinkle a few in and measure them. "judgement" is the shape of the one fair failure.
+
+DIFFICULTY_RULE_FAULT = f"""\
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well)
+  should solve it only SOMETIMES (roughly 1-3 times in 5). Every earlier task was solved 4-5/5:
+  the agent found the faults by reading and their fixes were named techniques. Adding more
+  faults, more code or more steps did not change that; the SHAPE of the problem does:
+  * Where difficulty comes from (measured on the reference agent): it solves anything whose fix
+    an expert can NAME in a few words ("normalize to NFC everywhere", "parameterize the query"),
+    even with no hints, and it finds every inconsistency between code paths by reading. Build the
+    task around a defect that shows only in BEHAVIOUR OVER A SEQUENCE (a second run after an edit,
+    a resume after interruption, a retry after a partial write, late or duplicate events), where
+    each function is locally correct.
+    - NO SINGLE FUNCTION, read against the goal, reveals the fault. A task whose bug can be read off
+      one function (a delta computed from the wrong baseline, a check placed after a write) was
+      solved 4-5/5 in ~10 steps even with no hints and no reference code. The defect must live in
+      the INTERACTION: state written by one component or run and read by another under a different
+      assumption (a manifest that omits an input the renderer uses, a checkpoint that saves the
+      cursor but not the dedup set, a cache key built in one module and looked up in another).
+      Each side is correct on its own; only tracing the data across them shows the bug.
+    To stay fair:
+    - instruction.md STATES the invariant over sequences ("a resumed run produces exactly what an
+      uninterrupted run would", "after any edit, an incremental build equals a clean build").
+      Tests choose which sequences to try; those may stay hidden. Hidden inputs, never hidden rules.
+      Pick them where partial fixes break, not where an agent would first look: non-round values,
+      boundaries (first and last item, exactly on a tie), the crash path, twice in a row. A test
+      that only uses the obvious values (50, 100) is no stronger than the agent's own re-test.
+    - Every condition a test uses can be produced deterministically with something in the
+      environment (a documented flag, a fake clock, a scripted input order, a crash-injection
+      setting). No races, timing or sleeps.
+    - The required end result is unambiguous. The difficulty is in reasoning out every sequence
+      that breaks it, not in guessing what the result should be.
+  * Symptom, not location: instruction.md describes what the user sees and the exact goal and
+    success criteria, never which file, component or mechanism is at fault. Bad: "inspect
+    /app/migrate_v2.sh", "the libraries disagree on the Vec3 type". Good: "the monthly totals in
+    report.csv are wrong since the last deploy; make them correct".
+    Give REQUIREMENTS (what must be true) and SYMPTOMS (what the user sees), never a DIAGNOSIS
+    (why it is broken). Example for an inventory report:
+      requirement: "stock_report.csv must list every warehouse with its total units on hand"
+      symptom:     "two warehouses are missing and several totals are lower than the counts
+                    in the inventory system"
+      diagnosis (forbidden): "the join drops warehouses whose IDs have trailing spaces, and
+                    returned items are subtracted twice"
+  * ONE central challenge with {MIN_FAULTS} to {MAX_FAULTS} DIFFERENT faults that all serve it: interacting
+    requirements, where fixing one exposes the next. No unrelated faults to pad the count (a
+    typo in a wrapper script, a wrong interpreter path, a function that is never called, a wrong
+    config path): they add steps, not difficulty. Not one fault repeated in several files.
+  * Indirect symptoms: wrong numbers, silent data issues, failures only on some inputs.
+    Errors must not name the faulty file or symbol.
+  * Realistic size: a real project as big as the scenario needs, with no line target. No padding and no decoy modules: ordinary, correct code around the faults is
+    enough. Never label code "legacy", "unused" or "not loaded". Generate bulky data at build time.
+  * Domain knowledge, not proofreading: each faulty spot must read as correct code to someone who
+    does not know what correct code in this domain must do. Comments, docstrings and the README
+    describe what the code DOES; they never state the rule the code breaks, never call a setting
+    a workaround, never flag a line.
+  * Partial fixes fail: the complete fix spans several places. For each central fault (at least 2) there is a
+    plausible but incomplete fix (fix it at one entry point but not the others, handle the
+    common form but not the rare one) that passes the obvious checks, and a test the agent
+    cannot see that catches it. The agent's own re-test must not catch the partial fix: after
+    the obvious fix, re-running the scenario instruction.md describes works. The counterexample
+    uses a different sequence, timing or input (run it twice, interrupt it midway, apply the
+    change after the first pass) that the agent only tries if it reasons about the whole lifecycle.
+  * No reference copies: the environment must not contain the answer elsewhere. No .git
+    history, no pristine installed copy or vendored original of the faulty code, no backup or
+    .orig files, no project tests that name or pin the fault. The agent has no network access.
+    This includes the task's OWN code: if the invariant compares two paths (live vs replay,
+    incremental vs full rebuild, fast vs slow), the reference path must NOT already handle the
+    tricky case correctly, or the agent just copies its logic across. Either both paths share the
+    flawed reasoning, or the reference is a stated behaviour the agent must reason out. README
+    and docs describe usage and data formats; they may restate the stated invariant, never the
+    case-level semantics a fault breaks.
+  * No independent check: the agent must not be able to RUN something that computes the right
+    answer and compare its output against it (a `verify` command, a full rebuild next to the
+    incremental path, a replay, an import/export round-trip). Agents used such a reference to test
+    their way to every hidden case (a shipped `verify`; fuzzing incremental output against a full
+    rebuild). The agent may still check its work by reasoning, small hand-worked examples, and
+    the stated rules; it just gets no oracle for free.
+  * Hidden edge cases: tests also check cases the visible symptom doesn't show (empty input,
+    NULLs, timezones, duplicates), each a CONSEQUENCE of the stated goal that an expert would
+    derive, not a separately listed requirement. Don't paste expected outputs into
+    instruction.md; state the rule that produces them.
+  * Goal, not checklist: instruction.md states the outcome at the level a user would (the
+    invariant, "after any sequence of operations the snapshot equals a replay of the log"), never
+    the list of cases and steps that achieve it. Every `wrong_fix` must stay a trap: never add a
+    sentence whose only purpose is to warn against one ("if an event is corrected twice, use the
+    latest correction"). Never name the fix or the crux.
+  * A problem, not a guide: spend instruction.md's detail on the DELIVERABLE (output paths,
+    formats, the rules that define correct results, constraints grading needs; use placeholders
+    like <count>, not the expected values). Never: a numbered symptom per fault, how many things
+    are wrong, the categories of faults ("currency, timezone and refund handling"), where answers
+    or rules are documented, what the tests check, a command to check progress, "only change X"
+    scope limits, or exact expected outputs beyond trivial ones.
+  * Bespoke, not textbook: no famous bugs (Pillow ANTIALIAS, nginx trailing slash, INSERT
+    without column list). Use domain logic specific to this scenario.
+  * Never get difficulty from ambiguity, trick wording or hidden requirements: every test must
+    follow from instruction.md plus what the agent can discover in the environment.
+"""
+
+
+DIFFICULTY_SPEC_FIELDS_FAULT = """,
+  "faults": [{"layer": "build|code|config|data|runtime", "where": "file or component",
+              "what": "the defect", "symptom": "what the agent observes",
+              "how_discovered": "what the agent must do to find it",
+              "central": "true if this fault is part of the central challenge",
+              "wrong_fix": "central faults: the plausible but incomplete fix a strong agent would try first",
+              "counterexample": "the exact input or sequence of operations on which wrong_fix gives a wrong result",
+              "why_normal_case_passes": "why the obvious checks do not reveal wrong_fix",
+              "caught_by_test": "the hidden test that runs the counterexample and fails wrong_fix"}],
+  "hidden_edge_cases": ["cases the tests check that the visible symptom does not show"],
+  "why_not_textbook": "why this cannot be solved from memory of a well-known bug",
+  "static_read": "what reading the code alone reveals, and why that is not enough to fix everything",
+  "crux": "the domain insight the complete fix depends on",
+  "challenge_kind": "incremental_state|resume_after_interruption|retry_idempotency|ordering_and_duplicates|cache_invalidation|format_migration|streaming_boundaries|other",
+  "sequence_invariant": "the invariant over sequences, as instruction.md states it",
+  "nameable_fix": "the shortest phrase an expert would use for the whole fix",
+  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
+  "reference_in_environment": "any code, doc or data in the environment that already computes or states the correct handling of the tricky case; must be none",
+  "interaction": "the components or runs whose interaction causes the central defect (at least 2), and why each looks correct on its own",
+  "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against (verify command, full rebuild, replay, round-trip); must be none"
+"""
+
+
+CRITIC_SYSTEM_FAULT = f"""\
+You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
+it reads files, greps, runs builds and tests, and re-tests its own fixes; every earlier task fell
+to it 4-5 times in 5.
+
+{DIFFICULTY_RULE_FAULT}
+Given a task spec (JSON), walk through how that agent would solve it, step by step, starting
+from instruction.md and the environment. For each fault, note what reveals it and what the
+agent must reason out to fix it completely. The spec is too easy if reading the code is enough
+to find and fix a central fault, if an error message names a faulty file or symbol, if instruction.md would name
+the faulty location, if any fault is a well-known textbook bug, if there are fewer than
+{MIN_FAULTS} or more than {MAX_FAULTS} faults, if any fault is filler unrelated to the central challenge, if any comment, docstring or README line
+states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, if the
+environment holds a reference copy of the correct code (git history, an installed original,
+backups, project tests naming the fault), if `nameable_fix` alone is enough to solve it (the fix
+is a named technique applied mechanically), if a fault's counterexample is the same scenario
+instruction.md describes (the agent's own re-test would catch it), or if the environment already
+contains correct logic for the tricky case that the agent can copy (e.g. a correct replay or
+full-rebuild path that the invariant compares against), or if any central fault can be found and
+fixed by reading ONE function against the goal (the defect must live in the interaction between
+components or runs, with each side correct on its own), or if the agent can run something that
+computes the correct answer and compare against it (a verify command, a full rebuild, a replay,
+a round-trip). It is UNFAIR if the sequence
+invariant is not stated in instruction.md, or a test's condition cannot be produced
+deterministically with something in the environment.
+
+If it is too easy or unfair, rewrite the spec to fix every problem while keeping it fair,
+solvable, deterministic and on the same topic. Do not make it harder by adding faults, code or
+steps; change what the agent has to reason about.
+
+The revised spec must keep every key of the original AND include these difficulty-profile
+keys, filled in (add them if the original lacks them):
+{{{DIFFICULTY_SPEC_FIELDS_FAULT.lstrip(",")}
+}}
+
+Reply with ONE JSON object and nothing else:
+{{"walkthrough": ["step-by-step solve of the ORIGINAL spec"],
+  "too_easy_because": ["problems found, empty if none"],
+  "spec": {{...the full spec, revised if needed, with every key of the original...}}}}
+"""
+
+
+
+INSTRUCTION_REVIEW_SYSTEM_FAULT = """\
+You review instruction.md of a Terminal-Bench 2 task before it is built. The agent solving the
+task sees only instruction.md and the environment; the faults below are hidden from it.
+
+A good instruction states a PROBLEM in user terms plus the DELIVERABLE: output paths, formats,
+the rules that define correct results, and constraints the grading needs. It must NOT guide the
+agent. Flag and remove any of these:
+  1. diagnosis: WHY something is broken or WHERE (file, component, setting, mechanism)
+  2. a numbered or bulleted symptom per fault (reveals how many problems and where each lives)
+  3. the number of problems, or the categories of faults ("currency, timezone, refund handling")
+  4. pointers to where answers or rules live ("see docs/", "inspect migrate.sh")
+  5. what the tests or verification check
+  6. a command to check progress ("run pytest to check")
+  7. scope narrowing ("only change the Makefile") unless the tests require it
+  8. exact expected outputs or values beyond trivial ones (state the rule; use placeholders)
+  9. the fix or the crux itself (the technique, rule or insight that solves it; it is given below)
+ 10. a requirement whose only purpose is to warn against a fault's `wrong_fix` (e.g. "if an event
+     is corrected twice, use the latest correction" when the trap is handling repeated corrections)
+Also check tests/test_outputs.py the other way round: if a test requires an exact textual form
+(a specific spelling, trailing slash, number of "../", key order, whitespace) that instruction.md
+does not state, report it as "UNSTATED FORMAT: <test> requires <form>" in the leak list. Do not
+rewrite the tests; the instruction may only be extended with that requirement if it is a real
+rule of the deliverable, otherwise the test is the problem and must be reported.
+Example for an inventory report:
+  ok:        "stock_report.csv is wrong: some warehouses are missing and totals don't match the
+             inventory system. It must list every warehouse with its total units on hand."
+  forbidden: "1. two warehouses are missing (the join drops IDs with trailing spaces) 2. returns
+             are double-counted. Check docs/rules.md; expected total for WH-7 is 1,204."
+
+Check every sentence against the hidden faults and this list. If nothing violates it, reply exactly:
+VERDICT: clean
+
+Otherwise reply:
+VERDICT: leaks
+- <the leaking sentence> -> <which fault it reveals>
+<<<FILE instruction.md>>>
+...the full rewritten instruction.md...
+<<<END>>>
+
+The rewrite must keep the goal (the invariant), the interface (paths, commands, ports, output
+formats) and any rule the tests rely on that an expert could NOT derive from the goal, domain
+knowledge and the environment. Consequences of the goal that an expert would work out (repeated
+corrections, existing data, the crash path) are removed, not kept. It should read as one problem
+statement plus the deliverable spec, in the same voice; it may be shorter.
+"""
+
+
+
+MUTANT_SYSTEM_FAULT = """\
+You write deliberately INCOMPLETE solutions for a Terminal-Bench 2 task, to check that its
+tests catch plausible partial fixes. You get the task's faults (each with `wrong_fix`, the
+plausible incomplete fix, and its `counterexample`) and the correct solution/solve.sh.
+
+For each fault, write a complete alternative solve script that does everything the correct
+solve.sh does, EXCEPT that for this one fault it applies `wrong_fix` instead of the correct fix.
+Keep every other step identical, so the only difference is that one fault's partial fix. The
+script must run without errors (bash, `set -euo pipefail`); it must not break unrelated things.
+
+Reply with one block per fault, nothing before or after, named by the fault's index:
+<<<FILE mutants/0.sh>>>
+...complete script...
+<<<END>>>
+"""
+
+
+
+DIFFICULTY_RULE_JUDGEMENT = f"""\
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
+  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). The only
+  fair failures measured so far came from a task where the agent had to JUDGE whether its fix was
+  complete: a stated property that must hold everywhere, violated at several places that differ
+  in mechanism, with no tests and no oracle; the agent fixed the obvious site, re-tested the
+  reported symptom, and decided the rest was unnecessary. Build that shape:
+  * ONE stated property that must hold everywhere ("no user-supplied value can put a line break
+    into a response header", "every monetary amount is rounded the same way at every boundary",
+    "no path derived from input can leave the base directory", "every record is durable before
+    its index entry"). instruction.md states the property, ONE reported symptom (the obvious
+    site), and the interface. It never lists the sites, their count, or their mechanisms.
+  * A realistic codebase (several modules, a real-looking library or service) that violates the
+    property at {MIN_SITES} to {MAX_SITES} SITES which differ in MECHANISM: value vs name, direct
+    vs through a helper, one site using a different library or API, one site reached only through
+    a second entry point, one site in data already stored. Fixing one site and grepping for the
+    same pattern must NOT reveal the others; knowing the domain must.
+  * A partial fix (the obvious site) makes the reported symptom disappear and passes every
+    check the agent would naturally run. Hidden tests probe each site with its own input.
+  * No tests, no verify/check command, no reference copy, no .git, no upstream original (a
+    library installed with pip is modified in place and its pristine copy removed), no comment
+    that marks a site. The agent has no network access.
+  * Fair: every site is a violation of the STATED property that an expert in the domain would
+    recognise from the property plus reading the code; tests check behaviour through the public
+    interface, never a particular patch.
+"""
+
+DIFFICULTY_SPEC_FIELDS_JUDGEMENT = """,
+  "challenge_kind": "property_completeness",
+  "property": "the one property, as instruction.md states it",
+  "reported_symptom": "the one symptom instruction.md reports (the obvious site)",
+  "sites": [{"where": "file and function", "mechanism": "how this site violates the property",
+             "differs_from_other_sites": "why fixing another site and searching for its pattern does not reveal this one",
+             "hidden_test_input": "the input the hidden test sends through the public interface"}],
+  "partial_fix": "the fix an agent makes first, and which checks it passes",
+  "self_check_blind_spot": "why the agent's own re-test passes after the partial fix",
+  "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against; must be none",
+  "reference_in_environment": "any code, doc or data in the environment that already handles the property correctly or states the sites; must be none"
+"""
+
+CRITIC_SYSTEM_JUDGEMENT = """\
+You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
+it reads files, greps, runs builds and tests, and writes its own tests; it fails mainly when it
+must judge whether a fix is complete with nothing to check against.
+
+__RULE__
+Given a task spec (JSON), walk through how that agent would solve it: which site it finds from
+the symptom, what it would grep for next, which sites that search reveals, and what it would
+test. The spec is TOO EASY if two sites share a mechanism (one search finds both), if
+instruction.md lists or counts the sites, if a comment or docstring marks a site, if there are
+fewer than __MIN_SITES__ sites, if any test, oracle or reference copy exists, or if the fix is a
+named technique applied in one place. It is UNFAIR if a site does not violate the stated
+property as an expert would read it, or if a hidden test checks a particular patch rather than
+behaviour through the public interface.
+
+If results of earlier designs are given, a design that repeats a shape those results show was
+too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
+keeping it fair, solvable, deterministic and on the same topic.
+
+The revised spec must keep every key of the original AND include these design keys, filled in:
+{__FIELDS__
+}
+
+Reply with ONE JSON object and nothing else:
+{"walkthrough": ["how the agent would approach the ORIGINAL spec, site by site"],
+  "too_easy_because": ["problems found, empty if none"],
+  "spec": {...the full spec, revised if needed, with every key of the original...}}
+"""
+
+CRITIC_SYSTEM_JUDGEMENT = (CRITIC_SYSTEM_JUDGEMENT.replace("__RULE__", DIFFICULTY_RULE_JUDGEMENT)
+                           .replace("__MIN_SITES__", str(MIN_SITES))
+                           .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_JUDGEMENT.lstrip(",")))
+
+
+GENRES = {
+    "spec": {"rule": DIFFICULTY_RULE, "fields": DIFFICULTY_SPEC_FIELDS, "critic": CRITIC_SYSTEM,
+             "review": INSTRUCTION_REVIEW_SYSTEM, "mutants": MUTANT_SYSTEM},
+    "hidden_fault": {"rule": DIFFICULTY_RULE_FAULT, "fields": DIFFICULTY_SPEC_FIELDS_FAULT, "critic": CRITIC_SYSTEM_FAULT,
+                     "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
+    "judgement": {"rule": DIFFICULTY_RULE_JUDGEMENT, "fields": DIFFICULTY_SPEC_FIELDS_JUDGEMENT, "critic": CRITIC_SYSTEM_JUDGEMENT,
+                  "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
+}
+
+
+def split_topic(line: str) -> tuple[str, str]:
+    """'[judgement] a payment service ...' -> ('judgement', 'a payment service ...'); untagged -> 'spec'."""
+    m = re.match(r"\s*\[(\w+)\]\s*(.*)", line, re.S)
+    if m and m.group(1).lower() in GENRES:
+        return m.group(1).lower(), m.group(2).strip()
+    return "spec", line.strip()
+
+
+def systems_for(genre: str = "spec", control: bool = False) -> dict:
+    """The stage prompts for a genre: the spec-genre texts with the design rule and spec fields
+    swapped (they are embedded verbatim), plus that genre's critic, reviewer and mutant prompts.
+    control=True strips the design rule and fields (the A/B control arm)."""
+    g = GENRES[genre]
+    out = {k: v.replace(DIFFICULTY_RULE, "" if control else g["rule"]).replace(DIFFICULTY_SPEC_FIELDS, "" if control else g["fields"])
+           for k, v in SYSTEMS.items()}
+    out.update(critic=g["critic"], review=g["review"], mutants=g["mutants"])
+    return out
 
 
 def repair_user(spec: dict, files: dict[str, str], error: str) -> str:

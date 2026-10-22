@@ -1,28 +1,33 @@
 # DRAFT for review (not yet used by the pipeline; scripts/topics.txt is unchanged).
-# One topic per line. Lines starting with # are ignored.
-# Shape (measured 2026-10-22): hidden-fault tasks were all solved 4-5/5; the agent finds discrete
-# faults by reading and tests every case it thinks of. These are SPECIFICATION tasks: build or
-# transform to 12-20 independent, precisely stated rules over several themes, each differing from
-# the default a programmer would produce, with hidden test inputs and no oracle in the image.
-# Diverse domains and kinds (diversity is graded). Previous lists: topics-draft.txt.bak*.
+# One topic per line; a leading [genre] tag picks the design rules (untagged = spec).
+#   [spec]         specification task: build/transform to 12-20 independent stated rules, no oracle
+#   [judgement]    one stated property violated at several sites with distinct mechanisms; the
+#                  agent must judge completeness with nothing to check against
+#   [hidden_fault] the retired bug-hunt genre (interaction faults); included to measure it
+# Mixed on purpose: the batch measures which genre and kind land in band. Previous lists: *.bak*.
 
-# build_from_spec
-a release-notes generator that turns a changelog CSV into a text document following a detailed house style (headings, ordering, wrapping, date forms, reference formatting)
-# exact_data_transform
-a contacts export cleaner that normalises a messy CSV of names, phone numbers, emails and addresses into an exact canonical CSV with strict per-field rules
-# large_corpus_migration
-a config migration that converts a directory of INI files to TOML under precise rules for types, comments, deprecated keys, ordering and file naming
-# build_from_spec
-a log summariser that turns a service log into an exact JSON report with precise rules for time buckets, percentiles, rounding, ordering, truncation and error classes
-# exact_data_transform
-a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout
-# build_from_spec
-a Markdown table formatter with precise alignment, escaping, width, numeric-detection, sorting and wrapping rules
-# large_corpus_migration
-a test-fixture restructuring that renames, re-encodes and re-headers dozens of files under exact naming, encoding, header and manifest rules
-# build_from_spec
-an agenda renderer that lays out a day-by-day text calendar from an events CSV with precise rules for overlaps, all-day events, time zones, widths and pagination
-# exact_data_transform
-a bank reconciliation report that matches two transaction CSVs under exact tolerance, ordering, grouping, rounding and unmatched-item rules
-# build_from_spec
-a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and totals
+# --- spec: build_from_spec ---
+[spec] a release-notes generator that turns a changelog CSV into a text document following a detailed house style (headings, ordering, wrapping, date forms, reference formatting)
+[spec] a log summariser that turns a service log into an exact JSON report with precise rules for time buckets, percentiles, rounding, ordering, truncation and error classes
+[spec] a Markdown table formatter with precise alignment, escaping, width, numeric-detection, sorting and wrapping rules
+[spec] an agenda renderer that lays out a day-by-day text calendar from an events CSV with precise rules for overlaps, all-day events, time zones, widths and pagination
+[spec] a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and totals
+[spec] an invoice numbering and PDF-text layout tool with strict rules for sequence gaps, credit notes, currency rounding, tax lines and page footers
+[spec] a CLI that converts a tabular sensor log into a daily text dashboard with precise rules for gaps, units, significant figures, flags, column order and totals
+# --- spec: exact_data_transform ---
+[spec] a contacts export cleaner that normalises a messy CSV of names, phone numbers, emails and addresses into an exact canonical CSV with strict per-field rules
+[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout
+[spec] a bank reconciliation report that matches two transaction CSVs under exact tolerance, ordering, grouping, rounding and unmatched-item rules
+[spec] a product-catalogue normaliser that merges three supplier feeds into one exact CSV with strict rules for units, prices, identifiers, duplicates and ordering
+# --- spec: large_corpus_migration ---
+[spec] a config migration that converts a directory of INI files to TOML under precise rules for types, comments, deprecated keys, ordering and file naming
+[spec] a test-fixture restructuring that renames, re-encodes and re-headers dozens of files under exact naming, encoding, header and manifest rules
+[spec] a documentation migration that rewrites dozens of wiki-style text pages into Markdown under strict rules for headings, links, code blocks, tables and front matter
+# --- judgement: property_completeness ---
+[judgement] a small HTTP service whose responses must never let a user-supplied value break out of a header, cookie or redirect, violated in several differently built places
+[judgement] a file-sharing service where no path derived from user input may leave its base directory, violated through several different mechanisms (joins, archives, symlinks, encoded names)
+[judgement] a billing module where every monetary amount must be rounded the same way at every boundary, violated in several places that use different arithmetic paths
+# --- hidden_fault (retired genre, measured for comparison) ---
+[hidden_fault] a job scheduler that persists its queue to disk and runs recurring jobs, which runs some jobs twice or skips them after a restart or a clock change
+[hidden_fault] a log shipper that tails files in fixed-size chunks and survives restarts, but drops or duplicates lines around chunk boundaries, rotations and restarts
+[hidden_fault] a deployment script that applies database migrations and config changes in steps, which leaves the system in a different state when a failed run is retried

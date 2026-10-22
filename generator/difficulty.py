@@ -22,7 +22,9 @@ from config import (
     DISCOVERY,
     MAX_FAULTS,
     MAX_RULES,
+    MAX_SITES,
     MIN_RULES,
+    MIN_SITES,
     MIN_THEMES,
     MAX_LEAKED_LITERALS,
     MIN_FAULT_LAYERS,
@@ -114,7 +116,7 @@ def meta_leaks(files: dict[str, str]) -> list[str]:
 SPEC_KINDS = {"build_from_spec", "exact_data_transform", "large_corpus_migration"}
 
 
-def spec_gate(spec: dict) -> list[str]:
+def spec_gate_spec(spec: dict) -> list[str]:
     """Specification tasks: enough independent, precisely stated rules over several themes, a
     hidden input per rule, and no oracle in the environment."""
     rules = spec.get("requirements") or []
@@ -156,6 +158,97 @@ def spec_gate(spec: dict) -> list[str]:
         if v and not re.match(r"(?i)[\s*-]*none\b", v):
             problems.append(f"the agent can {what} ({v[:160]}); remove it from the environment")
     return problems
+
+
+def spec_gate_fault(spec: dict) -> list[str]:
+    """Hidden-fault genre (retired as the default; kept for mixed batches)."""
+    faults = spec.get("faults") or []
+    if not isinstance(faults, list):
+        return ["`faults` must be a list of fault objects"]
+    problems = []
+    if len(faults) < MIN_FAULTS:
+        problems.append(f"needs at least {MIN_FAULTS} different faults, has {len(faults)}")
+    layers = {str(f.get("layer", "")).lower() for f in faults if isinstance(f, dict)} & LAYERS
+    if len(layers) < MIN_FAULT_LAYERS:
+        problems.append(f"faults must span at least {MIN_FAULT_LAYERS} layers of "
+                        f"{sorted(LAYERS)}, found {sorted(layers) or 'none'}")
+    # "One fault repeated" means the same KIND of bug fixed in several places (e.g. one sed in
+    # four files), not several different bugs that happen to share a file or view.
+    whats = [_words(f.get("what", "")) for f in faults if isinstance(f, dict)]
+    if any(_similar(a, b) for i, a in enumerate(whats) for b in whats[i + 1:]):
+        problems.append("faults must be different bugs, not the same fix repeated in several places")
+    if not spec.get("hidden_edge_cases"):
+        problems.append("needs at least one hidden edge case the tests check")
+    if len(faults) > MAX_FAULTS:
+        problems.append(f"has {len(faults)} faults; at most {MAX_FAULTS} (more faults make a longer "
+                        "proofreading list, not a harder task)")
+    trap_keys = ("wrong_fix", "counterexample", "caught_by_test")
+    traps = [f for f in faults if isinstance(f, dict) and all(str(f.get(k) or "").strip() for k in trap_keys)]
+    if len(traps) < min(2, len(faults)):
+        problems.append("at least 2 central faults need `wrong_fix` (the plausible incomplete fix a strong "
+                        "agent tries first), `counterexample` (the exact input or sequence on which it is "
+                        "wrong) and `caught_by_test` (the hidden test that runs it)")
+    kind = str(spec.get("challenge_kind") or "").strip().lower()
+    if kind not in CHALLENGE_KINDS:
+        problems.append(f"`challenge_kind` must be one of {sorted(CHALLENGE_KINDS)}; build the task around "
+                        "a defect that shows only over a sequence of runs or events, not a named technique")
+    for key, why in (("static_read", "what reading the code alone reveals, and why it is not enough"),
+                     ("crux", "the domain insight the complete fix depends on"),
+                     ("sequence_invariant", "the invariant over sequences that instruction.md states"),
+                     ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
+                     ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it"),
+                     ("reference_in_environment", "what in the environment already computes the correct handling (must be none)"),
+                     ("interaction", "the components or runs whose interaction causes the defect, each correct on its own"),
+                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)")):
+        if not str(spec.get(key) or "").strip():
+            problems.append(f"needs `{key}`: {why}")
+    runnable = str(spec.get("runnable_reference") or "").strip()
+    if runnable and not re.match(r"(?i)[\s*-]*none\b", runnable):
+        problems.append(f"the agent can run a reference that computes the correct answer ({runnable[:160]}) and "
+                        "fuzz its fix against it; remove it, or make it share the flaw")
+    ref = str(spec.get("reference_in_environment") or "").strip()
+    if ref and not re.match(r"(?i)[\s*-]*none\b", ref):  # "none", "- none" (a list reply), "None: ..."
+        problems.append("the environment already contains the correct handling of the tricky case "
+                        f"({ref[:160]}); the agent would copy it. Make the reference path share the flaw, "
+                        "or make the reference a stated behaviour, not working code")
+    return problems
+
+
+def spec_gate_judgement(spec: dict) -> list[str]:
+    """Judgement genre: one stated property, several violating sites with distinct mechanisms,
+    no oracle or reference."""
+    sites = spec.get("sites") or []
+    if not isinstance(sites, list) or not all(isinstance(x, dict) for x in sites):
+        return ["`sites` must be a list of site objects"]
+    problems = []
+    if not (MIN_SITES <= len(sites) <= MAX_SITES):
+        problems.append(f"needs {MIN_SITES} to {MAX_SITES} sites that violate the property, has {len(sites)}")
+    incomplete = [str(i) for i, x in enumerate(sites)
+                  if not all(str(x.get(k) or "").strip() for k in ("where", "mechanism", "differs_from_other_sites", "hidden_test_input"))]
+    if incomplete:
+        problems.append("every site needs `where`, `mechanism`, `differs_from_other_sites` and `hidden_test_input`; missing on " + ", ".join(incomplete[:5]))
+    mechs = [_words(x.get("mechanism", "")) for x in sites]
+    same = [(i, j) for i in range(len(mechs)) for j in range(i + 1, len(mechs)) if _similar(mechs[i], mechs[j], 0.6)]
+    if same:
+        problems.append("sites must differ in mechanism (one search must not find two): " + ", ".join(f"{i}~{j}" for i, j in same[:4]))
+    if str(spec.get("challenge_kind") or "").strip().lower() != "property_completeness":
+        problems.append("`challenge_kind` must be property_completeness for this genre")
+    for key, why in (("property", "the one property instruction.md states"), ("reported_symptom", "the one symptom instruction.md reports"),
+                     ("partial_fix", "the fix an agent makes first and which checks it passes"),
+                     ("self_check_blind_spot", "why the agent's own re-test passes after the partial fix"),
+                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)"),
+                     ("reference_in_environment", "what already handles the property correctly (must be none)")):
+        if not str(spec.get(key) or "").strip():
+            problems.append(f"needs `{key}`: {why}")
+    for key in ("runnable_reference", "reference_in_environment"):
+        v = str(spec.get(key) or "").strip()
+        if v and not re.match(r"(?i)[\s*-]*none\b", v):
+            problems.append(f"`{key}` must be none ({v[:120]})")
+    return problems
+
+
+def spec_gate(spec: dict, genre: str = "spec") -> list[str]:
+    return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement}[genre](spec)
 
 
 def solve_paths(solve_sh: str) -> set[str]:

@@ -56,7 +56,7 @@ MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
 DIFFICULTY_FILE = os.environ.get(
     "DIFFICULTY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "difficulty.toml"))
 _DIFFICULTY_DEFAULTS = {
-    "knobs": {"min_rules": 12, "max_rules": 20, "min_themes": 4, "min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
+    "knobs": {"min_rules": 12, "max_rules": 20, "min_themes": 4, "min_sites": 3, "max_sites": 6, "min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
               "max_leaked_literals": 1, "critic_found_within": 3},
     "discovery": {"min_gap": 2, "hard_gap": 4, "very_hard_gap": 7, "too_hard_above": 9,
                   "timeout_risk_steps": 60},
@@ -89,6 +89,8 @@ def _knob(name: str) -> int:
 MIN_RULES = _knob("min_rules")                       # stated requirements in a specification task
 MAX_RULES = _knob("max_rules")
 MIN_THEMES = _knob("min_themes")                     # distinct themes the rules must span
+MIN_SITES = _knob("min_sites")                       # judgement genre: violating sites with distinct mechanisms
+MAX_SITES = _knob("max_sites")
 MIN_FAULTS = _knob("min_faults")                     # (hidden-fault genre, retired; kept for old records)
 MAX_FAULTS = _knob("max_faults")                     # cap: more faults = longer proofreading, not harder
 MIN_FAULT_LAYERS = _knob("min_fault_layers")         # build/code/config/data/runtime
@@ -107,9 +109,10 @@ MUTATION_CHECK = os.environ.get("MUTATION_CHECK", "1") == "1"
 # result favours lucky draws. Each in-band task gets this many extra band evals; it is "confirmed" if
 # every one also lands in band. The verdict stays the first eval (README); 0 disables.
 CONFIRM_EVALS = int(os.environ.get("CONFIRM_EVALS", "1"))
-# Report-only flag: a too-easy task whose passing runs all took at most this many agent steps is
-# marked 'fast' in the record (the verdict is never changed by it).
-FAST_SOLVE_STEPS = int(os.environ.get("FAST_SOLVE_STEPS", "12"))
+# Early stop: a band eval ends as too_easy once this many runs have passed with no failure yet
+# (user's choice, 2026-10-22). 4 would be certain (more than BAND_HIGH); 3 trades certainty for
+# time: a true 3/5 task whose passes finish first is cut off and marked too easy.
+EARLY_STOP_PASSES = int(os.environ.get("EARLY_STOP_PASSES", "3"))
 # Batch waves: at most BAND_SLOTS band evals run at once across all copies of a batch (each is
 # 5 agent containers plus sidecars; 2 suits 8 GB of Docker memory, 4 suits 16 GB). Copies poll
 # every WAVE_POLL_SEC for a free slot or for a wave to finish.
