@@ -1,0 +1,26 @@
+# Difficulty knobs for the task generator (read by generator/config.py). Env vars override
+# them (e.g. MIN_FAULTS=4). Values are measured from the hand-built reference task
+# reference/petrify-stale-build: 5 interacting faults across code, data and config; 1,246
+# non-blank environment lines; a 62-line solution; 1 test value repeated in the instruction;
+# agents first diagnosed a fault at step 3-6, with 2-8 steps between later diagnoses.
+
+[knobs]
+min_faults = 5
+# Cap: more faults made longer proofreading lists, not harder tasks.
+max_faults = 7
+min_fault_layers = 3
+min_env_lines = 1200
+min_solve_lines = 60
+max_leaked_literals = 1
+critic_found_within = 3
+
+# Spacing between the critic's estimated fault discoveries (agent steps). Any gap < min_gap,
+# or a first find before critic_found_within, is too easy and rejected. The median gap grades
+# the design: >= hard_gap hard, >= very_hard_gap very hard, > too_hard_above too hard
+# (flagged, not rejected).
+[discovery]
+min_gap = 2
+hard_gap = 4
+very_hard_gap = 7
+too_hard_above = 9
+timeout_risk_steps = 60

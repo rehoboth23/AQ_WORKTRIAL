@@ -23,3 +23,6 @@ jobs/
 trials/
 .harbor/
 dist.tar.gz
+
+# Runtime lock files (pipeline ledger, history, reports)
+*.lock

@@ -11,6 +11,8 @@ never sees or edits them.
 
 import json
 
+from config import CRITIC_FOUND_WITHIN, DISCOVERY, MAX_FAULTS, MIN_ENV_LINES, MIN_FAULT_LAYERS, MIN_FAULTS
+
 # Paths the model is allowed to write. Anything else in a reply is dropped.
 MODEL_FILES = ("instruction.md", "environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py")
 MODEL_DIRS = ("environment/",)
@@ -22,13 +24,97 @@ How the task is run (Harbor / Terminal-Bench 2):
 - The agent gets a shell in that container plus instruction.md. It never sees solution/ or tests/.
 - The oracle check copies solution/ to /solution and runs `bash /solution/solve.sh` as root
   in a fresh container. It must finish in well under 10 minutes.
+- The agent and solve.sh run with NO network access: install every package the solution needs
+  in the Dockerfile. Tests (test.sh) do have network access.
 - The verifier then copies tests/ to /tests and runs pytest on /tests/test_outputs.py with a
   separate uv-managed Python 3 that has ONLY pytest installed. So test_outputs.py may import
   the standard library and pytest only. To check things inside the image (programs, services,
   databases, compiled binaries), call them with subprocess. Tests run as root from WORKDIR.
+- Inside tests, a bare `python3` is the verifier's uv Python (pytest only, none of the image's
+  packages). To run code that needs the image's packages, call the image's interpreter by full
+  path (e.g. /usr/local/bin/python3 on python:* images, /usr/bin/python3 on ubuntu/debian).
+- Harbor starts the container with `sleep infinity`: the Dockerfile's CMD/ENTRYPOINT never run,
+  so no service or daemon is running when the agent starts. instruction.md must not claim one
+  is. If a service is needed, the agent (and solve.sh) start it; tests may start it too.
+- Commands can print nothing on success (e.g. `sqlite3 -json` on zero rows). Test helpers must
+  handle empty output instead of crashing on it.
 - A task passes when every test passes. The unsolved container (no agent action) must FAIL
   at least one test, and the oracle-solved container must pass ALL tests.
 """
+
+# The difficulty lever, kept separate so a control run can leave it out
+# (see CONTROL_SYSTEMS below and pipeline.py --control).
+DIFFICULTY_RULE = f"""\
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well)
+  should solve it only SOMETIMES (roughly 1-3 times in 5). Earlier tasks were far too easy:
+  the agent found every fault within its first 3 commands and finished in 4-9 steps, because
+  the instruction named the broken file, one `cat` showed the whole environment, the error
+  message named the fault, and each fix was a 1-4 line sed. Avoid all of that. Use these knobs:
+  * Symptom, not location: instruction.md describes what the user sees and the exact goal and
+    success criteria, never which file, component or mechanism is at fault. Bad: "inspect
+    /app/migrate_v2.sh", "the libraries disagree on the Vec3 type". Good: "the monthly totals in
+    report.csv are wrong since the last deploy; make them correct".
+    Give REQUIREMENTS (what must be true) and SYMPTOMS (what the user sees), never a DIAGNOSIS
+    (why it is broken). Example for an inventory report:
+      requirement: "stock_report.csv must list every warehouse with its total units on hand"
+      symptom:     "two warehouses are missing and several totals are lower than the counts
+                    in the inventory system"
+      diagnosis (forbidden): "the join drops warehouses whose IDs have trailing spaces, and
+                    returned items are subtracted twice"
+  * {MIN_FAULTS} to {MAX_FAULTS} DIFFERENT faults, in at least {MIN_FAULT_LAYERS} layers (build, code, config, data, runtime),
+    chained: fixing one reveals the next (builds -> runs but wrong -> edge case wrong).
+    Not one fault repeated in several files.
+  * Indirect symptoms: wrong numbers, silent data issues, failures only on some inputs.
+    Errors must not name the faulty file or symbol.
+  * Realistic size: a real project layout with at least ~{MIN_ENV_LINES} lines of source/config across
+    many files, so the agent must search. Include at least one plausible but innocent decoy:
+    a real module or setting that is used and correct, never one labelled "legacy", "unused" or
+    "not loaded". Generate bulky data at build time.
+  * Domain knowledge, not proofreading: each faulty spot must read as correct code to someone who
+    does not know what correct code in this domain must do. Comments, docstrings and the README
+    describe what the code DOES; they never state the rule the code breaks, never call a setting
+    a workaround, never flag a line.
+  * Partial fixes fail: the complete fix spans several places. For every fault there is a
+    plausible but incomplete fix (fix it at one entry point but not the others, handle the
+    common form but not the rare one) that passes the obvious checks, and a test the agent
+    cannot see that catches it.
+  * No reference copies: the environment must not contain the answer elsewhere. No .git
+    history, no pristine installed copy or vendored original of the faulty code, no backup or
+    .orig files, no project tests that name or pin the fault. The agent has no network access.
+  * Hidden edge cases: tests also check cases the visible symptom doesn't show (empty input,
+    NULLs, timezones, duplicates), each following from a requirement stated in instruction.md.
+    Don't paste expected outputs into instruction.md; state the rule that produces them.
+  * A problem, not a guide: spend instruction.md's detail on the DELIVERABLE (output paths,
+    formats, the rules that define correct results, constraints grading needs; use placeholders
+    like <count>, not the expected values). Never: a numbered symptom per fault, how many things
+    are wrong, the categories of faults ("currency, timezone and refund handling"), where answers
+    or rules are documented, what the tests check, a command to check progress, "only change X"
+    scope limits, or exact expected outputs beyond trivial ones.
+  * Spaced discovery: no fault findable before agent step {CRITIC_FOUND_WITHIN}, and faults found one
+    at a time: at least {DISCOVERY["min_gap"]} steps between consecutive finds, ideally about {DISCOVERY["hard_gap"] + 1}
+    (hard) to {DISCOVERY["too_hard_above"]} (very hard). Never let one file or error reveal several faults at once.
+  * Bespoke, not textbook: no famous bugs (Pillow ANTIALIAS, nginx trailing slash, INSERT
+    without column list). Use domain logic specific to this scenario.
+  * Never get difficulty from ambiguity, trick wording or hidden requirements: every test must
+    follow from instruction.md plus what the agent can discover in the environment.
+"""
+
+# Extra spec fields that make the model commit to a difficulty profile. Checked in code by
+# difficulty.spec_gate(); left out for the control arm together with DIFFICULTY_RULE.
+DIFFICULTY_SPEC_FIELDS = """,
+  "faults": [{"layer": "build|code|config|data|runtime", "where": "file or component",
+              "what": "the defect", "symptom": "what the agent observes",
+              "how_discovered": "what the agent must do to find it",
+              "depends_on": "index of the fault that hides this one, or null",
+              "discovered_at_step": "agent step at which a strong agent would find it (number)",
+              "wrong_fix": "the plausible but incomplete fix a strong agent would try first",
+              "caught_by_test": "the hidden test that fails that wrong fix"}],
+  "decoys": ["plausible but innocent suspects in the environment"],
+  "hidden_edge_cases": ["cases the tests check that the visible symptom does not show"],
+  "why_not_textbook": "why this cannot be solved from memory of a well-known bug",
+  "static_read": "what reading the code alone reveals, and why that is not enough to fix everything",
+  "crux": "the domain insight the complete fix depends on",
+  "expected_agent_steps": number"""
 
 QUALITY_RULES = """\
 Rules for a good task:
@@ -37,6 +123,7 @@ Rules for a good task:
 - Realistic and multi-step: the agent must explore the environment, diagnose, and fix or build
   something. Real failure modes (cryptic errors, dependency problems, misconfiguration) are good.
   Hard but fair: an expert reading instruction.md and exploring the container can solve it.
+""" + DIFFICULTY_RULE + """\
 - Deterministic: fixed data, seeds and dates. No network access needed at test time.
   Everything the task needs is installed in the Dockerfile.
 - No answer leaks: the expected answer or the fix must not be readable in the image. If data is
@@ -45,9 +132,18 @@ Rules for a good task:
 - Tests check real end state (program output, file contents, service behaviour), not superficial
   strings an agent could fake. Prefer several focused tests over one big one. Recompute expected
   values from first principles or compare to hard-coded known-good values.
+- Tests check MEANING, not spelling. Any correct solution must pass: resolve a link and compare
+  the destination instead of counting "../"; parse numbers, dates, JSON and paths instead of
+  comparing their text; accept equivalent forms (trailing slash or not, 1.0 vs 1, key order,
+  whitespace). A test may require an exact textual form ONLY if instruction.md states that form.
+  Bad: `assert href.count('../') == 2`. Good: `assert resolve(page, href) == site_root`.
 - instruction.md states exactly what is checked: paths, formats, commands, ports. Every test must
   correspond to a requirement written in instruction.md. Write it like a colleague asking for
   help: concrete, 80-300 words, no hints about the hidden bug's location, no mention of tests.
+- Keep the design hidden: instruction.md and every environment/ file are what the solving agent
+  sees. Never write spec details there: no fault numbers, step estimates, "decoy" or "red herring"
+  labels, and no comments marking bugs as intentional, planted or injected. Faulty code must look
+  like ordinary code written by a developer who made mistakes.
 - solve.sh is a bash script with `set -euo pipefail`, deterministic, and actually performs the
   fix the way an expert would (no reading of tests).
 """
@@ -73,23 +169,100 @@ Reply with ONE JSON object and nothing else, with these keys:
   "solution_outline": ["ordered steps solve.sh performs"],
   "test_plan": ["each test: what it checks and how (commands, files, expected values)"],
   "anti_cheat": "why the answer is not visible in the image and why tests cannot be gamed",
-  "failure_modes": "where a capable agent is likely to go wrong, and why that is the agent's fault"
+  "failure_modes": "where a capable agent is likely to go wrong, and why that is the agent's fault"{DIFFICULTY_SPEC_FIELDS}
 }}
 """
 
 
-def spec_user(topic: str) -> str:
-    return f"Design one task on this topic:\n\n{topic}\n"
+def spec_user(topic: str, calibration: str = "") -> str:
+    return f"Design one task on this topic:\n\n{topic}\n" + (f"\n{calibration}\n" if calibration else "")
 
 
-FILES_SYSTEM = f"""\
-You write Terminal-Bench 2 task files from a task spec.
+def calibration_block(history: list[dict]) -> str:
+    """Recent band-eval verdicts, so the next design aims at the 1-3/5 band."""
+    if not history:
+        return ""
+    lines = ["Calibration: recent tasks and how often the reference agent solved them "
+             "(target: 1-3 of 5 runs)."]
+    for h in history:
+        note = f" ({h['note']})" if h.get("note") else ""
+        lines.append(f"- {h['name']} [{h.get('difficulty', '?')}]: {h['passes']}/{h['n']} "
+                     f"-> {h['verdict']}{note}. {h.get('description', '')}")
+    lines.append("Design this task harder than the too_easy ones and easier than the too_hard ones.")
+    return "\n".join(lines)
+
+
+TRIAGE_SYSTEM = """\
+You review a failed attempt by an AI agent on a Terminal-Bench 2 task and decide whose fault
+the failure is.
+
+- "model": the task was fair and the agent went wrong (wrong diagnosis, gave up, broke something,
+  missed a requirement that instruction.md states clearly, ran out of ideas).
+- "task": the failure comes from the task itself (instruction.md is ambiguous or contradicts
+  the tests, a test checks something never asked for, the environment is broken or
+  nondeterministic, the expected answer is wrong).
+
+Be strict about "task": only choose it when you can point to the specific flaw.
+Reply with ONE JSON object and nothing else:
+{"fault": "model" or "task", "category": "short label, e.g. wrong-diagnosis, incomplete-fix,
+ gave-up, ambiguous-spec, untested-requirement, broken-env", "reason": "one sentence, concrete"}
+"""
+
+
+def triage_user(instruction: str, tests: str, test_output: str, trajectory_tail: str) -> str:
+    return (f"instruction.md:\n{instruction}\n\ntests/test_outputs.py:\n{tests}\n\n"
+            f"Verifier output for this attempt:\n{test_output}\n\n"
+            f"Last steps of the agent's trajectory:\n{trajectory_tail}\n")
+
+
+PROJECT_SYSTEM = f"""\
+You write the project inside a Terminal-Bench 2 task's environment, from a task spec.
 
 {HARBOR_CONTRACT}
 {QUALITY_RULES}
-Write exactly these files (plus any extra files under environment/ the Dockerfile COPYs):
+Write every file of the project under environment/ EXCEPT environment/Dockerfile: source code,
+build files, configs, docs, and build-time data generators, with the spec's faults and decoys
+planted exactly as described. Do NOT write environment/Dockerfile, instruction.md, solve.sh or
+tests; they are written next, against your files. Generate bulky data with a script (run at
+build time) instead of pasting it.
+
+Reply in exactly this format, nothing before or after. First a manifest of EVERY path you will
+write, one per line; then one block per file, each complete:
+
+<<<MANIFEST>>>
+environment/src/main.c
+environment/config/app.yaml
+<<<END>>>
+<<<FILE environment/src/main.c>>>
+...content...
+<<<END>>>
+
+If the files don't all fit in one reply, write as many COMPLETE files as fit; you will be asked
+for the rest.
+"""
+
+
+def project_user(spec: dict) -> str:
+    return "Task spec:\n\n" + json.dumps(spec, indent=2) + "\n\nWrite the project files now.\n"
+
+
+def project_continue_user(spec: dict, written: list[str], missing: list[str]) -> str:
+    return ("Task spec:\n\n" + json.dumps(spec, indent=2)
+            + "\n\nAlready written (do not repeat): " + ", ".join(written)
+            + "\n\nStill missing from your manifest, write these now, each complete:\n"
+            + "\n".join(missing) + "\n\nReply with <<<FILE path>>> ... <<<END>>> blocks only.\n")
+
+
+FILES_SYSTEM = f"""\
+You write the remaining Terminal-Bench 2 task files from a task spec. The project under
+environment/ is already written (given below); write the files that wrap it.
+
+{HARBOR_CONTRACT}
+{QUALITY_RULES}
+Write exactly these files (you may also add or replace files under environment/ if the project
+needs a fix to match the spec):
 - instruction.md
-- environment/Dockerfile
+- environment/Dockerfile (COPY the project files it needs; every COPY source must exist)
 - solution/solve.sh
 - tests/test_outputs.py
 
@@ -108,8 +281,20 @@ Reply with file blocks only, in exactly this format, nothing before or after:
 """
 
 
-def files_user(spec: dict) -> str:
-    return "Task spec:\n\n" + json.dumps(spec, indent=2) + "\n\nWrite the task files now.\n"
+def files_user(spec: dict, project: dict[str, str] | None = None, max_chars: int = 150_000) -> str:
+    parts = ["Task spec:\n\n" + json.dumps(spec, indent=2)]
+    if project:
+        parts.append("\nProject files already written under environment/:\n")
+        used = 0
+        for path in sorted(project):
+            body = project[path]
+            if used + len(body) > max_chars:  # very large projects: list the rest by name
+                parts.append(f"<<<FILE {path}>>> ({len(body.splitlines())} lines, not shown)")
+                continue
+            used += len(body)
+            parts.append(f"<<<FILE {path}>>>\n{body}<<<END>>>")
+    parts.append("\nWrite the task files now.\n")
+    return "\n".join(parts)
 
 
 REPAIR_SYSTEM = f"""\
@@ -130,6 +315,108 @@ nothing before or after:
 ...full content...
 <<<END>>>
 """
+
+
+CRITIC_SYSTEM = f"""\
+You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
+it reads files, greps, runs builds and tests, and earlier tasks fell to it within 3 commands.
+
+{DIFFICULTY_RULE}
+Given a task spec (JSON), walk through how that agent would solve it, step by step, starting
+from instruction.md and the environment. For each fault, note the step at which it would be
+found and from what. The spec is too easy if any fault is found within the agent's first
+{CRITIC_FOUND_WITHIN} commands, if an error message names a faulty file or symbol, if instruction.md would name
+the faulty location, if any fault is a well-known textbook bug, if there are fewer than
+{MIN_FAULTS} or more than {MAX_FAULTS} different chained faults, if any comment, docstring or README line
+states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, or if the
+environment holds a reference copy of the correct code (git history, an installed original,
+backups, project tests naming the fault).
+
+Also estimate, for every fault, `discovered_at_step`: the agent step at which it would be found.
+Grade the spacing between consecutive finds: any gap below {DISCOVERY["min_gap"]} steps (two faults
+falling to the same look) or a first find before step {CRITIC_FOUND_WITHIN} is TOO EASY; a median gap
+of {DISCOVERY["min_gap"]}-{DISCOVERY["hard_gap"]} is moderate, about {DISCOVERY["hard_gap"] + 1} is HARD (the target),
+about {DISCOVERY["too_hard_above"]} is VERY HARD, and above {DISCOVERY["too_hard_above"]} is too hard. If it is too easy,
+rewrite the spec to fix every problem while keeping it fair, solvable, deterministic and on the same
+topic, and put your step estimates in the revised spec's faults.
+
+The revised spec must keep every key of the original AND include these difficulty-profile
+keys, filled in (add them if the original lacks them):
+{{{DIFFICULTY_SPEC_FIELDS.lstrip(",")}
+}}
+
+Reply with ONE JSON object and nothing else:
+{{"walkthrough": ["step-by-step solve of the ORIGINAL spec"],
+  "too_easy_because": ["problems found, empty if none"],
+  "spec": {{...the full spec, revised if needed, with every key of the original...}}}}
+"""
+
+
+INSTRUCTION_REVIEW_SYSTEM = """\
+You review instruction.md of a Terminal-Bench 2 task before it is built. The agent solving the
+task sees only instruction.md and the environment; the faults below are hidden from it.
+
+A good instruction states a PROBLEM in user terms plus the DELIVERABLE: output paths, formats,
+the rules that define correct results, and constraints the grading needs. It must NOT guide the
+agent. Flag and remove any of these:
+  1. diagnosis: WHY something is broken or WHERE (file, component, setting, mechanism)
+  2. a numbered or bulleted symptom per fault (reveals how many problems and where each lives)
+  3. the number of problems, or the categories of faults ("currency, timezone, refund handling")
+  4. pointers to where answers or rules live ("see docs/", "inspect migrate.sh")
+  5. what the tests or verification check
+  6. a command to check progress ("run pytest to check")
+  7. scope narrowing ("only change the Makefile") unless the tests require it
+  8. exact expected outputs or values beyond trivial ones (state the rule; use placeholders)
+Also check tests/test_outputs.py the other way round: if a test requires an exact textual form
+(a specific spelling, trailing slash, number of "../", key order, whitespace) that instruction.md
+does not state, report it as "UNSTATED FORMAT: <test> requires <form>" in the leak list. Do not
+rewrite the tests; the instruction may only be extended with that requirement if it is a real
+rule of the deliverable, otherwise the test is the problem and must be reported.
+Example for an inventory report:
+  ok:        "stock_report.csv is wrong: some warehouses are missing and totals don't match the
+             inventory system. It must list every warehouse with its total units on hand."
+  forbidden: "1. two warehouses are missing (the join drops IDs with trailing spaces) 2. returns
+             are double-counted. Check docs/rules.md; expected total for WH-7 is 1,204."
+
+Check every sentence against the hidden faults and this list. If nothing violates it, reply exactly:
+VERDICT: clean
+
+Otherwise reply:
+VERDICT: leaks
+- <the leaking sentence> -> <which fault it reveals>
+<<<FILE instruction.md>>>
+...the full rewritten instruction.md...
+<<<END>>>
+
+The rewrite must keep every requirement, path, format and rule the tests rely on
+(tests/test_outputs.py is given), so a correct solution can still be derived from it alone. It
+should read as one problem statement plus the deliverable spec, in the same voice; it may be
+shorter.
+"""
+
+
+def instruction_review_user(instruction: str, faults: list, tests: str) -> str:
+    return ("Hidden faults (never reveal these):\n" + json.dumps(faults, indent=2)
+            + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
+            + "\n\ninstruction.md to review:\n" + instruction)
+
+
+def critic_user(spec: dict) -> str:
+    return "Task spec to review:\n\n" + json.dumps(spec, indent=2) + "\n"
+
+
+def spec_retry_user(topic: str, calibration: str, problems: list[str]) -> str:
+    return (spec_user(topic, calibration) + "\nYour previous design was rejected by automatic "
+            "checks:\n- " + "\n- ".join(problems) + "\nDesign it again, fixing all of these.\n")
+
+
+SYSTEMS = {"spec": SPEC_SYSTEM, "project": PROJECT_SYSTEM, "files": FILES_SYSTEM, "repair": REPAIR_SYSTEM}
+# Control arm for A/B checks of the difficulty levers: same prompts minus DIFFICULTY_RULE and
+# the difficulty profile fields (generate.py also skips the critic and gates for it). The
+# Harbor runtime facts stay, since they are correctness fixes, not difficulty levers.
+CONTROL_SYSTEMS = {k: v.replace(DIFFICULTY_RULE, "").replace(DIFFICULTY_SPEC_FIELDS, "")
+                   for k, v in SYSTEMS.items()}
+assert all(DIFFICULTY_RULE not in v and DIFFICULTY_SPEC_FIELDS not in v for v in CONTROL_SYSTEMS.values())
 
 
 def repair_user(spec: dict, files: dict[str, str], error: str) -> str:
