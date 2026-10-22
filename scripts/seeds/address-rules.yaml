@@ -1,0 +1,48 @@
+topic: Recover the ordered rewrite rules a retired address-normalisation engine applied, from about 900
+  before/after address pairs, as a Python normaliser that reproduces it on unseen addresses.
+shape: rule induction from examples; graded on held-out address pairs
+agent_cannot_verify: 'Rule ORDER and rare rules: some rules only fire on combinations seen 2-3 times in
+  900 pairs (a unit designator after a PO box, a street type inside a building name), and order changes
+  the output only when two rules overlap. Training pairs look solved long before held-out pairs are.'
+dial: share of 300 held-out pairs reproduced exactly; fair range 85-97%, start 92%. A rule-per-pattern
+  baseline scores about 75%, the oracle 100%.
+quirk_matrix:
+  rule overlap (order matters):
+  - none
+  - 2-rule overlap
+  - 3-rule chain
+  rare rule frequency in training:
+  - 5+ instances
+  - 2-3 instances
+  - 1 instance
+  near-miss (must not fire):
+  - absent
+  - 1 decoy pattern
+  - decoy plus casing variant
+  mix: about 30% easy cells, the rest medium or hard
+public_tests: 'about 30%: 60 visible pairs in tests_public/ covering single-rule cases; ordering interactions
+  and rare rules only in the hidden pairs'
+anti_cheese: output-identity check on 300 hidden pairs from fresh seeds (a lookup table of training pairs
+  fails); no network
+ground_truth: the engine is a seeded rule list kept in tests/ (about 25 ordered regex rewrites); the tests
+  generate held-out addresses with the same generator and normalise them with the engine.
+checks:
+- abbreviation expansion vs contraction depends on position in the line
+- 'ordering: a rule that must run before another (e.g. unit extraction before suffix normalisation)'
+- rare rules seen 2-3 times in the training pairs
+- rules that must NOT fire (a street named 'North' is not a direction)
+- 'output contract: /app/normalise.py reads stdin, one address per line, writes one per line'
+knobs:
+- knob: varied hidden draws
+  fairness: held-out pairs come from the same generator as the training pairs (README says so)
+- knob: convention trap
+  fairness: data/README.md states the postal style guide (casing, separators) the engine followed
+must_keep:
+- the existing CLI flags --input/--output of the stub
+environment: python:3.12-slim, stdlib only; ~900 training pairs as TSV; no network.
+out_of_bounds:
+- rules with no instance in the training pairs
+- randomness in the engine
+- held-out pairs from a different generator
+precheck:
+- generate the corpus offline; confirm baseline ~75% and engine 100% on held-out

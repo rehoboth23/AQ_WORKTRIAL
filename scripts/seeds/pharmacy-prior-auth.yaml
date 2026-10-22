@@ -1,0 +1,43 @@
+topic: Close out a pharmacy's prior-authorisation queue through the local formulary, prescriber and payer
+  services, following the operating manual, and submit each decision through the portal.
+shape: procedure-driven case decisions over local services; graded by submitted decisions and audit log
+agent_cannot_verify: Each case's correct decision depends on manual rules applied in a stated order (step
+  therapy, quantity limits, an exception path); the portal accepts any well-formed decision.
+dial: number of open cases and how many hit an exception path; fair range 8-20 cases with 2-5 exceptions.
+quirk_matrix:
+  step therapy:
+  - met
+  - not met
+  - met only via prescriber service
+  quantity:
+  - within limit
+  - over
+  - over with exception diagnosis
+  source conflict:
+  - none
+  - stale note
+  - note contradicts formulary
+  mix: about 30% easy cells
+public_tests: 'about 30%: two visible worked cases with the manual''s ordinary path'
+anti_cheese: hidden recomputation of every decision AND no case decided twice in the audit log
+ground_truth: cases come from a seeded generator; a rule engine in tests/ applies the manual to compute
+  the expected decisions.
+checks:
+- step-therapy rule (prior failed drug required)
+- quantity limit with an exception for a documented diagnosis
+- a case needing information from the prescriber service before deciding
+- decision codes and reason codes exactly as the manual lists
+- every submission carries the case id; no case decided twice
+knobs:
+- knob: noisy convenient source vs authoritative source
+  fairness: the queue export has free-text notes; the manual says the formulary service is authoritative
+- knob: irreversible, audited steps
+  fairness: instruction says decisions are final and the audit trail is graded
+must_keep:
+- patient records are read-only
+environment: python:3.12-slim with three local HTTP services; no network; no real patient data.
+out_of_bounds:
+- clinical judgement beyond the manual
+- real drug databases
+precheck:
+- run the rule engine on a generated queue; the oracle must reach 100%

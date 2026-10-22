@@ -1,0 +1,46 @@
+topic: Rotate the signing keys of a running token service with zero valid tokens rejected and zero revoked
+  tokens accepted while clients keep authenticating.
+shape: live system changed under load; graded by a client simulator's verdict log
+agent_cannot_verify: Tokens issued just before the rotation and verified just after, and revocations that
+  happen during the overlap window; the agent's own checks use fresh tokens.
+dial: number of client sessions in the hidden scenario and how long the overlap window must last; fair
+  range of 0 errors over 2,000-10,000 verifications.
+quirk_matrix:
+  token age at rotation:
+  - fresh
+  - mid-life
+  - about to expire
+  revocations:
+  - none
+  - before rotation
+  - during the overlap
+  clients:
+  - one
+  - several
+  - several with cached keysets
+  mix: about 30% easy cells
+public_tests: 'about 30%: a visible test that new tokens verify after rotation'
+anti_cheese: the client simulator's verdict log AND the key-management log matching the runbook steps
+ground_truth: a client simulator in tests/ with a seeded scenario computes which tokens must be accepted
+  or rejected.
+checks:
+- key id (kid) in tokens and a keyset that serves old and new keys during overlap
+- revocation list honoured for both keys
+- the old key retired only after the longest token lifetime
+- the service keeps running; no dropped connections
+- the procedure document's rotation steps followed (audited)
+knobs:
+- knob: contradicting sources with a stated precedence
+  fairness: an old README says to restart the service; the current runbook says hot reload and that the
+    runbook wins
+- knob: irreversible, audited steps
+  fairness: instruction says the key-management log is graded
+must_keep:
+- token format and claims
+- the /verify API
+environment: python:3.12-slim with a local token service and client simulator; no network.
+out_of_bounds:
+- timing races decided by wall-clock
+- crypto details not stated
+precheck:
+- run the simulator against the unchanged service; 0 errors before rotation

@@ -1,0 +1,48 @@
+topic: Fit the rate constants of a three-step reaction network using the lab's existing Fortran 77 integrator
+  (built offline with gfortran), so that predictions for unseen starting conditions stay within tolerance.
+shape: parameter estimation scored on held-out conditions; non-Python stack
+agent_cannot_verify: The training runs barely excite one pathway (a reversible step), so many parameter
+  sets fit the training curves; only some predict the held-out conditions where that pathway dominates.
+  The agent sees good training fits either way.
+dial: max relative error on held-out concentration curves; fair range 4-12%, start 7%. A fit that ignores
+  the reverse step scores about 20%, the oracle about 3%.
+quirk_matrix:
+  reverse-step excitation:
+  - low
+  - medium
+  - dominant
+  initial intermediate:
+  - zero
+  - small
+  - large
+  time range:
+  - inside training
+  - longer
+  - much longer
+  mix: about 30% easy cells
+public_tests: 'about 30%: visible checks that the integrator builds and that predictions match one training
+  condition'
+anti_cheese: predictions must come from the lab's Fortran integrator (a test traces the call) AND match
+  hidden conditions
+ground_truth: the true constants and the integrator kept in tests/ produce held-out curves (seeded measurement
+  noise); tests compare the agent's predictions with them.
+checks:
+- the reversible step's equilibrium constant (the identifiability trap)
+- unit conventions in the integrator's input deck (per second vs per minute, stated in its README)
+- a held-out condition with a high initial concentration of the intermediate
+- the integrator must be built from source with the provided Makefile (no rewrite in Python)
+- 'output: /app/constants.json and /app/predict.sh producing curves for a given condition file'
+knobs:
+- knob: convention trap
+  fairness: the integrator README states time units and the input-deck column order
+- knob: preservation constraints
+  fairness: instruction says predictions must come from the lab's integrator; a test checks predict.sh
+    calls it
+must_keep:
+- the Fortran integrator's interface and input-deck format
+environment: debian slim with gfortran, make, python3 with numpy/scipy; Fortran ~400 lines; no network.
+out_of_bounds:
+- held-out conditions outside the stated operating range
+- noise so large the oracle cannot meet the dial
+precheck:
+- fit the oracle and a reverse-step-free fit offline; confirm the dial separates them

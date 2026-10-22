@@ -1,0 +1,44 @@
+topic: Move a running session service from its SQLite store to an append-only log store with no failed
+  or stale responses while a load generator keeps reading and writing.
+shape: live system changed under load; graded by the load generator's correctness log
+agent_cannot_verify: Stale reads only appear for sessions written during the switch-over window, and the
+  agent's own manual tests do not hit that window; the load generator records every response.
+dial: allowed failed or stale responses during migration; fair range 0-3 of ~20,000, start 0.
+quirk_matrix:
+  write rate during switch:
+  - low
+  - medium
+  - burst at switch time
+  session age:
+  - fresh
+  - near expiry
+  - expiring during switch
+  request mix:
+  - reads
+  - read/write
+  - same-session read-after-write
+  mix: about 30% easy cells
+public_tests: 'about 30%: a visible smoke test that the service answers through the new store when idle'
+anti_cheese: the load generator's correctness log during migration AND SQLite no longer used afterwards
+ground_truth: the load generator (in tests/ and a copy in the image without its checker) issues a seeded
+  request stream; the checker replays the stream to compute expected responses.
+checks:
+- dual-write or replay so sessions written mid-switch are not lost
+- read-your-writes for the same session id across the switch
+- expiry semantics preserved (TTL refresh on read is documented)
+- the service keeps its port and API; no restart that drops connections
+- the log store compacts so disk use stays under the stated cap
+knobs:
+- knob: drift during the episode
+  fairness: 'instruction says traffic continues and states the final-state rule: all sessions in the log
+    store, SQLite retired'
+- knob: irreversible, audited steps
+  fairness: instruction says the switch-over is recorded and graded from the access log
+must_keep:
+- the HTTP API, the session cookie format, TTL behaviour
+environment: python:3.12-slim service with sqlite3; a local load generator; no network.
+out_of_bounds:
+- wall-clock-dependent pass/fail
+- load the 1-CPU container cannot sustain
+precheck:
+- run the load generator against the unmodified service; confirm 0 failures before migration

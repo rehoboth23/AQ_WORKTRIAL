@@ -1,0 +1,44 @@
+topic: File a bonded warehouse's month-end excise-duty return across the local ERP, stock ledger and filing
+  portal, following the in-house procedure document.
+shape: procedure-driven work over local mock services; graded by the portal's final state and audit log
+agent_cannot_verify: The portal only validates format, not the duty amounts; amounts depend on procedure
+  rules (losses within tolerance are duty-free, transfers between bonded sites are not duty events) that
+  the agent must apply from the document.
+dial: number of procedure rules exercised by this month's movements; fair range 4-8.
+quirk_matrix:
+  loss tolerance:
+  - within
+  - at the limit
+  - over
+  movement types:
+  - sales only
+  - plus transfers
+  - plus customer returns
+  portal faults:
+  - none
+  - one 503
+  - 503 then a duplicate risk
+  mix: about 30% easy cells
+public_tests: 'about 30%: a visible test that a return for a simple month (no special movements) is accepted'
+anti_cheese: hidden recomputation of the return AND no duplicate submissions in the portal's audit log
+ground_truth: the movement data and the duty calculation come from a seeded generator and rule engine
+  in tests/; the tests recompute the correct return and compare.
+checks:
+- tolerance rule for evaporation losses
+- inter-site transfers excluded from duty
+- returns from customers credited in the month received
+- submission through the portal's two-step submit with the confirmation code archived
+- no duplicate submission (portal requests are idempotent only with the request id)
+knobs:
+- knob: transient service faults
+  fairness: the procedure doc states the retry policy and idempotency key; faults are seeded
+- knob: irreversible, audited steps
+  fairness: instruction says submissions are final and audited
+must_keep:
+- stock ledger entries are read-only
+environment: python:3.12-slim with three small local HTTP services; data as JSON; no network.
+out_of_bounds:
+- tax rules not in the procedure document
+- real-world legal references
+precheck:
+- recompute the return from the generator; check the portal accepts the oracle's submission

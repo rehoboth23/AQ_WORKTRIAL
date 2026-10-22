@@ -1,0 +1,48 @@
+topic: Make a delivery company's C shortest-route library at least 10x faster on its benchmark, with byte-identical
+  results on hidden road graphs.
+shape: performance target with correctness parity; graded on hidden graphs
+agent_cannot_verify: 'Byte-identical tie-breaking: among equal-cost routes the library returns a specific
+  one (lowest node ids in path order), and fast algorithms change tie order; the agent''s benchmark graphs
+  have few ties, hidden graphs many.'
+dial: 'speed-up threshold measured as operation counts (deterministic), not wall-clock: the library counts
+  edge relaxations; fair range 5-20x fewer, start 10x.'
+quirk_matrix:
+  ties:
+  - none
+  - a few equal-cost routes
+  - many equal-cost routes
+  graph shape:
+  - grid
+  - sparse random
+  - dense with zero-weight edges
+  reachability:
+  - all reachable
+  - some unreachable
+  - disconnected components
+  mix: about 30% easy cells
+public_tests: 'about 30%: the visible benchmark (few ties) plus a correctness test on small graphs'
+anti_cheese: relaxation-count budget (deterministic) AND byte-identical routes; the public API must not
+  change
+ground_truth: the original library source kept in tests/ computes reference routes on hidden graphs generated
+  by a seeded generator in tests/.
+checks:
+- equal-cost tie-breaking rule documented in the header comment
+- unreachable destination returns the documented sentinel
+- zero-weight edges and self-loops
+- large sparse graphs (performance) and dense small graphs (correctness)
+- the public C API and the relaxation counter stay unchanged
+knobs:
+- knob: preservation constraints
+  fairness: README lists the public API and output format that must not change
+- knob: hidden-edge coverage
+  fairness: the tie-break rule is stated in the header; the visible benchmark has few ties
+must_keep:
+- route_find() signature and output bytes
+- the relaxation counter
+environment: debian slim with gcc and make; C library ~800 lines; benchmark graphs as text; no network.
+out_of_bounds:
+- wall-clock timing thresholds
+- ties broken by an unstated rule
+precheck:
+- confirm a binary-heap Dijkstra reaches the 10x relaxation target and that a naive heap rewrite breaks
+  ties

@@ -1,0 +1,48 @@
+topic: Infer the decision rules of a retired intrusion-detection system (thresholds, port ranges, time
+  windows, order of checks) from a labelled log of network flows it flagged or passed, and reproduce its
+  decisions on held-out flows.
+shape: rule induction from labelled data; graded on held-out flows
+agent_cannot_verify: Exact thresholds and window boundaries (inclusive vs exclusive) and rule order show
+  only on flows near a boundary, which are rare in the training log; a decision tree that fits the training
+  log well still misclassifies boundary flows.
+dial: accuracy on 2,000 held-out flows; fair range 96-99.5%, start 98.5%. A fitted decision tree scores
+  about 94%, the oracle 100%.
+quirk_matrix:
+  window boundary:
+  - far
+  - near
+  - exactly on the edge
+  rule overlap:
+  - single rule
+  - allow-list over a flag rule
+  - three rules in order
+  time zone effect:
+  - midday
+  - near midnight local
+  - across a DST change
+  mix: about 30% easy cells
+public_tests: 'about 30%: 500 visible flows with labels, mostly far from any boundary'
+anti_cheese: decisions on 2,000 hidden flows from a fresh seed (memorising the training log fails); runtime
+  under 60 s
+ground_truth: the IDS is a seeded rule engine in tests/ (about 8 ordered rules); held-out flows come from
+  the same flow generator, with extra density near boundaries.
+checks:
+- per-source rate threshold over a sliding 60 s window (window edge inclusive/exclusive)
+- port-range rules with an allow-list exception that is checked first
+- 'rule order: a pass rule that overrides a later flag rule'
+- time-of-day rule in the sensor's local time zone
+- 'output: /app/decide.py writes flow_id,decision for every input flow in order'
+knobs:
+- knob: hidden-edge coverage
+  fairness: README describes every field and unit; boundary flows exist in training, just rarely
+- knob: convention trap
+  fairness: README states timestamps are UTC and the sensor's local zone
+must_keep:
+- input format of the flow log; decisions for flows the training log already contains
+environment: python:3.12-slim with numpy and pandas; ~40k labelled flows CSV; no network.
+out_of_bounds:
+- rules on fields not in the log
+- stochastic rules
+- held-out flows from a different distribution than stated
+precheck:
+- confirm the boundary-flow share in training (1-3%) and the tree baseline ~94%

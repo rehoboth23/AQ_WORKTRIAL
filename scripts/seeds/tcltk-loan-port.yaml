@@ -1,0 +1,44 @@
+topic: 'Move a legacy Tcl/Tk loan-application screen into a small web app that keeps exactly what users
+  saw: field validation, computed repayment figures, messages, save and delete.'
+shape: port with behavioural parity; graded by browser tests on hidden scenarios
+agent_cannot_verify: Validation order and message precedence when several fields are wrong, rounding of
+  the repayment schedule, and save/delete side effects only show in combined scenarios the agent's manual
+  checks do not try.
+dial: number of hidden end-to-end scenarios; fair range 15-40.
+quirk_matrix:
+  errors at once:
+  - one field
+  - two fields
+  - three with precedence
+  amounts:
+  - round
+  - cents
+  - rounding boundary
+  actions:
+  - save
+  - save then edit
+  - delete with dependents
+  mix: about 30% easy cells
+public_tests: 'about 30%: visible browser tests for a valid application and one single-field error'
+anti_cheese: hidden scenarios checked against the Tcl logic AND the SQLite records byte-identical
+ground_truth: the original Tcl logic runs under tclsh in tests/ to produce expected values and messages
+  for each hidden scenario.
+checks:
+- validation order and which message shows first
+- repayment schedule rounding (per-instalment vs total)
+- save writes the same record format to the same SQLite table
+- delete asks for confirmation and removes dependent rows
+- field formats (dates, currency) as the old screen displayed them
+knobs:
+- knob: preservation constraints
+  fairness: instruction says the database and record formats stay identical
+- knob: hidden-edge coverage
+  fairness: every behaviour is in the Tcl source the agent can read and run with tclsh
+must_keep:
+- SQLite schema and record format
+environment: debian slim with tcl/tk, python3 web stack, headless browser for tests; no network.
+out_of_bounds:
+- pixel-level layout
+- behaviour not in the Tcl source
+precheck:
+- confirm tclsh can drive the logic headlessly for the tests

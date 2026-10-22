@@ -1,0 +1,46 @@
+topic: Call and annotate the variants in a small amplicon-sequencing run against a supplied reference,
+  reporting them in the lab's HGVS-style notation with protein consequences.
+shape: domain pipeline with conventions; graded on hidden samples
+agent_cannot_verify: 'Notation details: left-normalised indels in coding coordinates, 3'' rule, codon-spanning
+  variants and the lab''s own formatting conventions. A pipeline that calls the right variants can still
+  report them wrong.'
+dial: number of hidden samples and variant classes; fair range 4-8 samples.
+quirk_matrix:
+  variant type:
+  - SNV
+  - indel
+  - indel in a repeat
+  position:
+  - mid-codon
+  - codon boundary
+  - near exon edge
+  strand:
+  - plus
+  - minus
+  - minus with a frameshift
+  mix: about 30% easy cells
+public_tests: 'about 30%: one visible sample with SNVs only and its expected report'
+anti_cheese: hidden samples from fresh seeds AND annotations computed by the reference annotator, not
+  the old summary file
+ground_truth: samples come from a seeded read simulator with known variants; expected annotations are
+  computed by a reference annotator in tests/ (and a verifier-only package where useful).
+checks:
+- 3' shifting of indels in repeats
+- a deletion spanning a codon boundary
+- synonymous vs missense vs frameshift
+- strand handling for a gene on the minus strand
+- the lab's report format stated in its SOP
+knobs:
+- knob: convention trap
+  fairness: the lab SOP in the environment states coordinate base and notation rules
+- knob: noisy convenient source vs authoritative source
+  fairness: a summary file with old annotations exists; the SOP says to annotate from the reads
+must_keep:
+- the report columns used by the lab's LIMS
+environment: python:3.12-slim with numpy; small FASTA/FASTQ; no external bioinformatics tools beyond what
+  is vendored; no network.
+out_of_bounds:
+- variants the reads do not support
+- conventions not in the SOP
+precheck:
+- simulate a sample; check the reference annotator and the oracle agree

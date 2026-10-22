@@ -1,0 +1,44 @@
+topic: A Go upload service's multi-threaded checkpoint writer sometimes resumes with lost or doubled progress
+  after a crash; find and fix the race.
+shape: concurrency debugging; graded by a deterministic crash-and-resume harness
+agent_cannot_verify: The race needs a specific interleaving; the agent's runs rarely hit it. The hidden
+  harness injects crashes at controlled points with a deterministic scheduler hook.
+dial: number of injected crash points that must resume exactly; fair range 20-100.
+quirk_matrix:
+  crash point:
+  - between chunks
+  - during a write
+  - between write and rename
+  workers:
+  - '1'
+  - '4'
+  - 8 with uneven chunk sizes
+  file size:
+  - small
+  - medium
+  - many chunks
+  mix: about 30% easy cells
+public_tests: 'about 30%: a visible resume test with a crash at a quiet point'
+anti_cheese: the deterministic crash-point harness on hidden seeds AND an unchanged checkpoint format
+ground_truth: the harness in tests/ drives the service through a scheduler hook and checks the resumed
+  byte count against the uploaded data.
+checks:
+- checkpoint written only after the chunk is durable (fsync order)
+- atomic rename of the checkpoint file
+- a worker that finishes a chunk after another worker's checkpoint
+- no deadlock under the harness's worst interleaving
+- the upload API and checkpoint format unchanged
+knobs:
+- knob: preservation constraints
+  fairness: README states the checkpoint format other tools read
+- knob: varied hidden draws
+  fairness: crash points drawn from several seeds; each a stated recovery requirement
+must_keep:
+- checkpoint file format
+- HTTP upload API
+environment: golang image with the service source (~600 lines) and go.mod vendored; no network.
+out_of_bounds:
+- races only reachable with real timing
+- OS-specific durability guarantees not stated
+precheck:
+- confirm the harness reproduces the bug deterministically on the unfixed code

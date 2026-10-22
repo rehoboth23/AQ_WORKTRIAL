@@ -1,0 +1,44 @@
+topic: Reduce raw light curves from a small telescope into calibrated magnitudes and a period estimate
+  for each variable star, following the observatory's reduction conventions.
+shape: scientific pipeline with conventions; graded on hidden nights and stars
+agent_cannot_verify: Period aliases (1-day aliasing) and comparison-star selection only show on stars
+  whose true period is near an alias; the visible stars are well behaved.
+dial: period tolerance and the share of hidden stars that must be within it; fair range 80-100% within
+  0.5%.
+quirk_matrix:
+  period vs alias:
+  - far
+  - near
+  - almost exactly 1 day
+  observing nights:
+  - many
+  - few
+  - few with gaps
+  comparison stars:
+  - stable
+  - one variable
+  - one saturated
+  mix: about 30% easy cells
+public_tests: 'about 30%: two visible stars with clean, non-alias periods'
+anti_cheese: hidden stars from fresh seeds within the period tolerance AND the catalogue unchanged
+ground_truth: light curves come from a seeded simulator of the stars and nightly conditions in tests/;
+  true periods and magnitudes are known there.
+checks:
+- differential photometry against the stated comparison stars
+- airmass correction using the documented extinction coefficient
+- alias rejection using the documented window function check
+- heliocentric time correction as the conventions state
+- 'output: one row per star with period, amplitude and mean magnitude'
+knobs:
+- knob: convention trap
+  fairness: the observatory's conventions document states time system and magnitude zero point
+- knob: varied hidden draws
+  fairness: hidden stars from the same simulator, including near-alias periods
+must_keep:
+- the observatory's catalogue file is read-only
+environment: python:3.12-slim with numpy and scipy; CSV light curves; no network.
+out_of_bounds:
+- physics not described in the conventions
+- noise beyond the stated photometric error
+precheck:
+- confirm a naive periodogram fails on near-alias stars and the oracle passes

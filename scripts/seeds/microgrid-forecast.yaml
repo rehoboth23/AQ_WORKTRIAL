@@ -1,0 +1,51 @@
+topic: Forecast hourly electricity demand for a small island microgrid from weather and calendar drivers,
+  for the grid operator's day-ahead dispatch.
+shape: 'model scored on held-out data: train on 10 weeks of hourly demand and weather, forecast 3 unseen
+  weeks'
+agent_cannot_verify: 'The held-out weeks contain patterns the training data shows rarely: a public-holiday
+  week (one holiday in training), a cold snap below any training temperature, and a ferry-day load bump
+  on alternate Saturdays. Training error looks fine without them; held-out error does not.'
+dial: MAPE threshold on held-out weeks; fair range 6-14%, start 9%. A simple baseline scores about 16%,
+  the oracle about 6.5%.
+quirk_matrix:
+  calendar:
+  - ordinary week
+  - one holiday
+  - holiday next to a weekend
+  temperature:
+  - inside training range
+  - slightly below
+  - a cold snap well below
+  special loads:
+  - none
+  - ferry day
+  - ferry day on a holiday
+  mix: about 30% easy cells
+public_tests: 'about 30%: a visible check that the output format is right and that MAPE on one held-out
+  ordinary week is below a loose 15%'
+anti_cheese: MAPE threshold on 3 hidden weeks from the simulator AND the runtime limit; no copies of held-out
+  weeks anywhere
+ground_truth: the demand data comes from a seeded simulator (temperature response, calendar effects, ferry
+  schedule, noise) kept in tests/; the tests generate the held-out weeks from it and compute MAPE themselves.
+checks:
+- 'holiday handling: the calendar file marks holidays; the test week contains one'
+- temperature extrapolation below the training range (heating load)
+- the ferry-day effect described in the operator's notes
+- 'output contract: /app/forecast.csv, 168 rows per week, exact column names, no gaps'
+- the forecaster runs offline in under 60 s on 1 CPU
+knobs:
+- knob: convention trap
+  fairness: timestamps are local time with a DST change in training; data/README.md states the zone
+- knob: noisy convenient source vs authoritative source
+  fairness: a 'cleaned' demand file smooths spikes; README says the meter export is authoritative
+must_keep:
+- the operator's CLI flags --start and --weeks and the output format
+environment: python:3.12-slim with numpy, pandas, scikit-learn vendored; ~2 MB of CSVs; no network; no
+  GPU.
+out_of_bounds:
+- held-out patterns that appear nowhere in the data or notes
+- a threshold the oracle only just clears
+- visible copies of held-out weeks
+- scoring that rewards one model type
+precheck:
+- run the simulator, a baseline and the oracle offline; the 9% dial must sit between them

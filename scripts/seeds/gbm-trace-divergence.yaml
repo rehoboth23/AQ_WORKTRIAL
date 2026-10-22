@@ -1,0 +1,46 @@
+topic: A CPU gradient-boosting training script's per-round metric trace no longer matches the recorded
+  reference after an installed library 'speed-up'; find and undo the change in the installed library.
+shape: debugging against a reference trace; graded on hidden training configurations
+agent_cannot_verify: The library change only alters results for some settings (e.g. ties in histogram
+  binning or a min-child-weight boundary); the visible config can be matched by a narrow fix that still
+  diverges on the hidden configs.
+dial: number of hidden configurations that must match the reference to 1e-9; fair range 3-8.
+quirk_matrix:
+  binning ties:
+  - absent
+  - some
+  - many
+  min-child-weight:
+  - far
+  - near
+  - exactly at
+  shrinkage and clipping:
+  - no clipping
+  - clipping
+  - clipping with shrinkage
+  mix: about 30% easy cells
+public_tests: 'about 30%: the visible reference trace for the default config'
+anti_cheese: hidden configs must match the pristine library's traces AND the fix must be in the installed
+  library, not the script
+ground_truth: the pristine library version kept in tests/ produces reference traces for the hidden configs.
+checks:
+- histogram binning tie handling
+- the min-child-weight boundary (>= vs >)
+- learning-rate shrinkage applied before vs after clipping
+- the fix is in the installed library, not in the script
+- the visible reference trace matches exactly
+knobs:
+- knob: hidden-edge coverage
+  fairness: the library's docs state the intended semantics of each parameter
+- knob: stale local tests
+  fairness: the library's own unit test for binning is wrong; instruction says the documented semantics
+    win
+must_keep:
+- the library's public API
+environment: python:3.12-slim with a small pure-Python/numpy boosting library installed in site-packages;
+  no network.
+out_of_bounds:
+- floating-point nondeterminism
+- changes the docs do not describe
+precheck:
+- confirm the visible config alone does not reveal every changed behaviour

@@ -1,0 +1,43 @@
+topic: Given the source of an in-house stream cipher and a few known plaintext/ciphertext pairs made under
+  the same parameters, write a script that recovers the plaintext of new ciphertexts in general.
+shape: cryptanalysis from source; graded on hidden ciphertexts under fresh keys
+agent_cannot_verify: 'Whether the attack generalises: a key-recovery that works on the sample keys can
+  rely on a property of those keys (a short key, a weak IV) that hidden keys do not share.'
+dial: number of hidden ciphertexts and their lengths; fair range 10-30, lengths 200-2,000 bytes.
+quirk_matrix:
+  ciphertext length:
+  - long
+  - medium
+  - short
+  key:
+  - sample-like
+  - random
+  - random with a structured IV
+  plaintext:
+  - English text
+  - mixed
+  - binary-ish
+  mix: about 30% easy cells
+public_tests: 'about 30%: the given known pairs plus one visible ciphertext under the sample key'
+anti_cheese: hidden ciphertexts under fresh keys AND the per-ciphertext time limit (brute force fails)
+ground_truth: the cipher implementation and a seeded key/IV generator in tests/ produce hidden ciphertexts
+  of known plaintexts.
+checks:
+- a weakness stated by the source (e.g. a small internal state or a reused nonce structure)
+- short ciphertexts (less known plaintext structure)
+- keys drawn from the full key space, not the sample's
+- the script runs offline under 60 s per ciphertext on 1 CPU
+- output exactly the plaintext bytes
+knobs:
+- knob: varied hidden draws
+  fairness: keys and IVs drawn from the stated parameter space
+- knob: resource ceilings
+  fairness: the per-ciphertext time and memory limit are stated in the instruction
+must_keep:
+- the cipher source is read-only
+environment: python:3.12-slim; cipher source ~150 lines; no network.
+out_of_bounds:
+- brute force of a full-size key
+- weaknesses not present in the source
+precheck:
+- confirm the oracle attack recovers fresh-key plaintexts and a sample-overfit attack does not

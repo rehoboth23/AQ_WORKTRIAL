@@ -1,40 +1,51 @@
-# Topics for the pipeline (one per line; blank lines and # comments are ignored).
-# 15 topics chosen for problem diversity: shapes that land at 1-3/5 for glm-5.3-flash in public
-# per-task results (rule induction from examples, performance targets, models scored on hidden
-# data, live systems changed under load, procedure-driven work over local services, trace and
-# concurrency debugging, domain pipelines, a UI-parity port, cryptanalysis from source). Every
-# subject is new: no public task is reused or adapted. CPU-only, offline, under 8 GB.
-# The previous list (12 bug-hunt topics) is in git history.
+# Topics for the pipeline: one per line; '#' comments and blank lines are ignored.
+# Each topic is a SEED CARD (scripts/seeds/<name>.yaml): subject, how it is graded, what the agent cannot
+# verify, the difficulty dial, the quirk matrix, public tests, the anti-cheese gate, ground truth, seed
+# checks, knobs, what must be kept, environment limits, what is out of bounds, and pre-checks.
+# 15 topics chosen for problem diversity (shapes that land at 1-3/5 for glm-5.3-flash); all subjects new.
+# A plain sentence still works as a topic. Previous lists are in git history.
 
-# --- rule induction, graded on held-out examples ---
-recover the ordered rewrite rules a retired address-normalisation engine applied, from about 900 before/after address pairs, so that held-out addresses normalise identically
-infer the rules a retired intrusion-detection system used (thresholds, port ranges, time windows, order of checks) from a labelled log of flows it flagged or passed, and reproduce its decisions on held-out flows
+# Recover the ordered rewrite rules a retired address-normalisation engine applied, from about 900 before/after 
+@seeds/address-rules.yaml
 
-# --- performance target ---
-make a delivery company's C shortest-route library at least 10x faster, with byte-identical results on hidden road graphs
+# Infer the decision rules of a retired intrusion-detection system (thresholds, port ranges, time windows, order
+@seeds/ids-rules.yaml
 
-# --- models scored on hidden data ---
-forecast hourly electricity demand for a small island microgrid from weather and calendar drivers, scored on held-out weeks against an error threshold
-fit the rate constants of a three-step reaction network using the lab's existing Fortran 77 integrator (built offline with gfortran), so that predictions for unseen starting conditions stay within tolerance
+# Make a delivery company's C shortest-route library at least 10x faster on its benchmark, with byte-identical r
+@seeds/route-speedup.yaml
 
-# --- live systems changed while serving traffic ---
-move a running session service from its SQLite store to an append-only log store with no failed or stale responses while a load generator keeps reading and writing
-rotate the signing keys of a running token service with zero valid tokens rejected and zero revoked tokens accepted while clients keep authenticating
+# Forecast hourly electricity demand for a small island microgrid from weather and calendar drivers, for the gri
+@seeds/microgrid-forecast.yaml
 
-# --- procedure-driven work over local services ---
-file a bonded warehouse's month-end excise-duty return across the local ERP, stock ledger and filing portal, following the in-house procedure document
-close out a pharmacy's prior-authorisation queue through the local formulary, prescriber and payer services, following the operating manual, and submit each decision through the portal
+# Fit the rate constants of a three-step reaction network using the lab's existing Fortran 77 integrator (built 
+@seeds/reaction-kinetics.yaml
 
-# --- trace and concurrency debugging ---
-a CPU gradient-boosting script's per-round metric trace no longer matches the recorded reference after a library "speed-up"; find and undo the change in the installed library
-a Go upload service's multi-threaded checkpoint writer sometimes resumes with lost or doubled progress after a crash; find and fix the race
+# Move a running session service from its SQLite store to an append-only log store with no failed or stale respo
+@seeds/session-store-migration.yaml
 
-# --- domain pipelines with field conventions ---
-call and annotate the variants in a small amplicon-sequencing run against a supplied reference, reporting them in the lab's HGVS-style notation with protein consequences
-reduce raw light curves from a small telescope into calibrated magnitudes and a period estimate for each variable star, following the observatory's reduction conventions
+# Rotate the signing keys of a running token service with zero valid tokens rejected and zero revoked tokens acc
+@seeds/key-rotation.yaml
 
-# --- port with UI parity ---
-move a legacy Tcl/Tk loan-application screen into a small web app that keeps exactly what users saw: field validation, computed repayment figures, messages, save and delete
+# File a bonded warehouse's month-end excise-duty return across the local ERP, stock ledger and filing portal, f
+@seeds/excise-return.yaml
 
-# --- cryptanalysis from source ---
-given the source of an in-house stream cipher and a few known plaintext/ciphertext pairs made under the same parameters, write a script that recovers the plaintext of new ciphertexts in general
+# Close out a pharmacy's prior-authorisation queue through the local formulary, prescriber and payer services, f
+@seeds/pharmacy-prior-auth.yaml
+
+# A CPU gradient-boosting training script's per-round metric trace no longer matches the recorded reference afte
+@seeds/gbm-trace-divergence.yaml
+
+# A Go upload service's multi-threaded checkpoint writer sometimes resumes with lost or doubled progress after a
+@seeds/checkpoint-race.yaml
+
+# Call and annotate the variants in a small amplicon-sequencing run against a supplied reference, reporting them
+@seeds/amplicon-variants.yaml
+
+# Reduce raw light curves from a small telescope into calibrated magnitudes and a period estimate for each varia
+@seeds/variable-stars.yaml
+
+# Move a legacy Tcl/Tk loan-application screen into a small web app that keeps exactly what users saw: field val
+@seeds/tcltk-loan-port.yaml
+
+# Given the source of an in-house stream cipher and a few known plaintext/ciphertext pairs made under the same p
+@seeds/stream-cipher.yaml
