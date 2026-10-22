@@ -14,7 +14,7 @@ import re
 import subprocess
 import time
 
-from config import CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, load_difficulty
+from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, N_RUNS, load_difficulty
 
 OUT = os.path.join(JOBS_DIR, "dashboard.html")
 # Optional focus: show only processes, runs, jobs and containers whose name or path contains
@@ -385,8 +385,31 @@ def band_jobs() -> list[dict]:
                         pass
                 alive = os.path.basename(os.path.dirname(td)).lower() in live
                 trials.append(f"running ({steps} steps)" if alive else f"stopped ({steps} steps)")
-        out.append({"job": os.path.basename(jd), "trials": trials, "mtime": os.path.getmtime(jd)})
+        out.append({"job": os.path.basename(jd), "trials": trials, "mtime": os.path.getmtime(jd),
+                    "verdict": band_verdict(trials)})
     return sorted(out, key=lambda r: -r["mtime"])
+
+
+def band_verdict(trials: list[str]) -> str:
+    """The band verdict a job's runs give (config BAND_LOW..BAND_HIGH passes = learnable); while runs
+    are going, the count so far and the verdict once no remaining run can change it."""
+    passes = sum(t == "pass" for t in trials)
+    fails = sum(t == "fail" for t in trials)
+    running = sum(t.startswith("running") for t in trials)
+    valid = passes + fails
+    if running:
+        if passes > BAND_HIGH:
+            return f"too easy ({passes} passed, {running} running)"
+        if passes + running < BAND_LOW:
+            return f"too hard ({fails} failed, {running} running)"
+        if passes >= BAND_LOW and passes + running <= BAND_HIGH:
+            return f"learnable ({passes} passed, {running} running)"
+        return f"running: {passes} pass / {fails} fail so far"
+    if not valid:
+        return "invalid (no valid runs)"
+    verdict = "too easy" if passes > BAND_HIGH else "too hard" if passes < BAND_LOW else "learnable"
+    note = f", {len(trials) - valid} invalid" if len(trials) > valid else ""
+    return f"{verdict} ({passes}/{valid}{note})"
 
 
 def render() -> str:
@@ -420,6 +443,10 @@ def render() -> str:
         cls = "ok" if t.startswith("pass") else "bad" if t.startswith(("fail", "invalid", "stopped")) else "run"
         return f'<span class="chip {cls}">{e(t)}</span>'
 
+    def verdict_chip(v):
+        cls = "ok" if v.startswith("learnable") else "run" if v.startswith("running") else "bad"
+        return f'<span class="chip {cls}">{e(v)}</span>'
+
     gen_rows = generator_activity(rs, oldest_pipeline_start(procs))
     ev_rows = eval_activity()
     sections = [
@@ -442,7 +469,8 @@ def render() -> str:
               [(e(r["name"]), e(r["topic"][:70]), ("<b>" if time.time() - r["mtime"] < ACTIVE_SEC and busy else "")
                 + e(r["stage"]), e(_age(r["mtime"]) + " ago")) for r in rs[:12]]),
         "<h2>Agent evals (band evals and experiments, last 3 h)</h2>",
-        table(["job", "runs"], [(e(b["job"]), " ".join(chip(t) for t in b["trials"])) for b in bands[:8]]),
+        table(["job", "verdict", "runs"], [(e(b["job"]), verdict_chip(b["verdict"]), " ".join(chip(t) for t in b["trials"]))
+                                           for b in bands[:8]]),
         "<h2>Difficulty knobs</h2>",
         table(["knob", "value"], [(e(k), e(str(v))) for k, v in {**cfg["knobs"], **{f"discovery.{k}": v for k, v in cfg["discovery"].items()}}.items()]),
         "<h2>Recent verdicts</h2>",
