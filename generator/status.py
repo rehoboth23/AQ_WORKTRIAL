@@ -17,6 +17,13 @@ import time
 from config import CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, load_difficulty
 
 OUT = os.path.join(JOBS_DIR, "dashboard.html")
+# Optional focus: show only processes, runs, jobs and containers whose name or path contains
+# this text (e.g. DASHBOARD_ONLY=ledger-goal while watching one experiment). Unset = everything.
+ONLY = os.environ.get("DASHBOARD_ONLY", "")
+
+
+def _keep(text: str) -> bool:
+    return not ONLY or ONLY.lower() in str(text).lower()
 RECENT_SEC = 3 * 3600   # runs touched in the last 3 hours count as "recent"
 ACTIVE_SEC = 15 * 60    # touched in the last 15 minutes and a process is alive: "active"
 
@@ -52,10 +59,12 @@ def processes() -> list[tuple[str, str, str]]:
                                    else "control" if "--control" in args else "generate + eval") + ")"
         elif "generate.py" in args:
             what = "generate one task"
+        elif "from_mutants" in args:
+            what = "experiment (mutation check -> band eval)"
         elif "harbor run" in args or "/harbor run" in args:
             agent = args.split(" -a ")[1].split()[0] if " -a " in args else "?"
             what = f"harbor run ({agent})"
-        if what:
+        if what and _keep(args):
             rows.append((pid, etime, what, args))
     return rows
 
@@ -100,7 +109,7 @@ def describe(what: str, args: str, rs: list[dict]) -> str:
 
 def containers() -> list[list[str]]:
     out = _sh(["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"])
-    return [l.split("\t") for l in out.splitlines() if l.strip()]
+    return [l.split("\t") for l in out.splitlines() if l.strip() and _keep(l.split("\t")[0])]
 
 
 def stage_of(events: list[dict]) -> str:
@@ -139,6 +148,8 @@ def stage_of(events: list[dict]) -> str:
 def runs() -> list[dict]:
     out = []
     for d in glob.glob(os.path.join(LOGS_DIR, "*", "events.jsonl")):
+        if not _keep(d):
+            continue
         mtime = os.path.getmtime(d)
         if time.time() - mtime > RECENT_SEC:
             continue
@@ -185,7 +196,7 @@ def _etime_sec(etime: str) -> int:
 
 
 def oldest_pipeline_start(procs) -> float | None:
-    ages = [_etime_sec(t) for _, t, w, _a in procs if w.startswith(("pipeline", "generate"))]
+    ages = [_etime_sec(t) for _, t, w, _a in procs if w.startswith(("pipeline", "generate", "experiment"))]
     return time.time() - max(ages) - 5 if ages else None
 
 
@@ -234,8 +245,8 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
                 sp = json.load(open(spec_path))
                 layers = sorted({str(x.get("layer")) for x in sp.get("faults") or [] if isinstance(x, dict)})
                 design = (f"{sp.get('name')}: {len(sp.get('faults') or [])} faults in {layers or '-'}, "
-                          f"{len(sp.get('decoys') or [])} decoys, critic/spec expects "
-                          f"~{sp.get('expected_agent_steps') or '?'} agent steps")
+                          f"{sp.get('challenge_kind') or 'no challenge kind'}"
+                          + (f" · interaction: {str(sp['interaction'])[:90]}" if sp.get("interaction") else ""))
             except (json.JSONDecodeError, OSError):
                 pass
         # Every model call this run has made, across all stages (each attempt logs a start;
@@ -244,16 +255,7 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
         calls = starts or [x for x in ev if x.get("event") == "llm_call"]
         retries = sum(1 for x in calls if (x.get("attempt") or 0) > 0)
         total = f"{len(calls)}" + (f" ({retries} retr{'y' if retries == 1 else 'ies'})" if retries else "")
-        dv = next((x for x in reversed(ev) if x.get("event") == "discovery_eval"), None)
-        if dv and dv.get("grade") not in (None, "unknown"):
-            evaluation = (f"{dv['grade'].replace('_', ' ')} · median gap {dv['median_gap']:g} · "
-                          f"min gap {dv['min_gap']:g} · first at step {dv['first']:g} · ~{dv['horizon']:g} steps"
-                          + (" · TIMEOUT RISK" if dv.get("timeout_risk") else ""))
-        elif dv:
-            evaluation = "no estimates: " + str(dv.get("problem", ""))[:60]
-        else:
-            evaluation = "-"
-        rows.append((r["topic"][:55] or r["name"], stage, attempt, total, evaluation, doing, _age(since), design))
+        rows.append((r["topic"][:55] or r["name"], stage, attempt, total, doing, _age(since), design))
     return rows
 
 
@@ -300,6 +302,8 @@ def eval_activity(limit: int = 6) -> list[tuple[str, str, str]]:
     # Any job with agent trajectories (band evals and ad-hoc experiments), not just "band-*".
     for tj in glob.glob(os.path.join(JOBS_DIR, "*", "*", "agent", "trajectory.json")):
         trial = os.path.dirname(os.path.dirname(tj))
+        if not _keep(trial):
+            continue
         if os.path.exists(os.path.join(trial, "result.json")) or os.path.basename(trial).lower() not in live:
             continue
         try:
@@ -323,6 +327,8 @@ def band_jobs() -> list[dict]:
     out = []
     live = live_trials()
     for jd in glob.glob(os.path.join(JOBS_DIR, "*")):
+        if not _keep(jd):
+            continue
         if not os.path.isdir(jd) or not (os.path.basename(jd).startswith("band-")
                                          or glob.glob(os.path.join(jd, "*", "agent", "trajectory.json"))):
             continue
@@ -394,10 +400,9 @@ def render() -> str:
         "<h2>GLM activity</h2>",
         "<p class=muted>glm-5.1 (task author) per run. [inferred] = run started before live call logging; "
         "stage implied by its last finished step.</p>",
-        table(["run / topic", "stage", "attempt", "total attempts", "critic eval", "glm-5.1 is…", "for",
-               "current design"],
-              [(e(a), "<b>" + e(st.split(" ", 1)[-1]) + "</b>", e(at), e(tot), e(ce), e(b), e(c), e(d))
-               for a, st, at, tot, ce, b, c, d in gen_rows]),
+        table(["run / topic", "stage", "attempt", "total attempts", "glm-5.1 is…", "for", "current design"],
+              [(e(a), "<b>" + e(st.split(" ", 1)[-1]) + "</b>", e(at), e(tot), e(b), e(c), e(d))
+               for a, st, at, tot, b, c, d in gen_rows]),
         "<p class=muted>glm-5.3-flash (agent under test), running agent trials (band evals and experiments): latest turn</p>",
         "<p class=muted>turn letters: r = read, E = edit, B = build/run, - = no command</p>",
         table(["job / trial", "progress", "agent's latest analysis", "latest commands"],
