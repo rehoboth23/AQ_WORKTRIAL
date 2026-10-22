@@ -131,6 +131,7 @@ class Spec(BaseModel):
     reported_symptom: str = ""
     sites: list[dict] = Field(default_factory=list)
     partial_fix: str = ""
+    preserved_behaviours: list[dict] = Field(default_factory=list)
     decoys: list[dict | str] = Field(default_factory=list)
     hidden_edge_cases: list[dict | str] = Field(default_factory=list)
     why_not_textbook: str = ""
@@ -293,6 +294,11 @@ def mutation_items(spec: dict) -> list[dict]:
     for f in spec.get("faults") or []:
         if isinstance(f, dict) and f.get("wrong_fix"):
             items.append(f)
+    for i, b in enumerate(spec.get("preserved_behaviours") or []):
+        if isinstance(b, dict) and str(b.get("behaviour") or "").strip():
+            items.append({"where": f"preserved {i}", "what": "existing behaviour: " + str(b.get("behaviour")),
+                          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+                          "counterexample": b.get("hidden_test_input"), "caught_by_test": f"preserved {i}"})
     for i, x in enumerate(spec.get("sites") or []):
         if isinstance(x, dict) and str(x.get("mechanism") or "").strip():
             items.append({"where": x.get("where"), "what": f"site {i}: {x.get('mechanism')}",

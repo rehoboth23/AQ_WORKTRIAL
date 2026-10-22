@@ -511,8 +511,11 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
     for s in states:
         rec, gen = s.get("record") or {}, s.get("gen") or {}
         gcost = llm_spend(gen.get("logs_dir") or s.get("logs_dir"))
+        crit = next((e for e in reversed(_events(gen.get("logs_dir") or s.get("logs_dir"))) if e.get("event") == "critic"), None)
+        critic = (f"{len(crit.get('too_easy_because') or [])} flag(s), revised" if crit and crit.get("too_easy_because")
+                  else "0 flags" if crit else "-")
         band = rec.get("band") or {}
-        rows.append({"state": s, "rec": rec, "flags": funnel_flags(s), "gen_cost": gcost,
+        rows.append({"state": s, "rec": rec, "flags": funnel_flags(s), "gen_cost": gcost, "critic": critic,
                      "eval_cost": (eval_cost(band) if band else 0.0)
                                   + sum(c.get("cost_usd") or 0.0 for c in rec.get("confirmations") or []),
                      "gen_sec": _span_seconds(_events(gen.get("logs_dir") or s.get("logs_dir"))),
@@ -566,13 +569,13 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
               f"{MODEL} ${GEN_PRICE_IN_PER_M} in / ${GEN_PRICE_OUT_PER_M} out, "
               f"{EVAL_MODEL} ${EVAL_PRICE_IN_PER_M} / ${EVAL_PRICE_OUT_PER_M} (eval uses Harbor's reported cost when present).",
               "", "## Tasks", "",
-              "| topic | genre | task | stage | verdict | passes | decision | gen $ / min | eval $ / min | why | verdict file |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| topic | genre | task | stage | critic | verdict | passes | decision | gen $ / min | eval $ / min | why | verdict file |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         s, rec = r["state"], r["rec"]
         vfile = os.path.join(rec["task_dir"], "VERDICT.md") if rec.get("task_dir") else (
             os.path.join(rec["logs_dir"], "VERDICT.md") if rec.get("logs_dir") else "")
-        lines.append(f"| {s['topic'][:60]} | {s.get('genre') or 'spec'} | {rec.get('name') or '-'} | {s.get('stage')} | {rec.get('verdict', '-')} | "
+        lines.append(f"| {s['topic'][:60]} | {s.get('genre') or 'spec'} | {rec.get('name') or '-'} | {s.get('stage')} | {r['critic']} | {rec.get('verdict', '-')} | "
                      f"{rec.get('passes', '-')}/{rec.get('n_valid', '-')} | {rec.get('decision', '-')} | "
                      f"${r['gen_cost']['cost_usd']:.2f} / {r['gen_sec'] / 60:.0f} | ${r['eval_cost']:.2f} / {r['eval_sec'] / 60:.0f} | "
                      f"{str(rec.get('why', '')).replace('|', '/')[:160]} | {vfile or '-'} |")
@@ -580,7 +583,7 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
     base = os.path.join(REPORTS_DIR, batch_id)
     with file_lock(base + ".lock"):  # two copies may finish at the same time
         write_json_atomic(base + ".json", [{"topic": r["state"]["topic"], "stage": r["state"].get("stage"),
-                                            **r["flags"], "gen_cost": r["gen_cost"], "eval_cost_usd": r["eval_cost"],
+                                            **r["flags"], "critic": r["critic"], "gen_cost": r["gen_cost"], "eval_cost_usd": r["eval_cost"],
                                             "gen_seconds": r["gen_sec"], "eval_seconds": r["eval_sec"],
                                             "record": r["rec"]} for r in rows])
         write_text_atomic(base + ".md", "\n".join(lines) + "\n")

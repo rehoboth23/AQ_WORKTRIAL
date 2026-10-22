@@ -13,6 +13,8 @@ min_themes = 4
 # Judgement genre: sites violating the stated property, each with a distinct mechanism.
 min_sites = 3
 max_sites = 6
+# Existing behaviours the instruction does not enumerate but hidden regression tests check.
+min_preserved = 3
 # Hidden-fault genre knobs, retired (every such task scored 4-5/5); kept so old records parse.
 # One central challenge with a few faults that all serve it (2026-10-21): a 5-fault quota
 # produced filler bugs (wrong interpreter path, main() never called) that add steps, not

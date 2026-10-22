@@ -23,6 +23,7 @@ from config import (
     MAX_FAULTS,
     MAX_RULES,
     MAX_SITES,
+    MIN_PRESERVED,
     MIN_RULES,
     MIN_SITES,
     MIN_THEMES,
@@ -147,6 +148,10 @@ def spec_gate_spec(spec: dict) -> list[str]:
     if kind not in SPEC_KINDS:
         problems.append(f"`challenge_kind` must be one of {sorted(SPEC_KINDS)} (specification tasks; hidden-fault "
                         "tasks are not generated any more)")
+    preserved = spec.get("preserved_behaviours") or []
+    if len([b for b in preserved if isinstance(b, dict) and str(b.get("behaviour") or "").strip()]) < MIN_PRESERVED:
+        problems.append(f"needs at least {MIN_PRESERVED} `preserved_behaviours` (existing behaviours the instruction does not "
+                        "enumerate, each with a hidden_test_input), so a rewrite from the rules alone fails")
     for key, why in (("self_check_blind_spot", "which rules an agent is likely to forget or misread, and why"),
                      ("runnable_reference", "anything the agent can run to get the correct answer (must be none)"),
                      ("reference_in_environment", "what in the environment already produces the correct output (must be none)")):
@@ -231,6 +236,9 @@ def spec_gate_judgement(spec: dict) -> list[str]:
     same = [(i, j) for i in range(len(mechs)) for j in range(i + 1, len(mechs)) if _similar(mechs[i], mechs[j], 0.6)]
     if same:
         problems.append("sites must differ in mechanism (one search must not find two): " + ", ".join(f"{i}~{j}" for i, j in same[:4]))
+    preserved = spec.get("preserved_behaviours") or []
+    if len([b for b in preserved if isinstance(b, dict) and str(b.get("behaviour") or "").strip()]) < MIN_PRESERVED:
+        problems.append(f"needs at least {MIN_PRESERVED} `preserved_behaviours` with a hidden_test_input each")
     if str(spec.get("challenge_kind") or "").strip().lower() != "property_completeness":
         problems.append("`challenge_kind` must be property_completeness for this genre")
     for key, why in (("property", "the one property instruction.md states"), ("reported_symptom", "the one symptom instruction.md reports"),

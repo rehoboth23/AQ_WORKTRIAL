@@ -67,8 +67,12 @@ DIFFICULTY_RULE = f"""\
     pagination or sections, input tolerance, error handling and exit codes, edge inputs). A set of
     rules that all follow ONE theme was solved 4/4: once the agent gets the theme, it gets them
     all. Each rule must be checkable on its own.
-  * A working starter is fine and realistic: code that does the job with default behaviours
-    everywhere, and no comment that mentions the rules.
+  * A SUBSTANTIAL working starter (several hundred lines: options, formats, edge handling, a
+    second command or mode) that the instruction does not enumerate, plus one stated rule:
+    "everything the tool does today must keep working". Hidden regression tests check that
+    existing behaviour, so a rewrite from the rules alone drops features and fails, while a
+    careful change must first understand the code. (A 120-line starter was rewritten from
+    scratch by every run and added no difficulty.) No comment in the starter mentions the rules.
   * No oracle: no sample of the expected output, no verify/check/diff/self-test command, no
     reference implementation, no tests, no backup or original in the image, and nothing the agent
     can run to get the correct answer and compare against. The agent has no network access.
@@ -92,7 +96,9 @@ DIFFICULTY_SPEC_FIELDS = """,
                     "hidden_test_input": "the input the test uses; differs from every example in instruction.md",
                     "boundary": "the non-round value or edge the test includes"}],
   "themes": ["the distinct themes the rules cover"],
-  "starter": "what the shipped starter code does (works, with default behaviours), or none",
+  "starter": "what the shipped starter code does (works, with default behaviours), its size and modes",
+  "preserved_behaviours": [{"behaviour": "an existing behaviour the instruction does not enumerate but 'keep everything working' covers",
+                            "hidden_test_input": "the input whose output must stay the same"}],
   "self_check_blind_spot": "which rules an agent is likely to forget or misread, and why",
   "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against (verify command, sample output, reference implementation); must be none",
   "reference_in_environment": "any code, doc or data in the environment that already produces or states the correct output; must be none"
@@ -352,7 +358,8 @@ spec is TOO EASY if it has fewer than {MIN_RULES} requirements, if the rules cov
 deviation to get wrong), if several rules are the same rule restated, if the hidden test inputs
 are covered by examples in instruction.md, or if anything in the environment or instruction
 gives the agent an oracle (expected output, a verify/check/diff command, a reference
-implementation, tests). It is UNFAIR if a rule is vague or ambiguous (two reasonable readings
+implementation, tests), or if the starter is small enough that rewriting it from the rules is
+cheaper than changing it (fewer than about 3 preserved behaviours). It is UNFAIR if a rule is vague or ambiguous (two reasonable readings
 with different outputs), if a test would check something no rule states (an unstated format,
 a magic value), or if a test input cannot be produced deterministically.
 
@@ -770,6 +777,9 @@ DIFFICULTY_RULE_JUDGEMENT = f"""\
   * Fair: every site is a violation of the STATED property that an expert in the domain would
     recognise from the property plus reading the code; tests check behaviour through the public
     interface, never a particular patch.
+  * The codebase is substantial and its existing behaviour matters: instruction.md says
+    everything the service does today must keep working, and hidden regression tests check it,
+    so "rewrite the affected module" is not a shortcut.
 """
 
 DIFFICULTY_SPEC_FIELDS_JUDGEMENT = """,
@@ -780,6 +790,8 @@ DIFFICULTY_SPEC_FIELDS_JUDGEMENT = """,
              "differs_from_other_sites": "why fixing another site and searching for its pattern does not reveal this one",
              "hidden_test_input": "the input the hidden test sends through the public interface"}],
   "partial_fix": "the fix an agent makes first, and which checks it passes",
+  "preserved_behaviours": [{"behaviour": "an existing behaviour that must keep working while the property is enforced",
+                            "hidden_test_input": "the input whose output must stay the same"}],
   "self_check_blind_spot": "why the agent's own re-test passes after the partial fix",
   "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against; must be none",
   "reference_in_environment": "any code, doc or data in the environment that already handles the property correctly or states the sites; must be none"
