@@ -100,6 +100,10 @@ INSTRUCTION_REVIEW = os.environ.get("INSTRUCTION_REVIEW", "1") == "1"
 # After oracle/nop pass: run each fault's `wrong_fix` as a mutant solution; the tests must fail
 # every mutant, or the trap is not real and the task goes back for repair ("0" to disable).
 MUTATION_CHECK = os.environ.get("MUTATION_CHECK", "1") == "1"
+# Confirmation evals for in-band tasks: a 5-run sample is noisy, and keeping a task because of one
+# result favours lucky draws. Each in-band task gets this many extra band evals; it is "confirmed" if
+# every one also lands in band. The verdict stays the first eval (README); 0 disables.
+CONFIRM_EVALS = int(os.environ.get("CONFIRM_EVALS", "1"))
 # Optional glm-5.1 reasoning effort per stage (e.g. GEN_REASONING_SPEC=medium); unset = gateway default.
 GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
@@ -110,7 +114,7 @@ CALIBRATION_WINDOW = int(os.environ.get("CALIBRATION_WINDOW", "8"))
 # Tag for the task-design rules in prompts.py. History lines record it, and the spec prompt is
 # shown only lines from the current design, so examples from older rules (e.g. 7-fault tasks
 # with step-count notes) never steer a new design. Bump it when the design rules change.
-DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-21-interaction")
+DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-22-no-oracle")
 
 # --- Paths -----------------------------------------------------------------
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))

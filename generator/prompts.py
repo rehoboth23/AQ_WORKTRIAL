@@ -113,6 +113,12 @@ DIFFICULTY_RULE = f"""\
     flawed reasoning, or the reference is a stated behaviour the agent must reason out. README
     and docs describe usage and data formats; they may restate the stated invariant, never the
     case-level semantics a fault breaks.
+  * No independent check: the agent must not be able to RUN something that computes the right
+    answer and compare its output against it (a `verify` command, a full rebuild next to the
+    incremental path, a replay, an import/export round-trip). Agents used such a reference to test
+    their way to every hidden case (a shipped `verify`; fuzzing incremental output against a full
+    rebuild). The agent may still check its work by reasoning, small hand-worked examples, and
+    the stated rules; it just gets no oracle for free.
   * Hidden edge cases: tests also check cases the visible symptom doesn't show (empty input,
     NULLs, timezones, duplicates), each a CONSEQUENCE of the stated goal that an expert would
     derive, not a separately listed requirement. Don't paste expected outputs into
@@ -154,7 +160,8 @@ DIFFICULTY_SPEC_FIELDS = """,
   "nameable_fix": "the shortest phrase an expert would use for the whole fix",
   "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
   "reference_in_environment": "any code, doc or data in the environment that already computes or states the correct handling of the tricky case; must be none",
-  "interaction": "the components or runs whose interaction causes the central defect (at least 2), and why each looks correct on its own"
+  "interaction": "the components or runs whose interaction causes the central defect (at least 2), and why each looks correct on its own",
+  "runnable_reference": "any command or code path the agent can run to get the correct answer and compare against (verify command, full rebuild, replay, round-trip); must be none"
 """
 
 QUALITY_RULES = """\
@@ -408,7 +415,9 @@ instruction.md describes (the agent's own re-test would catch it), or if the env
 contains correct logic for the tricky case that the agent can copy (e.g. a correct replay or
 full-rebuild path that the invariant compares against), or if any central fault can be found and
 fixed by reading ONE function against the goal (the defect must live in the interaction between
-components or runs, with each side correct on its own). It is UNFAIR if the sequence
+components or runs, with each side correct on its own), or if the agent can run something that
+computes the correct answer and compare against it (a verify command, a full rebuild, a replay,
+a round-trip). It is UNFAIR if the sequence
 invariant is not stated in instruction.md, or a test's condition cannot be produced
 deterministically with something in the environment.
 

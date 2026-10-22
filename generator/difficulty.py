@@ -145,9 +145,14 @@ def spec_gate(spec: dict) -> list[str]:
                      ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
                      ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it"),
                      ("reference_in_environment", "what in the environment already computes the correct handling (must be none)"),
-                     ("interaction", "the components or runs whose interaction causes the defect, each correct on its own")):
+                     ("interaction", "the components or runs whose interaction causes the defect, each correct on its own"),
+                     ("runnable_reference", "anything the agent can run to get the correct answer (must be none)")):
         if not str(spec.get(key) or "").strip():
             problems.append(f"needs `{key}`: {why}")
+    runnable = str(spec.get("runnable_reference") or "").strip()
+    if runnable and not re.match(r"(?i)[\s*-]*none\b", runnable):
+        problems.append(f"the agent can run a reference that computes the correct answer ({runnable[:160]}) and "
+                        "fuzz its fix against it; remove it, or make it share the flaw")
     ref = str(spec.get("reference_in_environment") or "").strip()
     if ref and not re.match(r"(?i)[\s*-]*none\b", ref):  # "none", "- none" (a list reply), "None: ..."
         problems.append("the environment already contains the correct handling of the tricky case "
