@@ -25,7 +25,6 @@ from config import (
     MIN_ENV_LINES,
     MIN_FAULT_LAYERS,
     MIN_FAULTS,
-    MIN_SOLVE_LINES,
 )
 
 LAYERS = {"build", "code", "config", "data", "runtime"}
@@ -405,10 +404,6 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if n < MIN_ENV_LINES:
         problems.append(f"environment/ has {n} non-blank lines; needs at least {MIN_ENV_LINES} "
                         "(a realistic project the agent must search, with a decoy)")
-    n = solve_lines(solve_sh)
-    if n < MIN_SOLVE_LINES:
-        problems.append(f"solve.sh has {n} meaningful lines; needs at least {MIN_SOLVE_LINES} "
-                        "(the fix should be real work across several faults, not a few seds)")
     fa = format_assertions(tests_py, instruction)
     if fa:
         problems.append("tests pin an exact textual form the instruction never states, so a correct "

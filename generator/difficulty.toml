@@ -11,10 +11,9 @@
 min_faults = 2
 max_faults = 4
 min_fault_layers = 1
-# Floors, not targets (the first easy tasks were 95-303 lines with 1-4 line fixes); size is
-# not a difficulty lever, so these stay low. 30 solve lines suits 2-4 faults.
+# A floor, not a target (the first easy tasks were 95-303 lines); size is not a difficulty
+# lever. There is no solve.sh size floor: a fix for faults that live in an interaction can be short.
 min_env_lines = 400
-min_solve_lines = 30
 max_leaked_literals = 1
 critic_found_within = 3
 
