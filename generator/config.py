@@ -152,9 +152,11 @@ GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Hidden-reasoning token budget per stage (GEN_REASONING_BUDGET_FILES=20000; 0 = gateway default). The
 # file-writing calls hit the 32,768-token output cap with every token spent on reasoning and no files
-# written (five runs on 22 Oct, 10-15 minutes each); a budget leaves room for the visible reply.
+# written (five runs on 22 Oct, 10-15 minutes each); a budget leaves room for the visible reply. A critic
+# call spent all 98,304 tokens of its cap reasoning (43 minutes, empty reply), so spec and critic have one
+# too. The gateway treats the budget as advisory (52k observed against 16k), so it is a nudge, not a cap.
 GEN_REASONING_BUDGET = {stage: int(os.environ.get(f"GEN_REASONING_BUDGET_{stage.upper()}")
-                                   or {"project": 16000, "files": 16000, "repair": 16000}.get(stage, 0))
+                                   or {"spec": 24000, "critic": 24000, "project": 16000, "files": 16000, "repair": 16000}.get(stage, 0))
                         for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Spec attempts when the spec gate fails (each is one more spec call).
 MAX_SPEC_ATTEMPTS = _retry_limit("MAX_SPEC_ATTEMPTS", 2)
