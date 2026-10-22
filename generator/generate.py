@@ -135,11 +135,16 @@ class Spec(BaseModel):
     sample_file: str = ""
     spec_document: str = ""             # a document instruction.md names as the specification
     knobs: list[dict] = Field(default_factory=list)
+    dial: str = ""                      # what moves the pass rate (from the seed card)
+    quirk_matrix: str = ""              # dimensions x levels the hidden instances are drawn from
+    public_tests: str = ""
+    anti_cheese: str = ""
     crux: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
-                     "failure_modes", "crux", "shape", "hidden_evaluation", "ground_truth", "reference_in_environment",
+                     "failure_modes", "crux", "shape", "hidden_evaluation", "ground_truth", "reference_in_environment", "dial",
+                     "quirk_matrix", "public_tests", "anti_cheese",
                      "base_image", "category",
                      mode="before")
     @classmethod
@@ -215,7 +220,8 @@ def design_spec(topic: str, calibration: str, control: bool, systems: dict, log,
 
     if SPEC_CRITIC:
         try:
-            critic, _, _ = chat(systems["critic"], prompts.critic_user(spec, calibration), parse_critic, log.llm, "critic")
+            critic, _, _ = chat(systems["critic"], prompts.critic_user(spec, calibration, prompts.seed_of(topic)),
+                                parse_critic, log.llm, "critic")
             log.write_json("critic.json", critic)
             revised_problems = difficulty.spec_gate(critic["spec"], genre)
             log.event("critic", too_easy_because=critic["too_easy_because"], revised_gate=revised_problems)

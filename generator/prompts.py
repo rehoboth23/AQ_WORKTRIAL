@@ -81,12 +81,22 @@ DIFFICULTY_RULE = f"""\
     implementation, no verify command, no backup or original of the correct code, no .git with the
     fix. The one exception is a reference program that IS the specification (a legacy binary to
     match); the tests then compile or copy their own pristine copy and hide the environment's one.
+    Public tests are the one other exception: tests for the COMMON path only (about 30% of what the
+    hidden tests cover, e.g. in tests_public/) may ship so the agent's verify loop works; they never
+    contain a hidden input or an edge case.
   * Fair: an expert reading instruction.md and the environment can derive every check. Every
     exception to a general rule is named in instruction.md; where two behaviours are both
     reasonable (reject vs sanitise, round before vs after) instruction.md states which is required.
     Existing behaviour must keep working ("everything the tool does today must keep working",
     checked by hidden regression tests). Deterministic and offline: no clocks, randomness or
     network in what the tests check; every package the solution needs is in the image.
+  * A SEED CARD, when given with the topic, is binding: keep its shape, build the evaluation
+    around its `agent_cannot_verify` mechanism, set the `dial` it names (its fair range and starting
+    value), compute ground truth the way it says, include its seed checks among `checks`, use its
+    knobs and must_keep, and stay inside its `out_of_bounds`. Draw the hidden instances from its
+    `quirk_matrix` in the stated mix (one level per dimension per instance; never only easy cells),
+    ship its `public_tests` and nothing more, and enforce its `anti_cheese` gate with a hidden test.
+    Its environment notes are limits.
 """
 
 DIFFICULTY_SPEC_FIELDS = """,
@@ -98,6 +108,10 @@ DIFFICULTY_SPEC_FIELDS = """,
               "why_missed": "why a careful agent's own testing might not cover it"}],
   "preserved_behaviours": [{"behaviour": "an existing behaviour that must keep working", "hidden_test_input": "the input whose output must stay the same"}],
   "ground_truth": "how the tests compute every expected value (reference in tests/, verifier-only package, seeded generator)",
+  "dial": "what moves the pass rate, its fair range and the chosen value (from the seed card when given); empty if none",
+  "quirk_matrix": "dimensions x levels the hidden instances are drawn from, and the mix (from the seed card)",
+  "public_tests": "what the visible common-path tests cover (about 30%), and where they ship",
+  "anti_cheese": "the paired gate that stops a shortcut (performance budget, forbidden library or file, output identity) and its hidden test",
   "verifier_packages": ["pip packages the tests need, as name==version (installed only for the verifier); may be empty"],
   "verifier_apt": ["Debian packages the tests need (e.g. gcc to compile a pristine reference); may be empty"],
   "reference_in_environment": "none, or the reference program that IS the specification and how the tests hide it"
@@ -480,8 +494,9 @@ def mutants_user(faults: list, solve_sh: str) -> str:
             + "\n\nCorrect solution/solve.sh:\n" + solve_sh + "\n\nWrite the mutant scripts now.\n")
 
 
-def critic_user(spec: dict, calibration: str = "") -> str:
+def critic_user(spec: dict, calibration: str = "", seed: str = "") -> str:
     return ("Task spec to review:\n\n" + json.dumps(spec, indent=2) + "\n"
+            + (f"\nThe seed card the design must follow (binding):\n{seed}\n" if seed else "")
             + (f"\nResults of earlier designs under these rules:\n{calibration}\n" if calibration else ""))
 
 
@@ -578,9 +593,33 @@ KNOB_FIELD = """,
 """
 
 
+SEED_MARK = "\n\nSEED CARD (binding):\n"
+
+
+def load_seed(ref: str) -> str:
+    """'@seeds/name.yaml' (relative to scripts/) -> the card's topic sentence plus the whole card."""
+    import yaml
+    from config import ROOT_DIR
+    path = ref.lstrip("@").strip()
+    if not os.path.isabs(path):
+        path = os.path.join(ROOT_DIR, "scripts", path)
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    card = yaml.safe_load(text)
+    return str(card["topic"]).strip() + SEED_MARK + text
+
+
+def seed_of(topic: str) -> str:
+    """The seed card inside a topic string, or ''."""
+    return topic.split(SEED_MARK, 1)[1] if SEED_MARK in topic else ""
+
+
 def split_topic(line: str) -> tuple[str, str]:
-    """One recipe for every topic: a leading [tag] from older topic lists is stripped and ignored.
-    Returns (label, topic); the label is kept in records for compatibility."""
+    """One recipe for every topic. '@seeds/name.yaml' loads a seed card (its topic sentence names
+    the task, the whole card goes to the design and the critic); a leading [tag] from older topic
+    lists is stripped and ignored. Returns (label, topic); the label is kept for compatibility."""
+    if line.strip().startswith("@"):
+        return "task", load_seed(line.strip())
     m = re.match(r"\s*\[\w+\]\s*(.*)", line, re.S)
     return "task", (m.group(1) if m else line).strip()
 
