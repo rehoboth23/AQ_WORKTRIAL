@@ -256,7 +256,8 @@ def review_instruction(spec: dict, files: dict[str, str], log) -> dict[str, str]
     try:
         review, _, _ = chat(prompts.INSTRUCTION_REVIEW_SYSTEM,
                             prompts.instruction_review_user(files["instruction.md"], spec.get("faults") or [],
-                                                            files.get("tests/test_outputs.py", "")),
+                                                            files.get("tests/test_outputs.py", ""),
+                                                            spec.get("crux", "")),
                             parse_review, log.llm, "review")
     except LLMError as e:
         log.event("review_error", error=str(e)[:300])

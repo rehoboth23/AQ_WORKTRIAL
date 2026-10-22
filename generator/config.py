@@ -112,7 +112,7 @@ CALIBRATION_WINDOW = int(os.environ.get("CALIBRATION_WINDOW", "8"))
 # Tag for the task-design rules in prompts.py. History lines record it, and the spec prompt is
 # shown only lines from the current design, so examples from older rules (e.g. 7-fault tasks
 # with step-count notes) never steer a new design. Bump it when the design rules change.
-DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-21-sequence")
+DESIGN_VERSION = os.environ.get("DESIGN_VERSION", "2026-10-21-goal")
 
 # --- Paths -----------------------------------------------------------------
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "output"))

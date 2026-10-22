@@ -101,8 +101,14 @@ DIFFICULTY_RULE = f"""\
     history, no pristine installed copy or vendored original of the faulty code, no backup or
     .orig files, no project tests that name or pin the fault. The agent has no network access.
   * Hidden edge cases: tests also check cases the visible symptom doesn't show (empty input,
-    NULLs, timezones, duplicates), each following from a requirement stated in instruction.md.
-    Don't paste expected outputs into instruction.md; state the rule that produces them.
+    NULLs, timezones, duplicates), each a CONSEQUENCE of the stated goal that an expert would
+    derive, not a separately listed requirement. Don't paste expected outputs into
+    instruction.md; state the rule that produces them.
+  * Goal, not checklist: instruction.md states the outcome at the level a user would (the
+    invariant, "after any sequence of operations the snapshot equals a replay of the log"), never
+    the list of cases and steps that achieve it. Every `wrong_fix` must stay a trap: never add a
+    sentence whose only purpose is to warn against one ("if an event is corrected twice, use the
+    latest correction"). Never name the fix or the crux.
   * A problem, not a guide: spend instruction.md's detail on the DELIVERABLE (output paths,
     formats, the rules that define correct results, constraints grading needs; use placeholders
     like <count>, not the expected values). Never: a numbered symptom per fault, how many things
@@ -166,9 +172,13 @@ Rules for a good task:
   interface ("a retried delivery leaves the balance unchanged", "two spellings log into one
   account"), never how a fix is built (a schema constraint's text, a column's existence, a
   function name, a config line). Any correct fix must pass, so tests never pin the technique.
-- instruction.md states exactly what is checked: paths, formats, commands, ports. Every test must
-  correspond to a requirement written in instruction.md. Write it like a colleague asking for
-  help: concrete, 80-300 words, no hints about the hidden bug's location, no mention of tests.
+- Fair means DERIVABLE: every test follows from instruction.md's stated goal plus what an expert
+  in the domain knows and what the environment shows (including how its own code behaves). It
+  need not be written out. A test that checks something an expert could NOT derive (an arbitrary
+  format, a magic value, a choice between equally valid behaviours) must be stated. instruction.md
+  always states the interface grading needs: paths, ports, commands, output formats. Write it
+  like a colleague asking for help: concrete, 80-250 words, no hints about the hidden bug's
+  location, no mention of tests.
 - Keep the design hidden: instruction.md and every environment/ file are what the solving agent
   sees. Never write spec details there: no fault numbers, step estimates, "decoy" or "red herring"
   labels, and no comments marking bugs as intentional, planted or injected. Faulty code must look
@@ -232,8 +242,13 @@ the failure is.
 - "model": the task was fair and the agent went wrong (wrong diagnosis, gave up, broke something,
   missed a requirement that instruction.md states clearly, ran out of ideas).
 - "task": the failure comes from the task itself (instruction.md is ambiguous or contradicts
-  the tests, a test checks something never asked for, the environment is broken or
-  nondeterministic, the expected answer is wrong).
+  the tests, a test checks something an expert could not derive from instruction.md's goal plus
+  domain knowledge and the environment, the environment is broken or nondeterministic, the
+  expected answer is wrong).
+
+Requirements need not be written out to be fair: if the goal is "the snapshot always equals a
+replay of the log" and the agent's fix breaks when one event is corrected twice, that is the
+model's fault (it missed a consequence of the goal), not an unstated requirement.
 
 - "unknown": the evidence given cannot tell these apart (the trajectory tail does not show what
   the agent changed, the verifier output is missing or cut off, infrastructure may have failed).
@@ -409,6 +424,9 @@ agent. Flag and remove any of these:
   6. a command to check progress ("run pytest to check")
   7. scope narrowing ("only change the Makefile") unless the tests require it
   8. exact expected outputs or values beyond trivial ones (state the rule; use placeholders)
+  9. the fix or the crux itself (the technique, rule or insight that solves it; it is given below)
+ 10. a requirement whose only purpose is to warn against a fault's `wrong_fix` (e.g. "if an event
+     is corrected twice, use the latest correction" when the trap is handling repeated corrections)
 Also check tests/test_outputs.py the other way round: if a test requires an exact textual form
 (a specific spelling, trailing slash, number of "../", key order, whitespace) that instruction.md
 does not state, report it as "UNSTATED FORMAT: <test> requires <form>" in the leak list. Do not
@@ -430,15 +448,17 @@ VERDICT: leaks
 ...the full rewritten instruction.md...
 <<<END>>>
 
-The rewrite must keep every requirement, path, format and rule the tests rely on
-(tests/test_outputs.py is given), so a correct solution can still be derived from it alone. It
-should read as one problem statement plus the deliverable spec, in the same voice; it may be
-shorter.
+The rewrite must keep the goal (the invariant), the interface (paths, commands, ports, output
+formats) and any rule the tests rely on that an expert could NOT derive from the goal, domain
+knowledge and the environment. Consequences of the goal that an expert would work out (repeated
+corrections, existing data, the crash path) are removed, not kept. It should read as one problem
+statement plus the deliverable spec, in the same voice; it may be shorter.
 """
 
 
-def instruction_review_user(instruction: str, faults: list, tests: str) -> str:
+def instruction_review_user(instruction: str, faults: list, tests: str, crux: str = "") -> str:
     return ("Hidden faults (never reveal these):\n" + json.dumps(faults, indent=2)
+            + (f"\n\nThe crux (never state it):\n{crux}" if crux else "")
             + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
             + "\n\ninstruction.md to review:\n" + instruction)
 
