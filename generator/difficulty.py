@@ -124,6 +124,9 @@ def spec_gate_spec(spec: dict) -> list[str]:
     if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
         return ["`requirements` must be a list of requirement objects"]
     problems = []
+    if not str(spec.get("spec_document") or "").strip():
+        problems.append("needs `spec_document`: the path under environment/ of the document that states every rule "
+                        "(instruction.md names it and does not list the rules)")
     if len(rules) < MIN_RULES:
         problems.append(f"needs at least {MIN_RULES} independent requirements, has {len(rules)}")
     if len(rules) > MAX_RULES:
@@ -257,6 +260,31 @@ def spec_gate_judgement(spec: dict) -> list[str]:
 
 def spec_gate(spec: dict, genre: str = "spec") -> list[str]:
     return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement}[genre](spec)
+_SPEC_DOC_EXTS = (".md", ".rst", ".txt", ".adoc")
+
+
+def spec_docs(files: dict[str, str], spec: dict | None = None) -> dict[str, str]:
+    """The spec document(s) the rules live in: the spec's `spec_document`, plus any shipped
+    document instruction.md names by path or file name. Keys are paths under environment/."""
+    instruction = files.get("instruction.md", "")
+    wanted = str((spec or {}).get("spec_document") or "").strip().lstrip("/")
+    out = {}
+    for path, body in files.items():
+        if not path.startswith("environment/") or not path.lower().endswith(_SPEC_DOC_EXTS):
+            continue
+        rel = path[len("environment/"):]
+        named = re.search(rf"(?<![\w.-]){re.escape(posixpath.basename(rel))}(?![\w-])", instruction)
+        if (wanted and (path == wanted or rel == wanted or path.endswith("/" + wanted))) or named:
+            out[path] = body
+    return out
+
+
+def _doc_names(docs: dict[str, str]) -> set[str]:
+    names = set()
+    for p in docs:
+        rel = p[len("environment/"):]
+        names |= {rel, posixpath.basename(rel), "/app/" + rel}
+    return names
 
 
 def solve_paths(solve_sh: str) -> set[str]:
@@ -290,7 +318,7 @@ def shipped_names(files: dict[str, str]) -> set[str]:
     return {n for n in names if n and n not in (".", "..")}
 
 
-def location_leaks(instruction: str, files: dict[str, str]) -> list[str]:
+def location_leaks(instruction: str, files: dict[str, str], allowed: set[str] = frozenset()) -> list[str]:
     """Shipped files (sources, configs, scripts) that instruction.md names. Naming them points
     the agent at the fault. Output files the agent creates are fine to name: they aren't shipped.
     Directories (e.g. "the project in /app/thumbgen") are fine too."""
@@ -298,6 +326,8 @@ def location_leaks(instruction: str, files: dict[str, str]) -> list[str]:
     for name in shipped_names(files):
         if not name.startswith("/") and not is_code_or_config(name):
             continue
+        if name in allowed or posixpath.basename(name) in allowed:
+            continue  # the spec document the instruction tells the agent to follow
         if _run_as_command(posixpath.basename(name), instruction):
             continue  # the tool's entry point (how you run it) is interface, not a hint
         pattern = re.escape(name) if name.startswith("/") else rf"(?<![\w.-]){re.escape(name)}(?![\w-])"
@@ -447,7 +477,7 @@ def _fault_words(spec: dict) -> list[set[str]]:
     return out
 
 
-def answer_key_leaks(files: dict[str, str], spec: dict | None) -> list[str]:
+def answer_key_leaks(files: dict[str, str], spec: dict | None, skip: set[str] = frozenset()) -> list[str]:
     """Prose in environment/ that confesses: a rule-stating comment that shares >= 3 distinctive
     words with a fault, or a label that marks a module unused/legacy/a workaround."""
     faults = _fault_words(spec or {})
@@ -474,9 +504,11 @@ _POINTER = re.compile(r"\b(see|consult|refer to|check|read|look (at|in))\s+(the\
                       r"[\w./-]+\.(md|rst|txt))\b", re.I)
 
 
-def pointer_leaks(instruction: str) -> list[str]:
-    """Phrases in instruction.md that point at where the answer is written down."""
-    return sorted({m.group(0) for m in _POINTER.finditer(instruction)})
+def pointer_leaks(instruction: str, allowed: set[str] = frozenset()) -> list[str]:
+    """Phrases in instruction.md that point at where the answer is written down (pointing at the
+    spec document the task asks the agent to follow is fine)."""
+    return sorted({m.group(0) for m in _POINTER.finditer(instruction)
+                   if not any(a and a in instruction[m.start():m.end() + 80] for a in allowed)})
 
 
 _IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\b")
@@ -559,7 +591,13 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     solve_sh = files.get("solution/solve.sh", "")
     tests_py = files.get("tests/test_outputs.py", "")
     problems = []
-    leaks = location_leaks(instruction, files)
+    docs = spec_docs(files, spec)
+    want = str((spec or {}).get("spec_document") or "").strip()
+    if want and not docs:
+        problems.append(f"the spec document `{want}` is not among the files; ship it under environment/ "
+                        "and name it in instruction.md")
+    allowed = _doc_names(docs)
+    leaks = location_leaks(instruction, files, allowed)
     if leaks:
         problems.append("instruction.md names shipped source/config files (" + ", ".join(leaks) + "); "
                         "which points the agent at the fault; describe the symptom and goal "
@@ -573,12 +611,12 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if len(lits) > MAX_LEAKED_LITERALS:
         problems.append(f"instruction.md pastes {len(lits)} expected values from the tests "
                         f"(e.g. {lits[:3]}); state the rule that produces them instead")
-    keys = answer_key_leaks(files, spec)
+    keys = answer_key_leaks(files, spec, set(docs))
     if keys:
         problems.append("comments or docs in environment/ give the answer away; describe what the code "
                         "does, never the rule it breaks, and never label code unused/legacy/a "
                         "workaround: " + "; ".join(keys[:5]))
-    ptr = pointer_leaks(instruction)
+    ptr = pointer_leaks(instruction, allowed)
     if ptr:
         problems.append(f"instruction.md points at where the answer is written ({', '.join(ptr)}); remove it")
     ids = fault_identifier_leaks(instruction, spec)
@@ -589,10 +627,10 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if oracle:
         problems.append("the environment or instruction gives the agent an oracle for the graded result; remove it "
                         "(no verify/check/diff/self-test commands, no expected output, no reference): " + "; ".join(oracle[:4]))
-    uncovered = rule_coverage(instruction, spec)
+    uncovered = rule_coverage(instruction + "\n" + "\n".join(docs.values()), spec)
     if uncovered:
-        problems.append("these requirements are not stated in instruction.md (the tests would check a rule the agent "
-                        "was never told); state each one precisely: " + "; ".join(uncovered[:5]))
+        problems.append("these requirements are not stated in instruction.md or the spec document (the tests would "
+                        "check a rule the agent was never told); state each one precisely: " + "; ".join(uncovered[:5]))
     refs = reference_copies(files)
     if refs:
         problems.append("the environment keeps a reference copy of the correct code (git history, "

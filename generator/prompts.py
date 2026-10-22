@@ -61,11 +61,21 @@ DIFFICULTY_RULE = f"""\
   tests every case it thinks of; a runnable oracle (a verify command, a full rebuild to compare
   against) makes it trivial. Do not design hidden-fault tasks. Design SPECIFICATION tasks:
   * The task is to BUILD or TRANSFORM to a long, explicit specification: {MIN_RULES} to {MAX_RULES}
-    independent requirements, each stated precisely in instruction.md, each DIFFERENT from what a
+    independent requirements, each stated precisely in the SPEC DOCUMENT, each DIFFERENT from what a
     programmer would produce by default (the default rounding, sort, padding, date form, error
     handling, line endings...), each checked by a hidden test input that differs from any example.
     Passing needs ALL of them right; the agent only tests the rules it remembers and reads
     correctly. Difficulty comes from breadth and precision, never from hiding anything.
+  * The rules live in a SPEC DOCUMENT shipped in the environment (e.g. docs/STYLE.md, a house
+    style guide, a data contract, an import spec), written the way a real team writes one: prose
+    in sections, with the reason for a rule where a team would give one, related rules grouped
+    by topic, and some rules stated as exceptions in a later section ("...except in numeric
+    columns, see Numbers"). instruction.md states the goal, names the document as the
+    specification to follow, gives the interface (command, inputs, output) and the "keep
+    everything working" rule; it does NOT list the rules. A numbered checklist in instruction.md
+    lets the agent tick rules off one by one (a 15-rule checklist was solved 5/5); reading,
+    extracting and reconciling a real document is the work. Every rule must still be stated
+    precisely and unambiguously in the document: an expert reading it must derive every test.
   * Kinds: build_from_spec (write or finish a CLI, parser, renderer or report generator to the
     rules), exact_data_transform (normalise a messy dataset to an exact output format; many
     format traps), large_corpus_migration (apply a rule set across dozens of files; partial
@@ -85,11 +95,11 @@ DIFFICULTY_RULE = f"""\
     reference implementation, no tests, no backup or original in the image, and nothing the agent
     can run to get the correct answer and compare against. The agent has no network access.
   * Hidden inputs, not hidden rules: tests use inputs that differ from every example in
-    instruction.md, with non-round values and boundaries (exactly-at-the-limit lengths, values
+    instruction.md and the spec document, with non-round values and boundaries (exactly-at-the-limit lengths, values
     that round differently under the default, empty groups, the last record, a page boundary).
     Every assertion follows from a stated rule; exact textual forms are tested exactly only
     because the rule states that form. Never get difficulty from ambiguity or trick wording:
-    an expert reading instruction.md must be able to derive every test.
+    an expert reading instruction.md and the spec document must be able to derive every test.
   * No reference copies of the answer anywhere in the environment (git history, an installed
     original, .orig/.bak files, a second implementation).
 """
@@ -98,7 +108,8 @@ DIFFICULTY_RULE = f"""\
 # difficulty.spec_gate(); left out for the control arm together with DIFFICULTY_RULE.
 DIFFICULTY_SPEC_FIELDS = """,
   "challenge_kind": "build_from_spec|exact_data_transform|large_corpus_migration",
-  "requirements": [{"id": "R1", "rule": "the rule, precisely as instruction.md will state it",
+  "spec_document": "path under environment/ of the document that states every rule, e.g. environment/docs/STYLE.md",
+  "requirements": [{"id": "R1", "rule": "the rule, precisely as the spec document states it",
                     "theme": "formatting|arithmetic|ordering|unicode_width|structure|input_tolerance|error_handling|edge_inputs|other",
                     "default_behaviour": "what a programmer produces without this rule",
                     "hidden_test_input": "the input the test uses; differs from every example in instruction.md",
@@ -228,8 +239,9 @@ model's fault (it missed a consequence of the goal), not an unstated requirement
 
 Be strict about "task": only choose it when you can point to the specific flaw. Be equally
 strict about "model": trace the FAILING ASSERTION to instruction.md. Quote the sentence of
-instruction.md (or the fact visible in the environment, such as the program's existing output
-words) that requires what the assertion checks. Test names, docstrings and comments are NOT
+instruction.md or of the spec document it names (given after instruction.md when there is one),
+or the fact visible in the environment, such as the program's existing output words, that
+requires what the assertion checks. Test names, docstrings and comments are NOT
 requirements: the agent never sees them. If no sentence or derivable consequence of the stated
 goal requires what the failing assertion checks, it is "task" (a test checking an unstated
 choice), even if every other test passed. Example: the goal is "each event affects the balance
@@ -399,11 +411,14 @@ Reply with ONE JSON object and nothing else:
 INSTRUCTION_REVIEW_SYSTEM = """\
 You review instruction.md of a Terminal-Bench 2 specification task before it is built. The agent
 solving the task sees only instruction.md and the environment. The rules ARE the workload, so
-instruction.md must state every requirement precisely; the difficulty is breadth, not hiding.
+every requirement must be stated precisely, either in instruction.md or in the spec document it
+names (given below when there is one); the difficulty is breadth, not hiding. A rule stated only
+in the spec document is fine: do NOT move it into instruction.md.
 
 Check, against the requirement list and tests/test_outputs.py given to you:
-  1. MISSING RULE: a requirement the tests check that instruction.md does not state, or states so
-     vaguely that two reasonable readings give different outputs.
+  1. MISSING RULE: a requirement the tests check that neither instruction.md nor the spec document
+     states, or states so vaguely that two reasonable readings give different outputs, or that
+     two passages of the document contradict.
   2. LEAKED ANSWER: expected output pasted beyond trivial examples, a sample that covers the
      hidden test inputs, or a hint of what the tests check.
   3. ORACLE: any instruction to run a command whose output signals completion ("run verify until
@@ -423,19 +438,24 @@ VERDICT: leaks
 ...the full rewritten instruction.md...
 <<<END>>>
 
-The rewrite keeps the problem statement and the numbered rules, adds the missing or sharpened
-rules, removes leaked outputs and oracle pointers, and stays in the same voice. For an UNSTATED
+The rewrite keeps the problem statement and the rules, adds the missing or sharpened rules,
+removes leaked outputs and oracle pointers, and stays in the same voice. When the problem is in
+the spec document, return the rewritten document as a second block under its own path (e.g.
+<<<FILE environment/docs/STYLE.md>>>) and keep its prose style. For an UNSTATED
 FORMAT, add the form as a rule only if it is a genuine part of the house style; otherwise the test
 is the problem and must be reported.
 """
 
 
-def instruction_review_user(instruction: str, requirements: list, tests: str, crux: str = "", genre: str = "spec") -> str:
-    head = ("Requirements the tests check (each must be stated in instruction.md):\n" if genre == "spec"
+def instruction_review_user(instruction: str, requirements: list, tests: str, crux: str = "", genre: str = "spec",
+                            docs: dict[str, str] | None = None) -> str:
+    head = ("Requirements the tests check (each must be stated in instruction.md or the spec document):\n" if genre == "spec"
             else "Hidden faults / sites (never reveal these):\n")
+    doc_text = "".join(f"\n\nSpec document {path} (shipped in the environment):\n{body[:12000]}"
+                       for path, body in (docs or {}).items())
     return (head + json.dumps(requirements, indent=2)
             + "\n\ntests/test_outputs.py (keep everything these rely on):\n" + tests[:8000]
-            + "\n\ninstruction.md to review:\n" + instruction)
+            + doc_text + "\n\ninstruction.md to review:\n" + instruction)
 
 
 MUTANT_SYSTEM = """\

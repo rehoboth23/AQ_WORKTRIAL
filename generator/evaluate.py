@@ -24,6 +24,7 @@ import statistics
 import time
 from dataclasses import asdict, dataclass, field
 
+import difficulty
 import prompts
 from checks import _pytest_excerpt, _read, _tail, harbor_run, remove_containers
 from config import (
@@ -315,6 +316,12 @@ def triage(task_dir: str, failed_trials: list[dict], log=None) -> list[dict]:
     """One authoring-model call per failed run: whose fault was it?"""
     instruction = _read(os.path.join(task_dir, "instruction.md"))
     tests = _read(os.path.join(task_dir, "tests", "test_outputs.py"))
+    env = {"instruction.md": instruction}  # the spec document(s) it names are requirements too
+    for p in glob.glob(os.path.join(task_dir, "environment", "**", "*"), recursive=True):
+        if os.path.isfile(p) and p.lower().endswith(difficulty._SPEC_DOC_EXTS):
+            env["environment/" + os.path.relpath(p, os.path.join(task_dir, "environment"))] = _read(p)
+    for path, body in difficulty.spec_docs(env).items():
+        instruction += f"\n\n--- spec document {path} (shipped at /app/{path[len('environment/'):]}) ---\n{body[:12000]}"
     out = []
     for t in failed_trials:
         test_out = _pytest_excerpt(_read(os.path.join(t["trial_dir"], "verifier", "test-stdout.txt")), 4000)

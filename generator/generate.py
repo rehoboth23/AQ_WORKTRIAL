@@ -126,6 +126,7 @@ class Spec(BaseModel):
     requirements: list[dict] = Field(default_factory=list)
     themes: list[str] = Field(default_factory=list)
     starter: str = ""
+    spec_document: str = ""
     # Judgement genre
     property: str = ""
     reported_symptom: str = ""
@@ -257,21 +258,23 @@ def parse_review(text: str) -> dict:
     if m.group(1).lower() == "clean":
         return {"verdict": "clean", "leaks": [], "instruction": None}
     blocks = parse_file_blocks(text)  # raises ValueError if the rewrite is missing
-    if "instruction.md" not in blocks:
-        raise ValueError("leaks reported but no rewritten instruction.md")
+    if "instruction.md" not in blocks and not any(p.startswith("environment/") for p in blocks):
+        raise ValueError("leaks reported but no rewritten instruction.md or spec document")
     head = text[m.end(): text.find("<<<FILE")]
     leaks = [l.strip("- ").strip() for l in head.splitlines() if l.strip().startswith("-")]
-    return {"verdict": "leaks", "leaks": leaks, "instruction": blocks["instruction.md"]}
+    return {"verdict": "leaks", "leaks": leaks, "instruction": blocks.get("instruction.md"),
+            "docs": {p: b for p, b in blocks.items() if p.startswith("environment/")}}
 
 
 def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | None = None, genre: str = "spec") -> dict[str, str]:
     """Rewrite instruction.md if it diagnoses a hidden fault (keeps requirements). Best effort:
     on a model error the instruction is kept and the gates and band eval still apply."""
+    docs = difficulty.spec_docs(files, spec)
     try:
         review, _, _ = chat((systems or {}).get("review") or prompts.INSTRUCTION_REVIEW_SYSTEM,
                             prompts.instruction_review_user(files["instruction.md"], mutation_items(spec),
                                                             files.get("tests/test_outputs.py", ""),
-                                                            spec.get("crux", ""), genre),
+                                                            spec.get("crux", ""), genre, docs),
                             parse_review, log.llm, "review")
     except LLMError as e:
         log.event("review_error", error=str(e)[:300])
@@ -279,6 +282,9 @@ def review_instruction(spec: dict, files: dict[str, str], log, systems: dict | N
     log.event("instruction_review", verdict=review["verdict"], leaks=review["leaks"])
     if review["instruction"]:
         files = {**files, "instruction.md": review["instruction"]}
+    for path, body in (review.get("docs") or {}).items():
+        if path in docs:  # only the spec document may be rewritten here, never the code
+            files = {**files, path: body}
     return files
 
 
