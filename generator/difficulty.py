@@ -22,7 +22,6 @@ from config import (
     DISCOVERY,
     MAX_FAULTS,
     MAX_LEAKED_LITERALS,
-    MIN_ENV_LINES,
     MIN_FAULT_LAYERS,
     MIN_FAULTS,
 )
@@ -400,10 +399,6 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
         problems.append("instruction.md names shipped source/config files (" + ", ".join(leaks) + "); "
                         "which points the agent at the fault; describe the symptom and goal "
                         "instead and let the agent find the location")
-    n = env_lines(files)
-    if n < MIN_ENV_LINES:
-        problems.append(f"environment/ has {n} non-blank lines; needs at least {MIN_ENV_LINES} "
-                        "(a realistic project the agent must search, with a decoy)")
     fa = format_assertions(tests_py, instruction)
     if fa:
         problems.append("tests pin an exact textual form the instruction never states, so a correct "

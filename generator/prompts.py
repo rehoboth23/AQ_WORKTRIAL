@@ -11,7 +11,7 @@ never sees or edits them.
 
 import json
 
-from config import CRITIC_FOUND_WITHIN, DISCOVERY, MAX_FAULTS, MIN_ENV_LINES, MIN_FAULT_LAYERS, MIN_FAULTS
+from config import CRITIC_FOUND_WITHIN, DISCOVERY, MAX_FAULTS, MIN_FAULT_LAYERS, MIN_FAULTS
 
 # Paths the model is allowed to write. Anything else in a reply is dropped.
 MODEL_FILES = ("instruction.md", "environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py")
@@ -91,8 +91,7 @@ DIFFICULTY_RULE = f"""\
     config path): they add steps, not difficulty. Not one fault repeated in several files.
   * Indirect symptoms: wrong numbers, silent data issues, failures only on some inputs.
     Errors must not name the faulty file or symbol.
-  * Realistic size: a real project as big as the scenario needs (at least ~{MIN_ENV_LINES} lines of
-    source/config). No padding and no decoy modules: ordinary, correct code around the faults is
+  * Realistic size: a real project as big as the scenario needs, with no line target. No padding and no decoy modules: ordinary, correct code around the faults is
     enough. Never label code "legacy", "unused" or "not loaded". Generate bulky data at build time.
   * Domain knowledge, not proofreading: each faulty spot must read as correct code to someone who
     does not know what correct code in this domain must do. Comments, docstrings and the README

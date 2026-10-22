@@ -48,7 +48,6 @@ from config import (
     LOGS_DIR,
     MAX_FAULTS,
     MAX_LEAKED_LITERALS,
-    MIN_ENV_LINES,
     MIN_FAULT_LAYERS,
     MIN_FAULTS,
     MODEL,
@@ -66,7 +65,6 @@ from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text
 ORPHAN_POLL_SEC = float(os.environ.get("ORPHAN_POLL_SEC", "15"))  # resume: check an adopted harbor job
 
 KNOBS = {"min_faults": MIN_FAULTS, "max_faults": MAX_FAULTS, "min_fault_layers": MIN_FAULT_LAYERS,
-         "min_env_lines": MIN_ENV_LINES,
          "max_leaked_literals": MAX_LEAKED_LITERALS, "critic_found_within": CRITIC_FOUND_WITHIN}
 
 

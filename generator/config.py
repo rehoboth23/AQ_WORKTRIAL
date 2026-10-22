@@ -56,7 +56,7 @@ MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
 DIFFICULTY_FILE = os.environ.get(
     "DIFFICULTY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "difficulty.toml"))
 _DIFFICULTY_DEFAULTS = {
-    "knobs": {"min_faults": 2, "max_faults": 4, "min_fault_layers": 1, "min_env_lines": 400,
+    "knobs": {"min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
               "max_leaked_literals": 1, "critic_found_within": 3},
     "discovery": {"min_gap": 2, "hard_gap": 4, "very_hard_gap": 7, "too_hard_above": 9,
                   "timeout_risk_steps": 60},
@@ -89,7 +89,6 @@ def _knob(name: str) -> int:
 MIN_FAULTS = _knob("min_faults")                     # different faults in the spec
 MAX_FAULTS = _knob("max_faults")                     # cap: more faults = longer proofreading, not harder
 MIN_FAULT_LAYERS = _knob("min_fault_layers")         # build/code/config/data/runtime
-MIN_ENV_LINES = _knob("min_env_lines")               # non-blank lines under environment/
 MAX_LEAKED_LITERALS = _knob("max_leaked_literals")   # test literals allowed in instruction.md
 CRITIC_FOUND_WITHIN = _knob("critic_found_within")   # critic: fault found within N commands = too easy
 DISCOVERY = DIFFICULTY["discovery"]                   # gap bands for the critic's discovery estimates
