@@ -44,6 +44,9 @@ How the task is run (Harbor / Terminal-Bench 2):
   is. If a service is needed, the agent (and solve.sh) start it; tests may start it too.
 - Commands can print nothing on success (e.g. `sqlite3 -json` on zero rows). Test helpers must
   handle empty output instead of crashing on it.
+- /app, /tmp, /tests and /logs can be different filesystems, so `os.rename` between them fails
+  with "Invalid cross-device link". To hide or swap a file or folder in a test, move it to a
+  sibling path (/app/data -> /app/.data_hidden) or use shutil.move, and restore it in a finally.
 - The agent may leave its own server or daemon running when it finishes (a `kill` of a shell job
   does not always kill the child). A test that starts a service must first stop anything already
   listening on that port (walk /proc/net/tcp and /proc/*/fd, or try a bind) and FAIL LOUDLY if
@@ -73,6 +76,14 @@ DIFFICULTY_RULE = f"""\
     seeds. Each check follows from a sentence of instruction.md, a document it names, or a fact
     visible in the environment; each differs from what a reasonable implementer assumes by default.
     Passing needs all of them; the agent tests what it thinks of.
+  * EVERY RARE CASE MUST COST MORE THAN THE MARGIN: when a check is scored by an overall threshold
+    (accuracy, share reproduced, error within a tolerance), a solution that gets one whole rule,
+    exception or quirk cell wrong must fall below it. Work the arithmetic out: an IDS task held out
+    2,000 flows at a 96% bar (80 errors allowed) but had only about 50 HTTPS-exception flows, so a
+    solution that ignored the exception scored about 97.5% and passed. Either give each rare case
+    more weight in the held-out mix than the allowed error, or score each rule or quirk cell on its
+    own (e.g. at least 90% within each kind, as well as the overall bar). Never tighten the overall
+    bar to do it: that moves the whole difficulty dial, not one rule.
   * ANSWER SOURCE: `answer_source` is `stated` when the agent implements rules it is told, `inferred`
     when the work IS to infer rules or fit a model from data (rule induction, a model scored on
     held-out data, parameters estimated from measurements). On an inferred task the training data is
@@ -82,15 +93,24 @@ DIFFICULTY_RULE = f"""\
     times). A fact the data cannot show (behaviour beyond the training range, a unit or convention)
     must be stated, or the task is unfair: list it under `stated_facts` with why the data cannot
     show it, and state only that.
+    EVIDENCE PER HIDDEN CASE: every kind of input a hidden test uses, including the negative cases
+    (the UDP flow over the byte threshold that must NOT be flagged, the whitespace-only line), appears
+    in the practice data at least 3 times with the engine's own label; a hidden case the data never
+    shows is the task's fault, not the agent's. tests/ contains `test_practice_covers_hidden_cases`,
+    which reads the shipped practice data and fails if any hidden case kind has fewer than 3
+    examples, so missing evidence fails the oracle check, never a fair run. Rarity is not a
+    difficulty lever: the agent reads every example, so a rule shown once is found as surely as one
+    shown fifty times. Documents never give method hints (which feature to use, which model class
+    fails, how to extrapolate): mechanisms, yes; the modelling, no.
     Write the list of {MIN_CHECKS}+ check requirements FIRST, then fill in each one's details; a
     design with fewer checks is rejected and costs a full retry.
   * Ground truth never comes from your own reasoning: every expected value is computed by code the
     tests run (a pristine reference kept in tests/, a package installed only for the verifier, or
     the seeded generator that made the data), so a detail you misremember cannot make the solution
     and the tests wrong together. The oracle (solution/solve.sh) must pass every check.
-  * Nothing in the environment gives the answer away: no expected outputs, no reference
-    implementation, no verify command, no backup or original of the correct code, no .git with the
-    fix.
+  * Nothing in the environment gives the answer away: no expected outputs or solutions (never COPY
+    them into the image), no reference implementation, no verify command, no backup or original of
+    the correct code, no .git with the fix, and no build-time data generator left behind (delete it).
   * REFERENCE ACCESS: the agent never runs code whose output answers the graded question; an agent
     that can run the answer key fuzzes against it until everything matches (a mawk port with mawk
     installed was solved every time, even with a wider hidden fuzzer). When a reference program
@@ -110,21 +130,44 @@ DIFFICULTY_RULE = f"""\
     answers itself (a reference or a standard library that decodes them) and the task is solved by
     comparison. tests/ also checks the generator is deterministic (same seed, same bytes) and that a
     different seed changes the instances.
+  * SELF-CHECK GAP: the agent will iterate until its solution reproduces the whole practice set, and
+    when the graded instances come from the same process that alone predicts the graded score (three
+    rule-induction tasks passed 4-5/5 this way). `self_check_gap` states what a solution with zero
+    mismatches on the practice set can still get wrong on the graded instances (a boundary the
+    practice set straddles but never lands on, a combination of rules it shows only pairwise, a range
+    it only hints at) and why the practice set nonetheless determines the right answer. A design with
+    no such gap is too easy whatever its dial.
   * An exact observable CONTRACT: the entry point, every output, exit codes per case, and the
     precedence when two conditions hold at once. Every line of it is stated in instruction.md; a test
     never decides an unstated choice.
+  * NO STUDY GUIDE: instruction.md states the job, the interface, the acceptance criterion, the
+    facts the data cannot show and the tamper sentence, and nothing about how to study the data or
+    which cases deserve attention: no "tips", "what you know", "pay attention to", "boundary
+    precision matters", no list of the quirk dimensions (rule order, rare rules, near misses), no
+    statement that the graded instances come from the same generator as the practice set, no list
+    of what the public tests do not cover. Fairness comes from the data and the contract (an exact
+    contract already implies boundaries), not from a map of where the hidden tests look; a study
+    guide turns the hidden evaluation into a checklist (three tasks passed 4-5/5 with one).
+  * TEST MARGINS: a direction or relative check (A must be lower than B, X must rise on Y days)
+    compares within the graded instances or against the simulator's own counterfactual (the same
+    day with the flag off), never against a baseline from a different regime (another season, load
+    level or configuration); otherwise the confound decides the test (a December holiday compared
+    with warm autumn Fridays). A threshold check sets its bar so the oracle clears it by at least 10%
+    of the bar; list every threshold under `margins` with the bar and the oracle's expected value. A
+    test the oracle passes by a hair measures estimation noise, not the rule.
   * INVISIBLE TRAPS: at least one case where a plausible wrong solution gives no runtime signal (the
     output looks right, nothing errors) and only careful reading of the stated contract avoids it.
     Each is stated in instruction.md, or, for an inferred rule, shown in the training data. These set the band; traps the agent will see and debug do not.
   * Anti-cheese at RUN time, not only by scanning source: the tests run the solution with the
     forbidden modules or binaries disabled (removed from the path, an import hook), as well as any
     static scan; a static scan alone misses indirect routes (codecs, archive modules, eval).
-  * Fair: an expert reading instruction.md and the environment can derive every check. Every
-    exception to a general rule is named in instruction.md; where two behaviours are both
-    reasonable (reject vs sanitise, round before vs after) instruction.md states which is required.
-    Existing behaviour must keep working ("everything the tool does today must keep working",
-    checked by hidden regression tests). Deterministic and offline: no clocks, randomness or
-    network in what the tests check; every package the solution needs is in the image.
+    instruction.md ends with this sentence, verbatim: "Do not modify the Python interpreter, its
+    standard library or import hooks, or anything under /tests; such changes fail the task."
+    (A pipeline-written guard test enforces it; you do not write that test.)
+  * Fair: every exception to a general rule is named in instruction.md; where two behaviours are
+    both reasonable (reject vs sanitise, round before vs after) instruction.md states which is
+    required. Existing behaviour must keep working ("everything the tool does today must keep
+    working", checked by hidden regression tests).
   * A SEED CARD, when given with the topic, is binding: keep its shape, build the evaluation
     around its `agent_cannot_verify` mechanism, set the `dial` it names (its fair range and starting
     value), compute ground truth the way it says, include its seed checks among `checks`, use its
@@ -153,6 +196,8 @@ DIFFICULTY_SPEC_FIELDS = """,
   "public_tests": "what the visible common-path tests cover (about 30%), and where they ship",
   "anti_cheese": "the paired gate that stops a shortcut (performance budget, forbidden library or file, output identity), enforced at run time, and its hidden test",
   "graded_instances": "how the graded instances differ from the practice set the agent gets (sibling seeds generated in tests/), and the determinism self-check",
+  "self_check_gap": "what a solution that reproduces the entire practice set can still get wrong on the graded instances, and why the practice set still determines the right answer",
+  "margins": [{"test": "a threshold or relative test", "bar": "its bar", "oracle_value": "what the oracle scores", "baseline": "what a relative test compares against, from the same regime"}],
   "contract": ["each exact observable rule: entry point, outputs, exit codes per case, precedence"],
   "invisible_traps": [{"trap": "a case with no runtime signal", "stated_in": "the instruction sentence that makes it fair, or the training examples that show an inferred rule"}],
   "instance_plan": [{"instance": "a graded instance", "quirks": "its quirk-matrix cells", "purpose": "what it tests"}],
@@ -168,20 +213,15 @@ Rules for a good task:
   git HEAD, chess best move, self-signed openssl cert, log summary by date range, etc.).
 - Realistic and multi-step: the agent must explore the environment, diagnose, and fix or build
   something. Real failure modes (cryptic errors, dependency problems, misconfiguration) are good.
-  Hard but fair: an expert reading instruction.md and exploring the container can solve it.
 """ + DIFFICULTY_RULE + """\
-- Deterministic: fixed data, seeds and dates. No network access needed at test time.
-  Everything the task needs is installed in the Dockerfile.
-- No answer leaks: the expected answer or the fix must not be readable in the image. If data is
-  generated at build time, delete the generator script afterwards. Never COPY solutions or
-  expected outputs into the image.
+- Deterministic and offline: fixed data, seeds and dates; no clocks, randomness or network in what
+  the tests check.
 - Tests check real end state (program output, file contents, service behaviour), not superficial
-  strings an agent could fake. Prefer several focused tests over one big one. Recompute expected
-  values from first principles or compare to hard-coded known-good values.
+  strings an agent could fake. Prefer several focused tests over one big one. Expected values come
+  from code the tests run (the ground-truth rule above).
 - Tests exercise the REPAIRED PROGRAM, not only the shipped data: give each test fresh, isolated
-  state where it can, run at least one input that is not in the shipped data, work out expected
-  values independently (by hand or a small separate computation; never by copying the code being
-  fixed), and make sure a solution that outputs nothing, deletes everything or hard-codes the
+  state where it can, run at least one input that is not in the shipped data, compute expected
+  values with code the tests run (never by copying the code being fixed), and make sure a solution that outputs nothing, deletes everything or hard-codes the
   shipped fixtures cannot pass.
 - Tests check MEANING, not spelling. Any correct solution must pass: resolve a link and compare
   the destination instead of counting "../"; parse numbers, dates, JSON and paths instead of
@@ -197,8 +237,9 @@ Rules for a good task:
   need not be written out. A test that checks something an expert could NOT derive (an arbitrary
   format, a magic value, a choice between equally valid behaviours) must be stated. instruction.md
   always states the interface grading needs: paths, ports, commands, output formats. Write it
-  like a colleague asking for help: concrete; the rules are the workload, so list them, numbered
-  and precise; no mention of tests.
+  like a colleague asking for help: concrete, no mention of tests. On a stated task, state every
+  rule precisely, in instruction.md or a document it names; on an inferred task, state only the
+  contract (interface, outputs) and the stated facts.
 - Keep the design hidden: instruction.md and every environment/ file are what the solving agent
   sees. Never write design details there: no rule ids, test inputs, "hidden test" or "trap"
   labels, and no comment in the starter that mentions a rule. The starter must look like ordinary
@@ -251,9 +292,9 @@ def calibration_block(history: list[dict]) -> str:
         note = f" ({h['lesson']})" if h.get("lesson") else (f" ({h['note']})" if h.get("note") else "")
         kind = f" [{h['challenge_kind']}]" if h.get("challenge_kind") else ""
         lines.append(f"- {h['name']}{kind}: {h['passes']}/{h['n']} -> {h['verdict']}{note}. {h.get('description', '')}")
-    lines.append("Tasks solved too often had few rules, rules on one theme, or an oracle to compare against. "
-                 "Make this design harder with more independent, precisely stated rules on more themes and "
-                 "sharper hidden inputs; never by hiding rules. Make it easier than the too_hard ones.")
+    lines.append("Make this design harder than the too_easy ones through what the agent cannot verify: "
+                 "held-out instances, invisible traps, rare cases that cost more than the margin. "
+                 "Make it easier than the too_hard ones.")
     return "\n".join(lines)
 
 
@@ -311,8 +352,7 @@ You write the project inside a Terminal-Bench 2 task's environment, from a task 
 {HARBOR_CONTRACT}
 {QUALITY_RULES}
 Write every file of the project under environment/ EXCEPT environment/Dockerfile: source code,
-build files, configs, docs, and build-time data generators, with the spec's faults and decoys
-planted exactly as described. Do NOT write environment/Dockerfile, instruction.md, solve.sh or
+build files, configs, docs, and build-time data generators. Do NOT write environment/Dockerfile, instruction.md, solve.sh or
 tests; they are written next, against your files. Generate bulky data with a script (run at
 build time) instead of pasting it.
 
@@ -408,12 +448,10 @@ nothing before or after:
 
 
 CRITIC_SYSTEM = f"""\
-You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
-it reads files, greps, runs builds and tests, writes its own end-to-end tests, and probes any
-reference it may run; it solved every task whose correctness it could check by itself.
+You are a red-team reviewer for Terminal-Bench 2 task designs.
 
 {DIFFICULTY_RULE}
-Given a task spec (JSON), walk through how that agent would solve it: which checks it would get
+Given a task spec (JSON), walk through how the strong agent described above would solve it: which checks it would get
 right on its own, which it would verify with its own tests, and which it would likely miss. The
 spec is TOO EASY if it has fewer than {MIN_CHECKS} checks, if the agent could reproduce the hidden
 evaluation (all hidden inputs are guessable from the examples, a reference answers every case), if
@@ -422,10 +460,13 @@ if anything in the environment or instruction gives the answer away, if the grad
 the environment (the agent can compute their answers), if the agent can run code whose output
 answers the graded question (a reference, the legacy interpreter, a decoding library) and
 `reference_access` is not `runnable` with a reason, if an inferred task states a rule it should infer
-(the answer key), or if there is no invisible trap. It is UNFAIR if a check does
+(the answer key), if a solution with zero mismatches on the practice set necessarily passes the hidden
+tests (no real `self_check_gap`), if instruction.md tells the agent how to study the data or which
+kinds of cases to check (a study guide), or if there is no invisible trap. It is UNFAIR if a check does
 not follow from instruction.md, a named document or the environment, if two reasonable readings
 give different results, if a graded quirk has no `quirk_evidence` the agent can study, if an inferred rule has
-no training examples that show it, if something the data cannot show is neither shown nor listed in `stated_facts`, if an expected value comes from the designer's reasoning instead of code
+no training examples that show it, if a relative check's baseline differs from the tested instance in anything
+but the tested property (another season or load level), if a threshold bar sits within 10% of the oracle's value, if something the data cannot show is neither shown nor listed in `stated_facts`, if an expected value comes from the designer's reasoning instead of code
 the tests run, or if anything depends on timing, randomness or the network.
 
 If results of earlier designs are given, a design that repeats a shape those results show was
@@ -445,8 +486,8 @@ Reply with ONE JSON object and nothing else:
 
 INSTRUCTION_REVIEW_SYSTEM = """\
 You review instruction.md of a Terminal-Bench 2 task before it is built. The agent solving the
-task sees only instruction.md and the environment (including any document instruction.md names,
-given below). Every check the hidden tests make must follow from instruction.md, a named document
+task sees only instruction.md and the environment (including every document shipped in it, named
+or not, given below). Every check the hidden tests make must follow from instruction.md, a named document
 or the environment; the hidden INPUTS must stay hidden.
 
 Check, against the list of checks and tests/test_outputs.py given to you:
@@ -456,7 +497,9 @@ Check, against the list of checks and tests/test_outputs.py given to you:
      (`answer_source: inferred`) training data that shows a rule DOES state it: never ask for an
      inferred rule to be written down.
   2. LEAKED ANSWER: expected output beyond trivial examples, a sample that covers the hidden
-     inputs, or a hint of which cases the tests probe.
+     inputs, a hint of which cases the tests probe (including a list of what the public tests do
+     NOT cover beyond "the common path"), or a method hint in a document (which feature or model
+     class to use, how to extrapolate).
   3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
      reference implementation, or a runnable reference program (unless the design's
      `reference_access` is `runnable` with its reason).
@@ -470,10 +513,15 @@ Check, against the list of checks and tests/test_outputs.py given to you:
   6. STATED ANSWER: on an inferred task, a sentence in instruction.md or a document that states one
      of the design's `inferred_rules` (its mapping, threshold, ordering or exception), unless it is
      in `stated_facts`; report "STATED ANSWER: <sentence>" and remove it.
+  7. STUDY GUIDE: a sentence that tells the agent how to study the data or which kinds of cases to
+     check ("tips", "pay attention to", "rule order matters", "boundary precision matters", "the
+     public tests do not cover X", "held-out pairs come from the same generator"); report
+     "STUDY GUIDE: <sentence>" and remove it. The job, interface, acceptance criterion, stated facts
+     and tamper sentence stay.
 Also make sure the interface is stated: the command or entry point, inputs, outputs, exit codes.
 Pattern-scan hints may be given below; they are often false alarms (a rule constant is not a
 pasted answer, a file the task must name is not a leak). Act on a hint only if it is a real
-problem by the four checks above.
+problem by the six checks above.
 
 If nothing violates this, reply exactly:
 VERDICT: clean
@@ -533,6 +581,14 @@ input or sequence of operations (files, commands, order) on which the program wo
 differently after the mutant than after the correct solution, in a way the goal makes wrong.
 Only answer "equivalent" if no such case exists.
 
+The difference must be CERTAIN, not guessed: someone who runs your case on both solutions must
+see different results. Work the outputs out (e.g. a summer date shifts UTC timestamps by exactly
+one hour). If the difference depends on a value you cannot work out from the code and data you
+were given (whether a fitted model ever predicts below a floor, whether some row "likely" exists),
+it is not a distinguishing case: words like "likely", "could" or "possibly" mean you have not
+found one. A guard the correct solution adds (a clamp, a floor, a try/except, a retry) that never
+fires on any input the goal allows is equivalent: answer "equivalent" and say so in the reason.
+
 Reply with ONE JSON object and nothing else:
 {"equivalent": true or false,
  "distinguishing_case": "exact steps (setup, commands, expected vs mutant result), or empty if equivalent",
@@ -581,7 +637,9 @@ def band_review_user(instruction: str, tests: str, spec: dict, mutation: list, t
               "knobs": [str(k.get("knob"))[:80] for k in spec.get("knobs") or [] if isinstance(k, dict)]}
     runs = [{"trial": t.get("trial"), "outcome": t.get("outcome"), "steps": t.get("episodes"),
              "failed_tests": t.get("failed_tests")} for t in trials]
-    detail = "".join(f"\n\n=== failed run {f['trial']} ===\nVerifier output:\n{f['test_output']}\n"
+    detail = "".join(f"\n\n=== failed run {f['trial']} ===\n"
+                     + (f"TAMPERING DETECTED: {'; '.join(f['hack'])}. Fault = model, category = hack.\n" if f.get("hack") else "")
+                     + f"Verifier output:\n{f['test_output']}\n"
                      f"Last steps of the agent's trajectory:\n{f['trajectory_tail']}" for f in failed)
     return (f"instruction.md:\n{instruction}\n\ntests/test_outputs.py:\n{tests[:8000]}\n\nDesign:\n"
             + json.dumps(design, indent=1) + "\n\nMutation check (incomplete solutions vs the tests):\n"

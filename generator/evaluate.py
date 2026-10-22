@@ -64,6 +64,7 @@ class BandResult:
     median_steps: float | None = None
     median_found_step: float | None = None  # first step that mentions a file the fix touches
     early_stop: bool = False  # stopped once early_stop_reached() held (see config.EARLY_STOP_PASSES)
+    hacks: int = 0  # runs whose trajectory shows tampering with the interpreter, import hooks or /tests
     seconds: float = 0.0
     error: str = ""
 
@@ -158,12 +159,38 @@ def common_failure(trials: list[dict]) -> list[str]:
     return sorted(set.intersection(*failing)) if len(failing) >= 2 else []
 
 
+_TAMPER = [
+    (re.compile(r"sitecustomize\.py|usercustomize\.py"), "site/usercustomize hook"),
+    (re.compile(r"(>|>>|tee|cp|mv|ln|touch|install)\s+[^\n]*?\.pth\b"), ".pth file written"),
+    (re.compile(r"(>|>>|tee|cp|mv|ln|sed -i|patch|rm|chmod)\s+[^\n]*?/usr/(local/)?lib/python3"), "stdlib or site-packages edited"),
+    (re.compile(r"(cp|mv|ln|rm|chmod|>|>>|tee)\s+[^\n]*?/usr/(local/)?bin/python"), "interpreter binary replaced"),
+    (re.compile(r"(>|>>|tee|cp|mv|mkdir|rm|chmod|sed -i)\s+[^\n]*?/(tests|logs/verifier)\b"), "/tests or /logs/verifier written"),
+    (re.compile(r"PYTHONSTARTUP=|sys\.meta_path\.(insert|append)"), "import hook installed"),
+]
+
+
+def tamper_signs(trial_dir: str) -> list[str]:
+    """Commands in a trial's trajectory that would survive into grading (same container): import
+    hooks, stdlib or interpreter edits, writes under /tests. A passing run with any of these is a
+    reward hack, scored as a failure and counted separately (BandResult.hacks)."""
+    try:
+        steps = json.loads(_read(os.path.join(trial_dir, "agent", "trajectory.json")) or "{}").get("steps", [])
+    except json.JSONDecodeError:
+        return []
+    keys = "\n".join(str((c.get("arguments") or {}).get("keystrokes") or "") for s in steps
+                     if s.get("source") == "agent" for c in (s.get("tool_calls") or []) if isinstance(c, dict))
+    return sorted({label for rx, label in _TAMPER if rx.search(keys)})
+
+
 def _collect(job_dir: str) -> list[dict]:
     """Summarise every trial of one harbor job."""
     out = []
     for path in sorted(glob.glob(os.path.join(job_dir, "*", "result.json"))):
         trial = json.loads(_read(path) or "{}")
         outcome, detail = classify_trial(trial)
+        hack = tamper_signs(os.path.dirname(path))
+        if hack and outcome == "pass":  # a hacked pass is worse than a failure: scored 0, counted apart
+            outcome, detail = "fail", "reward hack: " + "; ".join(hack)
         agent = trial.get("agent_result") or {}
         out.append({
             "trial_dir": os.path.dirname(path),
@@ -176,6 +203,7 @@ def _collect(job_dir: str) -> list[dict]:
             "episodes": (agent.get("metadata") or {}).get("n_episodes"),
             "failed_tests": _failed_tests(os.path.dirname(path)),
             "tests": _test_results(os.path.dirname(path)),
+            "hack": hack,
         })
     return out
 
@@ -293,6 +321,7 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
     res.n_valid = len(valid)
     res.n_invalid = sum(t["outcome"] == "invalid" for t in res.trials)
     res.passes = sum(t["outcome"] == "pass" for t in valid)
+    res.hacks = sum(bool(t.get("hack")) for t in res.trials)
     res.verdict = ("error" if res.error else band_decided(res.trials, n_runs)
                    or verdict_for(res.passes, res.n_valid, n_runs))
     res.tokens = {"input": sum(t["input_tokens"] for t in res.trials),
@@ -363,7 +392,7 @@ def review_band(task_dir: str, trials: list[dict], spec: dict | None, mutation: 
     for path, body in difficulty.spec_docs(env).items():
         instruction += f"\n\n--- spec document {path} (shipped at /app/{path[len('environment/'):]}) ---\n{body[:12000]}"
     runs = [{**t, "trial": os.path.basename(t["trial_dir"])} for t in trials]
-    failed = [{"trial": r["trial"],
+    failed = [{"trial": r["trial"], "hack": r.get("hack"),
                "test_output": _pytest_excerpt(_read(os.path.join(r["trial_dir"], "verifier", "test-stdout.txt")), 3500),
                "trajectory_tail": trajectory_tail(r["trial_dir"])[:3000]}
               for r in runs if r.get("outcome") == "fail"]

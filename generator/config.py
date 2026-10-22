@@ -120,6 +120,11 @@ INSTRUCTION_REVIEW = os.environ.get("INSTRUCTION_REVIEW", "1") == "1"
 # After oracle/nop pass: run each fault's `wrong_fix` as a mutant solution; the tests must fail
 # every mutant, or the trap is not real and the task goes back for repair ("0" to disable).
 MUTATION_CHECK = os.environ.get("MUTATION_CHECK", "1") == "1"
+# Surviving mutants that do not block the build: those caught only by a test another check claims
+# (caught_elsewhere) never block; up to MUTANT_TOLERANCE truly surviving mutants are recorded in the
+# VERDICT as test weaknesses instead of costing a repair round (IDS and microgrid burned 3-4 rounds
+# each on such mutants and never reached a band eval). 0 = every survivor blocks, as before.
+MUTANT_TOLERANCE = int(os.environ.get("MUTANT_TOLERANCE", "1"))
 # Confirmation evals for in-band tasks: a 5-run sample is noisy, and keeping a task because of one
 # result favours lucky draws. Each in-band task gets this many extra band evals; it is "confirmed" if
 # every one also lands in band. The verdict stays the first eval (README); 0 disables.

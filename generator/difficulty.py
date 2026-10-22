@@ -91,6 +91,7 @@ def seed_gate(spec: dict, seed: str) -> list[str]:
         ("public_tests", "what the visible common-path tests cover"),
         ("anti_cheese", "the paired gate that stops a shortcut, and its hidden test"),
         ("graded_instances", "how graded instances differ from the practice set"),
+        ("self_check_gap", "what a solution that reproduces the whole practice set can still get wrong on the graded instances"),
         ("contract", "the exact observable contract"),
         ("invisible_traps", "at least one trap with no runtime signal, stated in the instruction"),
         ("instance_plan", "the graded instances and their quirk cells"))
@@ -661,6 +662,9 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if refs:
         problems.append("the environment keeps a reference copy of the correct code (git history, "
                         "backups, originals); remove it: " + "; ".join(refs[:4]))
+    if inferred(spec) and "def test_practice_covers_hidden_cases" not in files.get("tests/test_outputs.py", ""):
+        problems.append("an inferred task needs `test_practice_covers_hidden_cases` in tests/test_outputs.py: it reads the "
+                        "shipped practice data and fails if any hidden case kind has fewer than 3 examples")
     stated = stated_rule_leaks(files, spec)
     if stated:
         problems.append("an inferred task states rules the agent must infer from the data (the answer key); "

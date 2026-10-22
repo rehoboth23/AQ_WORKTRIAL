@@ -298,13 +298,17 @@ def verdict_md(state: dict) -> str:
                            + (f" (reward {c['reward']})" if c.get("reward") is not None else "")
                            for c in r.get("checks") or []) or "not run"
         gate = "; ".join(r.get("difficulty_gate") or []) or "pass"
-        lines.append(f"- round {r['round']}: difficulty gate: {gate[:300]} | checks: {checks}")
+        tol = r.get("mutants_tolerated") or []
+        lines.append(f"- round {r['round']}: difficulty gate: {gate[:300]} | checks: {checks}"
+                     + (f" | test weaknesses (mutants tolerated): " + "; ".join(f"fault {m['fault']} ({m['verdict']})" for m in tol) if tol else ""))
     lines.append(f"- result: {gen.get('status', '-')}")
     band = rec.get("band") or {}
     if band.get("trials"):
         triage_by = {t.get("trial"): t for t in rec.get("triage") or []}
+        hacks = [os.path.basename(t["trial_dir"]) for t in band["trials"] if t.get("hack")]
         lines += ["", f"## Band eval: {rec.get('passes')}/{rec.get('n_valid')} passed "
-                      f"({rec.get('n_invalid')} invalid re-run) -> {rec.get('verdict')}", "",
+                      f"({rec.get('n_invalid')} invalid re-run) -> {rec.get('verdict')}"
+                      + (f"; **reward hacks: {len(hacks)}** ({', '.join(hacks)}), scored as failures" if hacks else ""), "",
                   "| trial | outcome | steps | cost | failed tests | triage |", "|---|---|---|---|---|---|"]
         for t in band["trials"]:
             name = os.path.basename(t["trial_dir"])
