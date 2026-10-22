@@ -58,7 +58,7 @@ from config import (
     WAVE_POLL_SEC,
 )
 from difficulty import env_lines, solve_lines
-from evaluate import TRIAL_WALL_SEC, _collect, early_stop_reached, prior_band_jobs, run_band, triage
+from evaluate import TRIAL_WALL_SEC, _collect, early_stop_reached, prior_band_jobs, review_band, run_band
 from generate import RunLog, chat, generate_task
 from llm import LLMError, parse_json_object
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
@@ -137,12 +137,12 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     band = run_band(task_dir, run_id, log=log.event, on_start=on_start)
 
     valid = [t for t in band.trials if t["outcome"] != "invalid"][:N_RUNS]
-    failures = []
-    # Learnable tasks: every failure must be the model's fault to keep the task. Too-hard tasks are
-    # triaged too, so an unfair test (e.g. an unstated output format) is recorded, not mistaken for
-    # real difficulty.
-    if band.verdict in ("learnable", "too_hard"):
-        failures = triage(task_dir, [t for t in valid if t["outcome"] == "fail"], log.llm)
+    # One review call: a verdict for every failed run plus the lesson for the next design.
+    # Learnable tasks: every failure must be the model's fault to keep the task. Too-hard tasks
+    # count their task faults too, so an unfair test is recorded, not mistaken for difficulty.
+    reviewed = (review_band(task_dir, valid, spec, mutation, log.llm) if band.verdict != "error" and spec
+                else {"triage": [], "postmortem": {}})
+    failures = reviewed["triage"] if band.verdict in ("learnable", "too_hard") else []
     task_faults = [f for f in failures if f["fault"] == "task"]
     unknown = [f for f in failures if f["fault"] not in ("model", "task")]
 
@@ -170,7 +170,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
                                   "cost_usd": c.cost_usd, "seconds": c.seconds, "jobs": c.jobs})
         log.event("confirmation", task=meta["name"], results=[(c["verdict"], c["passes"]) for c in confirmations])
     confirmed = bool(confirmations) and all(c["verdict"] == "learnable" for c in confirmations)
-    pm = postmortem(spec, mutation, band, failures, log)
+    pm = reviewed["postmortem"]
 
     record = {**meta, "arm": arm, "genre": genre, "run_id": run_id, "features": features, "verdict": band.verdict,
               "confirmations": confirmations, "confirmed": confirmed, "lesson": pm.get("lesson", ""), "postmortem": pm,
@@ -205,28 +205,6 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     log.event("band_done", task=meta["name"], verdict=band.verdict, passes=band.passes,
               decision=decision)
     return record
-
-
-def _parse_postmortem(text: str) -> dict:
-    obj = parse_json_object(text)
-    if not str(obj.get("lesson") or "").strip():
-        raise ValueError("no lesson")
-    lst = lambda v: [str(x) for x in v] if isinstance(v, list) else []
-    return {"lesson": str(obj["lesson"]).strip(), "held": lst(obj.get("held")), "failed": lst(obj.get("failed"))}
-
-
-def postmortem(spec: dict | None, mutation: list | None, band, failures: list, log: RunLog) -> dict:
-    """One short glm call: why the task landed where it did, for the next design's calibration.
-    Best effort; an empty dict on a model error never changes the verdict."""
-    if band.verdict == "error" or not spec:
-        return {}
-    try:
-        pm, _, _ = chat(prompts.POSTMORTEM_SYSTEM, prompts.postmortem_user(spec, mutation or [], band.trials, failures),
-                        _parse_postmortem, log.llm, "postmortem")
-        return pm
-    except LLMError as e:
-        log.event("postmortem_error", error=str(e)[:200])
-        return {}
 
 
 # --- cost and time (Part 3) ---------------------------------------------------------------

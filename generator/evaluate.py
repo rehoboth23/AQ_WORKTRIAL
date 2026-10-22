@@ -10,7 +10,7 @@ Band eval: is a task learnable for the reference agent?
               the model failing). They are replaced by extra runs, up to
               MAX_INVALID_RERUNS; if N valid runs still can't be reached -> inconclusive.
 
-  triage()    asks the authoring model whether each failed run was the model's fault
+  review_band() one authoring-model call per task: whose fault each failed run was, plus a lesson
               or the task's, so every shipped task has a known failure reason.
 """
 
@@ -298,10 +298,10 @@ def trajectory_tail(trial_dir: str, n_steps: int = 15, max_chars: int = 9000) ->
     return _tail("\n".join(lines), max_chars) if lines else "(no agent steps recorded)"
 
 
-def _parse_triage(text: str) -> dict:
-    obj = parse_json_object(text)
+def _verdict(obj: dict) -> dict:
+    """One run's verdict, normalised: a "model" fault must quote the requirement it broke."""
     if obj.get("fault") not in ("model", "task", "unknown"):
-        raise ValueError("fault must be 'model', 'task' or 'unknown'")
+        obj = {**obj, "fault": "unknown", "reason": "no valid fault given: " + str(obj.get("reason", ""))}
     as_list = lambda v: [str(x) for x in v] if isinstance(v, list) else ([str(v)] if v else [])
     fault, quote = obj["fault"], str(obj.get("requirement_quote") or "").strip()
     reason = str(obj.get("reason", ""))
@@ -312,8 +312,17 @@ def _parse_triage(text: str) -> dict:
             "requirement_quote": quote}
 
 
-def triage(task_dir: str, failed_trials: list[dict], log=None) -> list[dict]:
-    """One authoring-model call per failed run: whose fault was it?"""
+def _parse_band_review(text: str) -> dict:
+    obj = parse_json_object(text)
+    if not isinstance(obj.get("runs"), list):
+        raise ValueError("`runs` must be a list")
+    return obj
+
+
+def review_band(task_dir: str, trials: list[dict], spec: dict | None, mutation: list | None, log=None) -> dict:
+    """ONE authoring-model call per task (it replaced a call per failed run plus a post-mortem
+    call, which read the same evidence): a verdict for every failed run (whose fault was it?) and
+    the lesson for the next design. Best effort: on a model error every failure is "unknown"."""
     instruction = _read(os.path.join(task_dir, "instruction.md"))
     tests = _read(os.path.join(task_dir, "tests", "test_outputs.py"))
     env = {"instruction.md": instruction}  # the spec document(s) it names are requirements too
@@ -322,14 +331,22 @@ def triage(task_dir: str, failed_trials: list[dict], log=None) -> list[dict]:
             env["environment/" + os.path.relpath(p, os.path.join(task_dir, "environment"))] = _read(p)
     for path, body in difficulty.spec_docs(env).items():
         instruction += f"\n\n--- spec document {path} (shipped at /app/{path[len('environment/'):]}) ---\n{body[:12000]}"
-    out = []
-    for t in failed_trials:
-        test_out = _pytest_excerpt(_read(os.path.join(t["trial_dir"], "verifier", "test-stdout.txt")), 4000)
-        user = prompts.triage_user(instruction, tests, test_out, trajectory_tail(t["trial_dir"]))
-        try:
-            verdict, _, _ = chat(prompts.TRIAGE_SYSTEM, user, _parse_triage, log,
-                                 f"triage-{os.path.basename(t['trial_dir'])}")
-        except LLMError as e:
-            verdict = {"fault": "unknown", "category": "triage-error", "reason": str(e)[:300]}
-        out.append({"trial": os.path.basename(t["trial_dir"]), **verdict})
-    return out
+    runs = [{**t, "trial": os.path.basename(t["trial_dir"])} for t in trials]
+    failed = [{"trial": r["trial"],
+               "test_output": _pytest_excerpt(_read(os.path.join(r["trial_dir"], "verifier", "test-stdout.txt")), 3500),
+               "trajectory_tail": trajectory_tail(r["trial_dir"])[:3000]}
+              for r in runs if r.get("outcome") == "fail"]
+    try:
+        obj, _, _ = chat(prompts.BAND_REVIEW_SYSTEM,
+                         prompts.band_review_user(instruction, tests, spec or {}, mutation or [], runs, failed),
+                         _parse_band_review, log, "band-review")
+    except LLMError as e:
+        return {"triage": [{"trial": f["trial"], "fault": "unknown", "category": "triage-error", "reason": str(e)[:300]}
+                           for f in failed], "postmortem": {}}
+    given = {str(r.get("trial")): r for r in obj["runs"] if isinstance(r, dict)}
+    triage = [{"trial": f["trial"], **_verdict(given.get(f["trial"]) or
+                                               {"fault": "unknown", "reason": "the review gave no verdict for this run"})}
+              for f in failed]
+    as_list = lambda v: [str(x) for x in v] if isinstance(v, list) else []
+    pm = {"lesson": str(obj.get("lesson") or "").strip(), "held": as_list(obj.get("held")), "failed": as_list(obj.get("failed"))}
+    return {"triage": triage, "postmortem": pm if pm["lesson"] else {}}

@@ -246,12 +246,6 @@ Reply with ONE JSON object and nothing else:
 """
 
 
-def triage_user(instruction: str, tests: str, test_output: str, trajectory_tail: str) -> str:
-    return (f"instruction.md:\n{instruction}\n\ntests/test_outputs.py:\n{tests}\n\n"
-            f"Verifier output for this attempt:\n{test_output}\n\n"
-            f"Last steps of the agent's trajectory:\n{trajectory_tail}\n")
-
-
 PROJECT_SYSTEM = f"""\
 You write the project inside a Terminal-Bench 2 task's environment, from a task spec.
 
@@ -491,32 +485,32 @@ def critic_user(spec: dict, calibration: str = "") -> str:
             + (f"\nResults of earlier designs under these rules:\n{calibration}\n" if calibration else ""))
 
 
-POSTMORTEM_SYSTEM = """\
-You write the lesson from one evaluated Terminal-Bench 2 task, for the designer of the next one.
-You get the design (rules or faults), the mutation check (which incomplete solutions the tests
-caught), and every agent run: pass or fail, steps, failed tests, and the triage reason.
-
-Say in 2-3 plain sentences WHY the task landed where it did: which rules or faults every run got
-right and how (read from the code, derived from the goal, tested itself), which ones caused
-failures, and what the next design should do differently (more independent rules on new themes,
-sharper hidden inputs, a different kind) or keep. Be concrete; name the rules or tests.
+BAND_REVIEW_SYSTEM = TRIAGE_SYSTEM.split("Reply with ONE JSON object")[0] + """\
+You review ALL runs of one task at once. Give a verdict for every FAILED run (by its trial name)
+using the rules above, then the lesson for the designer of the next task: in 2-3 plain sentences,
+WHY the task landed where it did (which checks every run got right and how: read, derived, tested
+itself; which caused failures) and what the next design should do differently or keep.
 
 Reply with ONE JSON object and nothing else:
-{"lesson": "2-3 sentences", "held": ["rules/faults every run got right"], "failed": ["rules/faults that caused failures"]}
+{"runs": [{"trial": "trial name", "fault": "model" or "task" or "unknown", "category": "short label",
+           "reason": "one sentence", "evidence": ["observations"], "failed_requirements": ["..."],
+           "requirement_quote": "for 'model': the exact sentence the failing assertion enforces; empty otherwise"}],
+ "lesson": "2-3 sentences", "held": ["checks every run got right"], "failed": ["checks that caused failures"]}
 """
 
 
-def postmortem_user(spec: dict, mutation: list, trials: list, triage: list) -> str:
-    design = {"name": spec.get("name"), "challenge_kind": spec.get("challenge_kind"),
-              "requirements": [{"id": r.get("id"), "rule": str(r.get("rule"))[:160], "theme": r.get("theme")}
-                               for r in spec.get("requirements") or [] if isinstance(r, dict)],
-              "faults": [str(f.get("what"))[:160] for f in spec.get("faults") or [] if isinstance(f, dict)]}
-    runs = [{"outcome": t.get("outcome"), "steps": t.get("episodes"), "failed_tests": t.get("failed_tests"),
-             "first_touched_fix_files_at_step": t.get("found_step")} for t in trials]
-    return ("Design:\n" + json.dumps(design, indent=1) + "\n\nMutation check (incomplete solutions vs the tests):\n"
+def band_review_user(instruction: str, tests: str, spec: dict, mutation: list, trials: list, failed: list) -> str:
+    design = {"name": spec.get("name"), "shape": spec.get("shape"),
+              "checks": [str(c.get("requirement"))[:160] for c in spec.get("checks") or [] if isinstance(c, dict)],
+              "knobs": [str(k.get("knob"))[:80] for k in spec.get("knobs") or [] if isinstance(k, dict)]}
+    runs = [{"trial": t.get("trial"), "outcome": t.get("outcome"), "steps": t.get("episodes"),
+             "failed_tests": t.get("failed_tests")} for t in trials]
+    detail = "".join(f"\n\n=== failed run {f['trial']} ===\nVerifier output:\n{f['test_output']}\n"
+                     f"Last steps of the agent's trajectory:\n{f['trajectory_tail']}" for f in failed)
+    return (f"instruction.md:\n{instruction}\n\ntests/test_outputs.py:\n{tests[:8000]}\n\nDesign:\n"
+            + json.dumps(design, indent=1) + "\n\nMutation check (incomplete solutions vs the tests):\n"
             + json.dumps([{k: m.get(k) for k in ("fault", "verdict")} for m in mutation or []])
-            + "\n\nAgent runs:\n" + json.dumps(runs, indent=1) + "\n\nTriage of failures:\n"
-            + json.dumps([{k: f.get(k) for k in ("trial", "fault", "category", "reason")} for f in triage or []], indent=1) + "\n")
+            + "\n\nAll runs:\n" + json.dumps(runs, indent=1) + detail + "\n")
 
 
 def spec_retry_user(topic: str, calibration: str, problems: list[str]) -> str:
