@@ -40,6 +40,8 @@ from config import (
     INSTRUCTION_REVIEW,
     LOGS_DIR,
     BONUS_REPAIR_ROUND,
+    ORACLE_MAX_SEC,
+    VERIFY_MAX_SEC,
     MAX_REPAIR_ROUNDS,
     MAX_SPEC_ATTEMPTS,
     MODEL,
@@ -139,13 +141,18 @@ class Spec(BaseModel):
     quirk_matrix: str = ""              # dimensions x levels the hidden instances are drawn from
     public_tests: str = ""
     anti_cheese: str = ""
+    graded_instances: str = ""
+    contract: list[str] | str = Field(default_factory=list)
+    invisible_traps: list[dict | str] = Field(default_factory=list)
+    instance_plan: list[dict | str] = Field(default_factory=list)
+    adjust_rules: dict | str = Field(default_factory=dict)
     seed_card: str = ""                 # the binding seed card (attached after design; read by every later stage)
     crux: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
                      "failure_modes", "crux", "shape", "hidden_evaluation", "ground_truth", "reference_in_environment", "dial",
-                     "quirk_matrix", "public_tests", "anti_cheese",
+                     "quirk_matrix", "public_tests", "anti_cheese", "graded_instances",
                      "base_image", "category",
                      mode="before")
     @classmethod
@@ -288,7 +295,8 @@ def mutation_items(spec: dict) -> list[dict]:
         if isinstance(c, dict) and str(c.get("requirement") or "").strip():
             items.append({"where": f"check {i}", "what": "requirement: " + str(c.get("requirement")),
                           "wrong_fix": "do what a reasonable implementer would assume instead: " + str(c.get("assumed_instead") or ""),
-                          "counterexample": c.get("hidden_test_input"), "caught_by_test": f"check {i}"})
+                          "counterexample": c.get("hidden_test_input"), "caught_by_test": f"check {i}",
+                          "caught_by_tests": [str(t).rsplit("::", 1)[-1] for t in c.get("caught_by_tests") or []]})
     for i, p in enumerate(spec.get("preserved_behaviours") or []):
         if isinstance(p, dict) and str(p.get("behaviour") or "").strip():
             items.append({"where": f"preserved {i}", "what": "existing behaviour: " + str(p.get("behaviour")),
@@ -300,6 +308,16 @@ def mutation_items(spec: dict) -> list[dict]:
                           "wrong_fix": "a solution that ignores this difficulty knob: " + str(k.get("knob")),
                           "counterexample": k.get("fairness"), "caught_by_test": f"knob {i}"})
     return items
+
+
+def _ctrf_failed(trial_dir: str | None) -> list[str]:
+    """Names of the tests a mutant run failed (from the verifier's CTRF report)."""
+    try:
+        with open(os.path.join(trial_dir or "", "verifier", "ctrf.json"), encoding="utf-8") as f:
+            tests = json.load(f)["results"]["tests"]
+    except (OSError, KeyError, TypeError, ValueError):
+        return []
+    return [t.get("name", "?").rsplit("::", 1)[-1] for t in tests if t.get("status") not in ("passed", "skipped")]
 
 
 def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_prefix: str, mutant_system: str | None = None) -> dict:
@@ -327,10 +345,16 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
             f.write(_with_canary(blocks[path]))
         r = run_harbor(mdir, "oracle", f"{job_prefix}-mutant{idx}")
         failed, total = _ctrf_counts(r.details.get("trial_dir"))
+        failed_names = _ctrf_failed(r.details.get("trial_dir"))
         verdict = ("survived" if r.reward == 1.0 else "broken" if total and failed == total
                    else "killed" if r.reward is not None else "error")
         result = {"fault": idx, "wrong_fix": faults[idx].get("wrong_fix"), "verdict": verdict,
-                  "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir}
+                  "failed_tests": failed, "total_tests": total, "job_dir": r.job_dir, "failed_names": failed_names}
+        named = faults[idx].get("caught_by_tests") or []
+        if verdict == "killed" and named and not set(named) & set(failed_names):
+            # Caught, but not by the tests that are meant to check this behaviour: the named tests miss it.
+            verdict = result["verdict"] = "caught_elsewhere"
+            result["named_tests"] = named
         if verdict == "survived":  # a gap in the tests, or a partial fix that is in fact correct?
             eq = _equivalence(faults[idx], files, blocks[path], log, idx)
             result.update(eq)
@@ -339,7 +363,7 @@ def mutation_check(task_dir: str, spec: dict, files: dict[str, str], log, job_pr
         results.append(result)
         shutil.rmtree(mdir, ignore_errors=True)
     log.event("mutation_check", results=[{k: v for k, v in x.items() if k != "job_dir"} for x in results])
-    return {"survived": [x for x in results if x["verdict"] == "survived"], "results": results}
+    return {"survived": [x for x in results if x["verdict"] in ("survived", "caught_elsewhere")], "results": results}
 
 
 def _parse_equivalence(text: str) -> dict:
@@ -645,6 +669,14 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
             results = run_all(task_dir, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}")
             record["checks"] = [r.to_dict() for r in results]
             error = next((r.error for r in results if not r.passed), "")
+            oracle = next((r for r in results if r.name == "oracle" and r.passed), None)
+            if not error and oracle:
+                a, v = oracle.details.get("agent_sec"), oracle.details.get("verifier_sec")
+                record["oracle_seconds"] = {"solve": a, "verify": v}
+                if (a or 0) > ORACLE_MAX_SEC or (v or 0) > VERIFY_MAX_SEC:
+                    error = (f"Time budget: the oracle solve took {a}s (budget {ORACLE_MAX_SEC:.0f}s) and the tests took "
+                             f"{v}s (budget {VERIFY_MAX_SEC:.0f}s). Make the solution and the hidden checks faster "
+                             "(fewer or smaller graded instances, no repeated builds) without weakening any check.")
             if not error and MUTATION_CHECK and not control:
                 mut = mutation_check(task_dir, spec, files, log, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}", systems.get("mutants"))
                 record["mutation"] = mut["results"]

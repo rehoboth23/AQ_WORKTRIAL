@@ -169,6 +169,20 @@ def cleanup_job(job_dir: str) -> list[str]:
     return names
 
 
+def _phase_seconds(trial: dict) -> dict:
+    """Seconds spent solving (agent or oracle) and verifying, from the trial's phase timestamps."""
+    from datetime import datetime
+    out = {}
+    for phase, key in (("agent_execution", "agent_sec"), ("verifier", "verifier_sec")):
+        p = trial.get(phase) or {}
+        try:
+            a, b = (datetime.fromisoformat(str(p[k]).replace("Z", "+00:00")) for k in ("started_at", "finished_at"))
+            out[key] = round((b - a).total_seconds(), 1)
+        except (KeyError, ValueError, TypeError):
+            pass
+    return out
+
+
 def run_harbor(task_dir: str, agent: str, job_name: str) -> CheckResult:
     """Run one oracle/nop trial and return its reward plus failure context."""
     started = time.time()
@@ -191,7 +205,7 @@ def run_harbor(task_dir: str, agent: str, job_name: str) -> CheckResult:
     exc = trial.get("exception_info")
     test_out = _read(os.path.join(trial_dir, "verifier", "test-stdout.txt"))
     agent_out = _read(os.path.join(trial_dir, "agent", "oracle.txt")) if agent == "oracle" else ""
-    result.details = {"trial_dir": trial_dir, "exception": exc}
+    result.details = {"trial_dir": trial_dir, "exception": exc, **_phase_seconds(trial)}
 
     expected = 1.0 if agent == "oracle" else 0.0
     result.passed = exc is None and result.reward is not None and float(result.reward) == expected

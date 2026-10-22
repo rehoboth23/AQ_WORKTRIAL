@@ -39,6 +39,10 @@ LLM_MAX_RETRIES = _retry_limit("LLM_MAX_RETRIES", 2)
 # Repair rounds: a failed check (gate, validator, oracle, nop, mutants) goes back to the
 # authoring model for a fix, at most this many times per topic.
 MAX_REPAIR_ROUNDS = _retry_limit("MAX_REPAIR_ROUNDS", 3)
+# Time budgets checked on the oracle run: its solve time and the verifier's run time (seconds).
+# A slow oracle or verifier turns failures into timeouts instead of the work.
+ORACLE_MAX_SEC = float(os.environ.get("ORACLE_MAX_SEC", "180"))
+VERIFY_MAX_SEC = float(os.environ.get("VERIFY_MAX_SEC", "420"))
 # One extra repair round when only the mutation check failed (the task is otherwise correct).
 BONUS_REPAIR_ROUND = os.environ.get("BONUS_REPAIR_ROUND", "1") == "1"
 
