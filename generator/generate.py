@@ -39,6 +39,7 @@ from config import (
     GEN_REASONING,
     INSTRUCTION_REVIEW,
     LOGS_DIR,
+    BONUS_REPAIR_ROUND,
     MAX_REPAIR_ROUNDS,
     MAX_SPEC_ATTEMPTS,
     MODEL,
@@ -659,7 +660,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         if rnd == last_round:
             # One bonus round when only the mutation check failed: the task is otherwise correct,
             # and a missing test is a small, targeted repair (the renderer lost a good design here).
-            if mutation_only and not bonus_used:
+            if mutation_only and not bonus_used and BONUS_REPAIR_ROUND:
                 last_round, bonus_used = last_round + 1, True
                 log.event("bonus_repair_round", round=rnd + 1)
             else:

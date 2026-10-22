@@ -19,14 +19,28 @@ OPENROUTER_API_BASE = os.environ.get("OPENROUTER_API_BASE", "")
 # (GLM-5.3-Flash) below.
 MODEL = os.environ.get("GENERATOR_MODEL", "z-ai/glm-5.1")
 
-# Per-call timeout and retry count for the authoring model. Retries cover
-# network errors and replies we can't parse.
-LLM_TIMEOUT_SEC = float(os.environ.get("LLM_TIMEOUT_SEC", "600"))
-LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
+# --- Retry limits: every one can be raised or lowered by its env var ----------
+# RETRY_LIMITS=0 switches the limits off: each one is raised to RETRY_SAFETY_CAP instead (a
+# ceiling, so a task that can never pass cannot loop and spend forever). Example:
+#   RETRY_LIMITS=0 RETRY_SAFETY_CAP=8 bash scripts/run-batch.sh ...    # limits off, cap 8
+#   MAX_REPAIR_ROUNDS=5 bash scripts/pipeline.sh ...                    # one limit raised
+RETRY_LIMITS = os.environ.get("RETRY_LIMITS", "1") == "1"
+RETRY_SAFETY_CAP = int(os.environ.get("RETRY_SAFETY_CAP", "10"))
 
-# How many times the generator may send a failed check (validator / oracle /
-# nop) back to the authoring model for a fix before giving up on a topic.
-MAX_REPAIR_ROUNDS = int(os.environ.get("MAX_REPAIR_ROUNDS", "3"))
+
+def _retry_limit(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    return value if RETRY_LIMITS else max(value, RETRY_SAFETY_CAP)
+
+
+# Model call attempts after the first (network errors, replies that don't parse).
+LLM_TIMEOUT_SEC = float(os.environ.get("LLM_TIMEOUT_SEC", "600"))
+LLM_MAX_RETRIES = _retry_limit("LLM_MAX_RETRIES", 2)
+# Repair rounds: a failed check (gate, validator, oracle, nop, mutants) goes back to the
+# authoring model for a fix, at most this many times per topic.
+MAX_REPAIR_ROUNDS = _retry_limit("MAX_REPAIR_ROUNDS", 3)
+# One extra repair round when only the mutation check failed (the task is otherwise correct).
+BONUS_REPAIR_ROUND = os.environ.get("BONUS_REPAIR_ROUND", "1") == "1"
 
 # Org part of [task].name ("org/name"), required by the validator.
 TASK_ORG = os.environ.get("TASK_ORG", "afterquery")
@@ -49,7 +63,7 @@ BAND_HIGH = int(os.environ.get("BAND_HIGH", "3"))
 EVAL_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "5"))
 # Timeouts and infra errors don't count as runs; at most this many extra runs
 # replace them before the verdict becomes "inconclusive".
-MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
+MAX_INVALID_RERUNS = _retry_limit("MAX_INVALID_RERUNS", 3)
 # --- Difficulty knobs (generator/difficulty.py gates, critic, prompts) -------
 # Fixed values in generator/difficulty.toml (measured from reference/petrify-stale-build).
 # Precedence: env var > file > the defaults below.
@@ -123,7 +137,7 @@ WAVE_POLL_SEC = float(os.environ.get("WAVE_POLL_SEC", "30"))
 GEN_REASONING = {stage: os.environ.get(f"GEN_REASONING_{stage.upper()}") or None
                  for stage in ("spec", "critic", "project", "files", "repair", "review", "mutants")}
 # Spec attempts when the spec gate fails (each is one more spec call).
-MAX_SPEC_ATTEMPTS = int(os.environ.get("MAX_SPEC_ATTEMPTS", "2"))
+MAX_SPEC_ATTEMPTS = _retry_limit("MAX_SPEC_ATTEMPTS", 2)
 # Generated-input tests: tests also compare the solution with a hidden reference on seeded
 # generated inputs. Off by default: on the Markdown task it found three ambiguities the fixed
 # tests missed but added no difficulty (correct agent tools matched on all 1,500 inputs).
