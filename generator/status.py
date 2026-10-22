@@ -197,7 +197,10 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
         ev = r["events"]
         if not ev or ev[-1].get("event") in ("finish", "band_done") or alive_since is None:
             continue
-        started = time.mktime(time.strptime(ev[0]["time"], "%Y-%m-%dT%H:%M:%S"))
+        # A resumed run (pipeline --resume) appends to an older logs dir: its latest start or
+        # resume event is when the current process picked it up, not its first event.
+        began = next((e for e in reversed(ev) if e.get("event") in ("start", "resume")), ev[0])
+        started = time.mktime(time.strptime(began["time"], "%Y-%m-%dT%H:%M:%S"))
         if started < alive_since:  # began before any live pipeline process: a dead run
             continue
         done = {(e.get("label"), e.get("attempt")) for e in ev if e.get("event") == "llm_call"}
