@@ -186,6 +186,10 @@ class Spec(BaseModel):
             import re as _re
             m = _re.search(r"\d+(\.\d+)?", v)
             return float(m.group()) if m else None
+        if isinstance(v, list):  # the model enumerated the steps instead of counting them (a 9-minute critic reply was lost to this)
+            return float(len(v)) if v else None
+        if isinstance(v, dict):
+            return None
         return v
 
 
