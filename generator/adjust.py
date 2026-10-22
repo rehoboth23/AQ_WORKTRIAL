@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 
 import prompts
 from checks import run_all
@@ -75,19 +76,20 @@ def band_evidence(band, triage: list[dict]) -> dict:
             "failing_runs_last_steps": [trajectory_tail(t["trial_dir"])[-4000:] for t in failing]}
 
 
-def _rewrite(task_dir: str, spec: dict, name: str, files: dict[str, str]) -> None:
-    """write_task with the task's own task.toml and tests/test.sh kept byte for byte: an
-    adjustment changes the task's content, never its metadata or test runner."""
-    keep = {}
-    for rel in ("task.toml", "tests/test.sh"):
-        path = os.path.join(task_dir, rel)
-        if os.path.exists(path):
-            keep[rel] = open(path, encoding="utf-8").read()
-    defaults = Spec(name=name, description="-").model_dump()  # task.toml fields; the real one is restored below
-    write_task(task_dir, {**defaults, **{k: v for k, v in spec.items() if v is not None}}, name, files)
-    for rel, body in keep.items():
-        with open(os.path.join(task_dir, rel), "w", encoding="utf-8") as f:
-            f.write(body)
+def _rewrite(task_dir: str, spec: dict, name: str, files: dict[str, str], changed: list[str]) -> None:
+    """Write only the changed files, formatted by write_task (canary lines) in a scratch folder.
+    Every other file keeps its exact bytes: a full rewrite read data files as text (CRLF became
+    LF in 153 of the awk task's 200 hidden inputs) and deleted binary ones."""
+    defaults = Spec(name=name, description="-").model_dump()  # task.toml fields; task.toml is never copied
+    tmp = tempfile.mkdtemp(prefix="adjust-")
+    try:
+        write_task(tmp, {**defaults, **{k: v for k, v in spec.items() if v is not None}}, name, files)
+        for rel in changed:
+            dst = os.path.join(task_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(os.path.join(tmp, rel), dst)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def adjust_task(task_dir: str, spec: dict, band, review: dict, run_id: str, log, on_start=None,
@@ -127,7 +129,7 @@ def adjust_task(task_dir: str, spec: dict, band, review: dict, run_id: str, log,
         new_files = {**files, **changed}
         new_spec = {**spec, **{k2: v for k2, v in (plan.get("spec_patch") or {}).items() if k2 in ("checks", "knobs")}}
         rec["removed_sentences"] = removed_sentences(files.get("instruction.md", ""), new_files.get("instruction.md", ""))
-        _rewrite(task_dir, new_spec, name, new_files)
+        _rewrite(task_dir, new_spec, name, new_files, sorted(changed))
         results = run_all(task_dir, f"adj-{run_id}-r{k}")
         rec["checks"] = {r.name: r.passed for r in results}
         ok = all(r.passed for r in results)
