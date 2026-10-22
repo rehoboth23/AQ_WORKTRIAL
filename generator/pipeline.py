@@ -58,7 +58,8 @@ from config import (
     WAVE_POLL_SEC,
 )
 from difficulty import env_lines, solve_lines
-from evaluate import TRIAL_WALL_SEC, _collect, early_stop_reached, prior_band_jobs, review_band, run_band
+from evaluate import (TRIAL_WALL_SEC, _collect, common_failure, early_stop_reached, prior_band_jobs, review_band,
+                      run_band, test_table)
 from generate import RunLog, chat, generate_task
 from llm import LLMError, parse_json_object
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
@@ -303,6 +304,14 @@ def verdict_md(state: dict) -> str:
                          f"{t.get('episodes') or '-'} | {t.get('cost_usd') or '-'} | "
                          f"{', '.join(t.get('failed_tests') or []) or '-'} | "
                          f"{(tri['fault'] + ': ' + tri['reason']).replace('|', '/')[:200] if tri else '-'} |")
+        table = test_table(band["trials"])
+        if table:
+            lines += ["", "### Per test (valid runs in order)", "", "| test | runs | passed |", "|---|---|---|"]
+            lines += [f"| {r['test']} | {' '.join(r['results'])} | {r['passes']}/{r['runs']} |" for r in table]
+        same = common_failure(band["trials"])
+        if same:
+            lines += ["", f"**Every failing run failed {', '.join(same)}.** That usually means a task fault "
+                          "(an unstated choice or a contradiction), not difficulty; check it is derivable."]
     for i, c in enumerate(rec.get("confirmations") or [], 1):
         lines.append(f"- confirmation eval {i}: {c['passes']}/{c['n_valid']} -> {c['verdict']}")
     if rec.get("confirmations"):
