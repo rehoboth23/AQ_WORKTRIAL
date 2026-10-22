@@ -114,6 +114,15 @@ CONFIRM_EVALS = int(os.environ.get("CONFIRM_EVALS", "1"))
 # (user's choice, 2026-10-22). 4 would be certain (more than BAND_HIGH); 3 trades certainty for
 # time: a true 3/5 task whose passes finish first is cut off and marked too easy.
 EARLY_STOP_PASSES = int(os.environ.get("EARLY_STOP_PASSES", "3"))
+# One switch per early stop, so each can be turned off on its own (1 = on, 0 = off). On is quicker
+# for testing; turning a stop off spends the remaining runs to collect more pass/fail data.
+#   EARLY_STOP_FIRST_PASSES: stop as too_easy at EARLY_STOP_PASSES passes with no failure (a guess).
+#   EARLY_STOP_TOO_EASY:     stop as too_easy once passes exceed BAND_HIGH (certain).
+#   EARLY_STOP_LEARNABLE:    stop as learnable at BAND_LOW+ passes and N_RUNS-BAND_HIGH failures
+#                            (certain; e.g. 1 pass + 2 failures). Off gives triage every failure.
+EARLY_STOP_FIRST_PASSES = os.environ.get("EARLY_STOP_FIRST_PASSES", "1") == "1"
+EARLY_STOP_TOO_EASY = os.environ.get("EARLY_STOP_TOO_EASY", "1") == "1"
+EARLY_STOP_LEARNABLE = os.environ.get("EARLY_STOP_LEARNABLE", "1") == "1"
 # Batch waves: at most BAND_SLOTS band evals run at once across all copies of a batch (each is
 # 5 agent containers plus sidecars; 2 suits 8 GB of Docker memory, 4 suits 16 GB). Copies poll
 # every WAVE_POLL_SEC for a free slot or for a wave to finish.

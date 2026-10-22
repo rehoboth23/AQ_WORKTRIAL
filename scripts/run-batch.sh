@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start N copies of the pipeline on one batch; the ledger's per-topic locks split the topics.
-# Usage: bash scripts/run-batch.sh <topics-file> <batch-id> <copies> [waves e.g. 3,7]
+# Usage: [EARLY_STOP_LEARNABLE=0 ...] bash scripts/run-batch.sh <topics-file> <batch-id> <copies> [waves e.g. 3,7]
+#   Each early stop has its own switch (EARLY_STOP_FIRST_PASSES/_TOO_EASY/_LEARNABLE, see config.py).
 # Each copy logs to output/_batches/<batch-id>/copies/<n>.log. Resume later with:
 #   bash scripts/pipeline.sh --resume <batch-id> [--waves ...]   (one or more copies)
 set -euo pipefail

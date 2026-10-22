@@ -161,8 +161,9 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
         decision, why = "review", "triage could not explain: " + "; ".join(
             f"{f['trial']}: {f['reason']}" for f in unknown)[:400]
     else:
-        decision, why = "kept", "learnable; failures: " + "; ".join(dict.fromkeys(
-            f"{f['category']}: {f['reason']}" for f in failures))[:500]
+        decision, why = "kept", ("learnable" + (f" (stopped early: {band.passes} pass, "
+                                                f"{band.n_valid - band.passes} fail make 1-3/5 certain)" if band.early_stop else "")
+                                 + "; failures: " + "; ".join(dict.fromkeys(f"{f['category']}: {f['reason']}" for f in failures))[:500])
 
     confirmations = []
     if decision == "kept":  # repeat the band eval; resumable like the first (its own run_id)

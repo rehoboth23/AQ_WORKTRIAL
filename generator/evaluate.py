@@ -34,7 +34,10 @@ from config import (
     EVAL_CONCURRENCY,
     EVAL_MODEL,
     EVAL_REASONING_EFFORT,
+    EARLY_STOP_FIRST_PASSES,
+    EARLY_STOP_LEARNABLE,
     EARLY_STOP_PASSES,
+    EARLY_STOP_TOO_EASY,
     JOBS_DIR,
     MAX_INVALID_RERUNS,
     N_RUNS,
@@ -83,12 +86,25 @@ def classify_trial(trial: dict) -> tuple[str, str]:
     return ("pass", "") if float(reward) >= 1.0 else ("fail", "")
 
 
-def early_stop_reached(trials: list[dict], prior_passes: int = 0) -> bool:
-    """too_easy is certain once more than BAND_HIGH runs passed; by configuration the eval also
-    stops once EARLY_STOP_PASSES runs passed with no valid failure yet ("the first N passed")."""
-    passes = prior_passes + sum(t["outcome"] == "pass" for t in trials)
+def band_decided(trials: list[dict], n_runs: int = N_RUNS) -> str | None:
+    """The verdict the remaining runs can no longer change, or None.
+    - too_easy: more than BAND_HIGH passes (certain); or, by configuration, EARLY_STOP_PASSES
+      passes with no valid failure yet ("the first N passed").
+    - learnable: at least BAND_LOW passes and at least n_runs - BAND_HIGH failures (certain:
+      no more than BAND_HIGH can pass, and at least BAND_LOW already did)."""
+    passes = sum(t["outcome"] == "pass" for t in trials)
     fails = sum(t["outcome"] == "fail" for t in trials)
-    return passes > BAND_HIGH or (passes >= EARLY_STOP_PASSES and fails == 0)
+    if EARLY_STOP_TOO_EASY and passes > BAND_HIGH:
+        return "too_easy"
+    if EARLY_STOP_FIRST_PASSES and passes >= EARLY_STOP_PASSES and fails == 0:
+        return "too_easy"
+    if EARLY_STOP_LEARNABLE and passes >= BAND_LOW and fails >= n_runs - BAND_HIGH:
+        return "learnable"
+    return None
+
+
+def early_stop_reached(trials: list[dict], prior_passes: int = 0) -> bool:
+    return band_decided(trials) is not None
 
 
 def verdict_for(passes: int, n_valid: int, n_runs: int = N_RUNS) -> str:
@@ -202,9 +218,9 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
         # Same totals as an uninterrupted eval: at most n_runs + MAX_INVALID_RERUNS finished trials.
         budget = n_runs + MAX_INVALID_RERUNS - len(res.trials)
         valid = [t for t in res.trials if t["outcome"] != "invalid"]
-        too_easy = early_stop_reached(res.trials)
-        res.early_stop = too_easy and len(valid) < n_runs  # stopped before n_runs valid trials
-        to_run = 0 if too_easy else max(0, min(n_runs - len(valid), budget))
+        decided = band_decided(res.trials, n_runs)
+        res.early_stop = bool(decided) and len(valid) < n_runs  # stopped before n_runs valid trials
+        to_run = 0 if decided else max(0, min(n_runs - len(valid), budget))
         extra_left = max(0, budget - to_run)
     while to_run > 0:
         job_name = f"band-{run_id}-{k}"
@@ -245,8 +261,8 @@ def run_band(task_dir: str, run_id: str, n_runs: int = N_RUNS, log=None, on_star
     res.n_valid = len(valid)
     res.n_invalid = sum(t["outcome"] == "invalid" for t in res.trials)
     res.passes = sum(t["outcome"] == "pass" for t in valid)
-    res.verdict = ("error" if res.error else "too_easy" if early_stop_reached(res.trials)
-                   else verdict_for(res.passes, res.n_valid, n_runs))
+    res.verdict = ("error" if res.error else band_decided(res.trials, n_runs)
+                   or verdict_for(res.passes, res.n_valid, n_runs))
     res.tokens = {"input": sum(t["input_tokens"] for t in res.trials),
                   "output": sum(t["output_tokens"] for t in res.trials)}
     targets = fault_targets(task_dir)
