@@ -88,8 +88,14 @@ def seed_gate(spec: dict, seed: str) -> list[str]:
         ("dial", "what moves the pass rate, its fair range and chosen value"),
         ("quirk_matrix", "the dimensions x levels hidden instances are drawn from, and the mix"),
         ("public_tests", "what the visible common-path tests cover"),
-        ("anti_cheese", "the paired gate that stops a shortcut, and its hidden test"))
-        if not str(spec.get(key) or "").strip()]
+        ("anti_cheese", "the paired gate that stops a shortcut, and its hidden test"),
+        ("graded_instances", "how graded instances differ from the practice set"),
+        ("contract", "the exact observable contract"),
+        ("invisible_traps", "at least one trap with no runtime signal, stated in the instruction"),
+        ("instance_plan", "the graded instances and their quirk cells"))
+        if not str(spec.get(key) or "").strip() and spec.get(key) not in (0, False)] + [
+        "every check needs `caught_by_tests`: the hidden test functions that must fail when it is done wrong"
+        for _ in [0] if any(isinstance(c, dict) and not c.get("caught_by_tests") for c in spec.get("checks") or [])]
 
 
 def spec_gate(spec: dict, genre: str = "") -> list[str]:
