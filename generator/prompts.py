@@ -54,7 +54,15 @@ DIFFICULTY_RULE = f"""\
     even with no hints, and it finds every inconsistency between code paths by reading. Build the
     task around a defect that shows only in BEHAVIOUR OVER A SEQUENCE (a second run after an edit,
     a resume after interruption, a retry after a partial write, late or duplicate events), where
-    each function is locally correct. To stay fair:
+    each function is locally correct.
+    - NO SINGLE FUNCTION, read against the goal, reveals the fault. A task whose bug can be read off
+      one function (a delta computed from the wrong baseline, a check placed after a write) was
+      solved 4-5/5 in ~10 steps even with no hints and no reference code. The defect must live in
+      the INTERACTION: state written by one component or run and read by another under a different
+      assumption (a manifest that omits an input the renderer uses, a checkpoint that saves the
+      cursor but not the dedup set, a cache key built in one module and looked up in another).
+      Each side is correct on its own; only tracing the data across them shows the bug.
+    To stay fair:
     - instruction.md STATES the invariant over sequences ("a resumed run produces exactly what an
       uninterrupted run would", "after any edit, an incremental build equals a clean build").
       Tests choose which sequences to try; those may stay hidden. Hidden inputs, never hidden rules.
@@ -146,7 +154,8 @@ DIFFICULTY_SPEC_FIELDS = """,
   "sequence_invariant": "the invariant over sequences, as instruction.md states it",
   "nameable_fix": "the shortest phrase an expert would use for the whole fix",
   "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
-  "reference_in_environment": "any code, doc or data in the environment that already computes or states the correct handling of the tricky case; must be none"
+  "reference_in_environment": "any code, doc or data in the environment that already computes or states the correct handling of the tricky case; must be none",
+  "interaction": "the components or runs whose interaction causes the central defect (at least 2), and why each looks correct on its own"
 """
 
 QUALITY_RULES = """\
@@ -398,7 +407,9 @@ backups, project tests naming the fault), if `nameable_fix` alone is enough to s
 is a named technique applied mechanically), if a fault's counterexample is the same scenario
 instruction.md describes (the agent's own re-test would catch it), or if the environment already
 contains correct logic for the tricky case that the agent can copy (e.g. a correct replay or
-full-rebuild path that the invariant compares against). It is UNFAIR if the sequence
+full-rebuild path that the invariant compares against), or if any central fault can be found and
+fixed by reading ONE function against the goal (the defect must live in the interaction between
+components or runs, with each side correct on its own). It is UNFAIR if the sequence
 invariant is not stated in instruction.md, or a test's condition cannot be produced
 deterministically with something in the environment.
 

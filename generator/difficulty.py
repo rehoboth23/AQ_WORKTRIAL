@@ -146,7 +146,8 @@ def spec_gate(spec: dict) -> list[str]:
                      ("sequence_invariant", "the invariant over sequences that instruction.md states"),
                      ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
                      ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it"),
-                     ("reference_in_environment", "what in the environment already computes the correct handling (must be none)")):
+                     ("reference_in_environment", "what in the environment already computes the correct handling (must be none)"),
+                     ("interaction", "the components or runs whose interaction causes the defect, each correct on its own")):
         if not str(spec.get(key) or "").strip():
             problems.append(f"needs `{key}`: {why}")
     ref = str(spec.get("reference_in_environment") or "").strip()

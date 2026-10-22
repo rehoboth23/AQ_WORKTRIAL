@@ -133,11 +133,12 @@ class Spec(BaseModel):
     nameable_fix: str = ""
     self_check_blind_spot: str = ""
     reference_in_environment: str = ""
+    interaction: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
                      "failure_modes", "why_not_textbook", "static_read", "crux", "challenge_kind",
-                     "sequence_invariant", "nameable_fix", "self_check_blind_spot", "reference_in_environment",
+                     "sequence_invariant", "nameable_fix", "self_check_blind_spot", "reference_in_environment", "interaction",
                      "base_image", "category",
                      mode="before")
     @classmethod
