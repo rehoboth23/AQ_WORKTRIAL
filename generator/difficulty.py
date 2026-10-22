@@ -13,6 +13,7 @@ authoring model through the existing re-spec / repair paths.
 """
 
 import ast
+import json
 import posixpath
 import re
 import statistics
@@ -95,7 +96,9 @@ def seed_gate(spec: dict, seed: str) -> list[str]:
         ("instance_plan", "the graded instances and their quirk cells"))
         if not str(spec.get(key) or "").strip() and spec.get(key) not in (0, False)] + [
         "every check needs `caught_by_tests`: the hidden test functions that must fail when it is done wrong"
-        for _ in [0] if any(isinstance(c, dict) and not c.get("caught_by_tests") for c in spec.get("checks") or [])]
+        for _ in [0] if any(isinstance(c, dict) and not c.get("caught_by_tests") for c in spec.get("checks") or [])] + [
+        "the seed card makes this an inferred task: set `answer_source: inferred` and list `inferred_rules`"
+        for _ in [0] if re.search(r"(?m)^answer_source:\s*inferred", seed) and not inferred(spec)]
 
 
 def spec_gate(spec: dict, genre: str = "") -> list[str]:
@@ -132,7 +135,58 @@ def spec_gate(spec: dict, genre: str = "") -> list[str]:
     bad = [p for p in spec.get("verifier_apt") or [] if not _APT_NAME.fullmatch(str(p).strip())]
     if bad:
         problems.append(f"`verifier_apt` must be Debian package names: {bad[:3]}")
-    return problems + knob_gate(spec) + reference_gate(spec)
+    return problems + knob_gate(spec) + reference_gate(spec) + answer_gate(spec)
+
+
+def inferred(spec: dict | None) -> bool:
+    return str((spec or {}).get("answer_source") or "").strip().lower().startswith("inferred")
+
+
+def answer_gate(spec: dict) -> list[str]:
+    """Stated vs inferred: an inferred task names every rule the agent must infer and the training
+    examples that show it (fair), so the files gate can check none of them is written down."""
+    source = str(spec.get("answer_source") or "").strip().lower().split()[:1]
+    if source not in (["stated"], ["inferred"]):
+        return ["needs `answer_source`: stated (the agent implements rules it is told) or inferred (it infers "
+                "rules or fits a model from data)"]
+    if source != ["inferred"]:
+        return []
+    rules = spec.get("inferred_rules")
+    if not isinstance(rules, list) or not rules:
+        return ["an inferred task needs `inferred_rules`: every rule the agent must infer, with `shown_by`"]
+    bare = [str(i) for i, r in enumerate(rules) if not (isinstance(r, dict) and str(r.get("rule") or "").strip()
+                                                          and str(r.get("shown_by") or "").strip())]
+    if bare:
+        return ["every inferred rule needs `rule` and `shown_by` (the training examples that show it); missing on "
+                + ", ".join(bare[:5])]
+    return []
+
+
+_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.]*\d)")
+_SENTENCE = re.compile(r"(?<=[.!?:;])\s+|\n+")
+
+
+def stated_rule_leaks(files: dict[str, str], spec: dict | None) -> list[str]:
+    """On an inferred task: a sentence of instruction.md or a document that carries an inferred rule's
+    value (a threshold, a port, a constant) next to one of that rule's words. Values are matched as
+    whole numbers; values listed under `stated_facts` are allowed."""
+    if not inferred(spec):
+        return []
+    allowed = set(_NUMBER.findall(json.dumps(spec.get("stated_facts") or [])))
+    texts = {"instruction.md": files.get("instruction.md", "")}
+    texts.update({p: b for p, b in files.items() if p.startswith("environment/") and p.endswith(_SPEC_DOC_EXTS)})
+    hits = []
+    for r in spec.get("inferred_rules") or []:
+        rule = str(r.get("rule") if isinstance(r, dict) else r)
+        nums = {n for n in _NUMBER.findall(rule) if (len(n.lstrip("-").replace(".", "")) >= 2 or "." in n)} - allowed
+        words = {w for w in _words(rule) if len(w) > 3 and w not in _COMMON}
+        for path, body in texts.items():
+            for sent in _SENTENCE.split(body):
+                found = nums & set(_NUMBER.findall(sent))
+                if found and words & _words(sent):
+                    hits.append(f"{path}: {sent.strip()[:110]!r} gives {sorted(found)[0]} from rule {rule[:60]!r}")
+                    break
+    return hits[:6]
 
 
 REFERENCE_ACCESS = ("none", "frozen_examples", "runnable")
@@ -555,6 +609,10 @@ def files_gate(files: dict[str, str], spec: dict | None = None) -> list[str]:
     if refs:
         problems.append("the environment keeps a reference copy of the correct code (git history, "
                         "backups, originals); remove it: " + "; ".join(refs[:4]))
+    stated = stated_rule_leaks(files, spec)
+    if stated:
+        problems.append("an inferred task states rules the agent must infer from the data (the answer key); "
+                        "remove the values, or list a fact the data cannot show under `stated_facts`: " + "; ".join(stated))
     return problems
 
 
@@ -581,7 +639,8 @@ def files_warnings(files: dict[str, str], spec: dict | None = None) -> list[str]
     ptr = pointer_leaks(instruction, allowed)
     if ptr:
         hints.append(f"instruction.md may point at where an answer is written: {', '.join(ptr)}")
-    uncovered = rule_coverage(instruction + "\n" + "\n".join(docs.values()), spec)
+    # On an inferred task the training data states the rules; asking for them in words leaks them.
+    uncovered = [] if inferred(spec) else rule_coverage(instruction + "\n" + "\n".join(docs.values()), spec)
     if uncovered:
         hints.append("these checks may not be stated anywhere the agent can see: " + "; ".join(uncovered[:5]))
     return hints

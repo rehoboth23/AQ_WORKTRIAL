@@ -134,6 +134,9 @@ class Spec(BaseModel):
     verifier_apt: list[str] = Field(default_factory=list)
     reference_access: str = ""          # none | frozen_examples | runnable: <reason>
     quirk_evidence: list[dict | str] = Field(default_factory=list)
+    answer_source: str = ""             # stated | inferred
+    inferred_rules: list[dict | str] = Field(default_factory=list)
+    stated_facts: list[dict | str] = Field(default_factory=list)
     reference_binary: str = ""          # set when a reference program IS the specification
     sample_file: str = ""
     spec_document: str = ""             # a document instruction.md names as the specification
@@ -152,7 +155,7 @@ class Spec(BaseModel):
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
-                     "failure_modes", "crux", "shape", "hidden_evaluation", "ground_truth", "reference_access", "dial",
+                     "failure_modes", "crux", "shape", "hidden_evaluation", "ground_truth", "reference_access", "answer_source", "dial",
                      "quirk_matrix", "public_tests", "anti_cheese", "graded_instances",
                      "base_image", "category",
                      mode="before")

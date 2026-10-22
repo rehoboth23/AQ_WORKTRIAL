@@ -73,6 +73,15 @@ DIFFICULTY_RULE = f"""\
     seeds. Each check follows from a sentence of instruction.md, a document it names, or a fact
     visible in the environment; each differs from what a reasonable implementer assumes by default.
     Passing needs all of them; the agent tests what it thinks of.
+  * ANSWER SOURCE: `answer_source` is `stated` when the agent implements rules it is told, `inferred`
+    when the work IS to infer rules or fit a model from data (rule induction, a model scored on
+    held-out data, parameters estimated from measurements). On an inferred task the training data is
+    the evidence: never state an inferred rule (its mapping, threshold, ordering or exception) in
+    instruction.md or any document, which hands over the answer key. List each one under
+    `inferred_rules` with `shown_by`, the training examples that show it (rare rules at least 2-3
+    times). A fact the data cannot show (behaviour beyond the training range, a unit or convention)
+    must be stated, or the task is unfair: list it under `stated_facts` with why the data cannot
+    show it, and state only that.
     Write the list of {MIN_CHECKS}+ check requirements FIRST, then fill in each one's details; a
     design with fewer checks is rejected and costs a full retry.
   * Ground truth never comes from your own reasoning: every expected value is computed by code the
@@ -106,7 +115,7 @@ DIFFICULTY_RULE = f"""\
     never decides an unstated choice.
   * INVISIBLE TRAPS: at least one case where a plausible wrong solution gives no runtime signal (the
     output looks right, nothing errors) and only careful reading of the stated contract avoids it.
-    Each is stated in instruction.md. These set the band; traps the agent will see and debug do not.
+    Each is stated in instruction.md, or, for an inferred rule, shown in the training data. These set the band; traps the agent will see and debug do not.
   * Anti-cheese at RUN time, not only by scanning source: the tests run the solution with the
     forbidden modules or binaries disabled (removed from the path, an import hook), as well as any
     static scan; a static scan alone misses indirect routes (codecs, archive modules, eval).
@@ -121,14 +130,14 @@ DIFFICULTY_RULE = f"""\
     value), compute ground truth the way it says, include its seed checks among `checks`, use its
     knobs and must_keep, and stay inside its `out_of_bounds`. Draw the hidden instances from its
     `quirk_matrix` in the stated mix (one level per dimension per instance; never only easy cells),
-    ship its `public_tests` and nothing more, keep its `reference_access`, and enforce its `anti_cheese` gate with a hidden test.
+    ship its `public_tests` and nothing more, keep its `reference_access` and `answer_source`, and enforce its `anti_cheese` gate with a hidden test.
     Its environment notes are limits.
 """
 
 DIFFICULTY_SPEC_FIELDS = """,
   "shape": "the kind of work, in the topic's words (e.g. rule induction from examples, live migration under load)",
   "hidden_evaluation": "what the tests check that the agent cannot fully reproduce, and how (held-out data, load generator, seeds)",
-  "checks": [{"requirement": "the instruction.md (or named document) sentence the check follows from",
+  "checks": [{"requirement": "the instruction.md (or named document) sentence the check follows from; on an inferred task, the training examples that show it (never the inferred rule itself)",
               "assumed_instead": "what a reasonable implementer would do without reading it carefully",
               "hidden_test_input": "the input or scenario the hidden test uses",
               "why_missed": "why a careful agent's own testing might not cover it",
@@ -137,12 +146,15 @@ DIFFICULTY_SPEC_FIELDS = """,
   "ground_truth": "how the tests compute every expected value (reference in tests/, verifier-only package, seeded generator)",
   "dial": "what moves the pass rate, its fair range and the chosen value (from the seed card when given); empty if none",
   "quirk_matrix": "dimensions x levels the hidden instances are drawn from, and the mix (from the seed card)",
+  "answer_source": "stated | inferred (the agent infers rules or fits a model from data)",
+  "inferred_rules": [{"rule": "an inferred rule exactly as the tests' engine applies it", "shown_by": "the training examples that show it (file, how many)"}],
+  "stated_facts": [{"fact": "a fact stated on purpose because the data cannot show it", "why": "why the data cannot show it"}],
   "quirk_evidence": [{"quirk": "a quirk_matrix level or graded behaviour", "evidence": "the environment file that shows it to the agent (a practice pair, a document section, a source line)"}],
   "public_tests": "what the visible common-path tests cover (about 30%), and where they ship",
   "anti_cheese": "the paired gate that stops a shortcut (performance budget, forbidden library or file, output identity), enforced at run time, and its hidden test",
   "graded_instances": "how the graded instances differ from the practice set the agent gets (sibling seeds generated in tests/), and the determinism self-check",
   "contract": ["each exact observable rule: entry point, outputs, exit codes per case, precedence"],
-  "invisible_traps": [{"trap": "a case with no runtime signal", "stated_in": "the instruction sentence that makes it fair"}],
+  "invisible_traps": [{"trap": "a case with no runtime signal", "stated_in": "the instruction sentence that makes it fair, or the training examples that show an inferred rule"}],
   "instance_plan": [{"instance": "a graded instance", "quirks": "its quirk-matrix cells", "purpose": "what it tests"}],
   "adjust_rules": {"too_easy": ["fair moves if 4-5/5"], "too_hard": ["fair moves if 0/5"]},
   "verifier_packages": ["pip packages the tests need, as name==version (installed only for the verifier); may be empty"],
@@ -409,9 +421,11 @@ most checks match what a programmer does by default, if several checks are one c
 if anything in the environment or instruction gives the answer away, if the graded instances are in
 the environment (the agent can compute their answers), if the agent can run code whose output
 answers the graded question (a reference, the legacy interpreter, a decoding library) and
-`reference_access` is not `runnable` with a reason, or if there is no invisible trap. It is UNFAIR if a check does
+`reference_access` is not `runnable` with a reason, if an inferred task states a rule it should infer
+(the answer key), or if there is no invisible trap. It is UNFAIR if a check does
 not follow from instruction.md, a named document or the environment, if two reasonable readings
-give different results, if a graded quirk has no `quirk_evidence` the agent can study, if an expected value comes from the designer's reasoning instead of code
+give different results, if a graded quirk has no `quirk_evidence` the agent can study, if an inferred rule has
+no training examples that show it, if something the data cannot show is neither shown nor listed in `stated_facts`, if an expected value comes from the designer's reasoning instead of code
 the tests run, or if anything depends on timing, randomness or the network.
 
 If results of earlier designs are given, a design that repeats a shape those results show was
@@ -438,7 +452,9 @@ or the environment; the hidden INPUTS must stay hidden.
 Check, against the list of checks and tests/test_outputs.py given to you:
   1. MISSING RULE: a check the tests make that nothing the agent can see states, or states so
      vaguely that two reasonable readings give different results, or that two passages contradict
-     (a general rule and an exception instruction.md does not name).
+     (a general rule and an exception instruction.md does not name). On an inferred task
+     (`answer_source: inferred`) training data that shows a rule DOES state it: never ask for an
+     inferred rule to be written down.
   2. LEAKED ANSWER: expected output beyond trivial examples, a sample that covers the hidden
      inputs, or a hint of which cases the tests probe.
   3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
@@ -449,7 +465,11 @@ Check, against the list of checks and tests/test_outputs.py given to you:
   4. UNSTATED FORMAT: a test requires an exact textual form no sentence states; report it as
      "UNSTATED FORMAT: <test> requires <form>".
   5. MISSING CONTRACT LINE: a line of the design's `contract` (exit code, output rule, precedence)
-     or an `invisible_traps` statement that instruction.md does not state.
+     or an `invisible_traps` statement that instruction.md does not state (on an inferred task, a
+     trap shown in the training data is stated by the data).
+  6. STATED ANSWER: on an inferred task, a sentence in instruction.md or a document that states one
+     of the design's `inferred_rules` (its mapping, threshold, ordering or exception), unless it is
+     in `stated_facts`; report "STATED ANSWER: <sentence>" and remove it.
 Also make sure the interface is stated: the command or entry point, inputs, outputs, exit codes.
 Pattern-scan hints may be given below; they are often false alarms (a rule constant is not a
 pasted answer, a file the task must name is not a leak). Act on a hint only if it is a real
