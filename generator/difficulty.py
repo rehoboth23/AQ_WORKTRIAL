@@ -145,9 +145,15 @@ def spec_gate(spec: dict) -> list[str]:
                      ("crux", "the domain insight the complete fix depends on"),
                      ("sequence_invariant", "the invariant over sequences that instruction.md states"),
                      ("nameable_fix", "the shortest phrase an expert would use for the whole fix"),
-                     ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it")):
+                     ("self_check_blind_spot", "the re-test the agent will run, and why the partial fix passes it"),
+                     ("reference_in_environment", "what in the environment already computes the correct handling (must be none)")):
         if not str(spec.get(key) or "").strip():
             problems.append(f"needs `{key}`: {why}")
+    ref = str(spec.get("reference_in_environment") or "").strip()
+    if ref and not re.match(r"(?i)[\s*-]*none\b", ref):  # "none", "- none" (a list reply), "None: ..."
+        problems.append("the environment already contains the correct handling of the tricky case "
+                        f"({ref[:160]}); the agent would copy it. Make the reference path share the flaw, "
+                        "or make the reference a stated behaviour, not working code")
     return problems
 
 

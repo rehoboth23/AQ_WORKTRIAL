@@ -100,6 +100,12 @@ DIFFICULTY_RULE = f"""\
   * No reference copies: the environment must not contain the answer elsewhere. No .git
     history, no pristine installed copy or vendored original of the faulty code, no backup or
     .orig files, no project tests that name or pin the fault. The agent has no network access.
+    This includes the task's OWN code: if the invariant compares two paths (live vs replay,
+    incremental vs full rebuild, fast vs slow), the reference path must NOT already handle the
+    tricky case correctly, or the agent just copies its logic across. Either both paths share the
+    flawed reasoning, or the reference is a stated behaviour the agent must reason out. README
+    and docs describe usage and data formats; they may restate the stated invariant, never the
+    case-level semantics a fault breaks.
   * Hidden edge cases: tests also check cases the visible symptom doesn't show (empty input,
     NULLs, timezones, duplicates), each a CONSEQUENCE of the stated goal that an expert would
     derive, not a separately listed requirement. Don't paste expected outputs into
@@ -139,7 +145,8 @@ DIFFICULTY_SPEC_FIELDS = """,
   "challenge_kind": "incremental_state|resume_after_interruption|retry_idempotency|ordering_and_duplicates|cache_invalidation|format_migration|streaming_boundaries|other",
   "sequence_invariant": "the invariant over sequences, as instruction.md states it",
   "nameable_fix": "the shortest phrase an expert would use for the whole fix",
-  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it"
+  "self_check_blind_spot": "the re-test the agent will naturally run, and why the partial fix passes it",
+  "reference_in_environment": "any code, doc or data in the environment that already computes or states the correct handling of the tricky case; must be none"
 """
 
 QUALITY_RULES = """\
@@ -388,8 +395,10 @@ the faulty location, if any fault is a well-known textbook bug, if there are few
 states the rule a fault breaks, if any fault's `wrong_fix` would pass every test, if the
 environment holds a reference copy of the correct code (git history, an installed original,
 backups, project tests naming the fault), if `nameable_fix` alone is enough to solve it (the fix
-is a named technique applied mechanically), or if a fault's counterexample is the same scenario
-instruction.md describes (the agent's own re-test would catch it). It is UNFAIR if the sequence
+is a named technique applied mechanically), if a fault's counterexample is the same scenario
+instruction.md describes (the agent's own re-test would catch it), or if the environment already
+contains correct logic for the tricky case that the agent can copy (e.g. a correct replay or
+full-rebuild path that the invariant compares against). It is UNFAIR if the sequence
 invariant is not stated in instruction.md, or a test's condition cannot be produced
 deterministically with something in the environment.
 
