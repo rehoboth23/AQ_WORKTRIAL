@@ -73,6 +73,8 @@ DIFFICULTY_RULE = f"""\
     seeds. Each check follows from a sentence of instruction.md, a document it names, or a fact
     visible in the environment; each differs from what a reasonable implementer assumes by default.
     Passing needs all of them; the agent tests what it thinks of.
+    Write the list of {MIN_CHECKS}+ check requirements FIRST, then fill in each one's details; a
+    design with fewer checks is rejected and costs a full retry.
   * Ground truth never comes from your own reasoning: every expected value is computed by code the
     tests run (a pristine reference kept in tests/, a package installed only for the verifier, or
     the seeded generator that made the data), so a detail you misremember cannot make the solution
