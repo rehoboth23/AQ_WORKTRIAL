@@ -13,6 +13,7 @@ import json
 import re
 
 from config import FUZZ_TESTS
+from config import MAX_DECISIONS, MIN_DECISIONS
 from config import (MAX_FAULTS, MAX_KNOWLEDGE, MAX_OBSTACLES, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_KNOWLEDGE,
                     MIN_OBSTACLES, MIN_RULES, MIN_SITES, MIN_THEMES)
 
@@ -1085,6 +1086,93 @@ CRITIC_SYSTEM_DOMAIN = (CRITIC_SYSTEM_DOMAIN.replace("__RULE__", DIFFICULTY_RULE
                         .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_DOMAIN.lstrip(",")))
 
 
+# ---------------------------------------------------------------- exec_ref genre
+DIFFICULTY_RULE_EXECREF = f"""\
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
+  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). It solves
+  anything it can read or already knows, so here THE SPECIFICATION IS A PROGRAM IT CAN RUN BUT NOT
+  READ: it must probe the program's behaviour systematically and decide when it has found every
+  corner. Runs differ by how thoroughly they probe, not by knowledge.
+  * The black box: a small REFERENCE program written in C (150-400 lines, standard library only)
+    of one kind: calculator, file_writer, validator, protocol_service, scheduler, codec or
+    rules_engine. The Dockerfile compiles it in a build stage (gcc) and the final image holds only
+    the stripped binary (`strip`), installed at `reference_binary`. Its source is never in the
+    environment, and no comment, message or `strings` output names a rule.
+  * {MIN_DECISIONS} to {MAX_DECISIONS} DECISION POINTS: behaviours a careful implementer gets wrong unless they probe:
+    a rounding step and where it happens, a tie-break, a boundary (inclusive or exclusive), a cap
+    or floor, the order two rules apply in, an error case and its exact message and exit code, a
+    byte-layout choice, state carried between records or calls. Each is observable by running the
+    binary on inputs the agent can write, and each differs from what a reasonable programmer
+    would assume. No single probe reveals several points.
+  * The agent builds an equivalent ARTIFACT with an exact interface (a Python library function, a
+    CLI, a server on a port, a parser, a config) that must behave exactly like the reference on
+    any input of the kinds shown in the shipped SAMPLE input file. The sample contains at least one
+    input of every kind the hidden tests use; the hidden tests use only those kinds.
+  * instruction.md states the goal, the artifact's interface, the comparison ("exactly the same
+    output and exit status as <reference_binary> for any input of the kinds in <sample>"), that
+    the artifact must not run the binary or any external program, and that the binary will not
+    be available when the artifact is checked. It never names or hints at a decision point.
+  * Tests (they never trust the environment): tests/ holds a pristine copy of the reference
+    source (tests/reference.c) and a seeded, deterministic input generator (tests/gen_cases.py,
+    stdlib random, fixed seed, about 500 inputs drawn only from the sample's kinds). The tests
+    compile tests/reference.c with gcc (the verifier installs it), hide the environment's binary
+    (rename it) before running the artifact, run reference and artifact on every generated input
+    and on the sample, and fail on the first differences, printing input, both outputs and exit
+    codes. solution/solve.sh writes the artifact itself (the oracle); it must match the reference
+    on every generated input, which is what proves the task solvable.
+  * Fair: everything that decides the output is observable by running the binary on inputs of the
+    sample's kinds; nothing depends on timing, randomness, locale or the clock; byte-for-byte
+    comparisons are stated in instruction.md.
+"""
+
+DIFFICULTY_SPEC_FIELDS_EXECREF = """,
+  "challenge_kind": "executable_reference",
+  "black_box_kind": "calculator|file_writer|validator|protocol_service|scheduler|codec|rules_engine",
+  "artifact_kind": "library|cli|server|parser|config",
+  "reference_language": "c",
+  "reference_binary": "absolute path of the stripped binary in the image, e.g. /usr/local/bin/feecalc",
+  "interface": "exactly how the reference and the artifact are invoked and what they output",
+  "sample_file": "absolute path of the shipped sample input in the image",
+  "input_kinds": ["each kind of input in the sample that the hidden inputs are drawn from"],
+  "decision_points": [{"behaviour": "what the reference does",
+                       "assumed_instead": "what a reasonable implementer would do without probing",
+                       "input_kind": "which input kind triggers it (one of input_kinds)",
+                       "observe": "an input the agent can run to see it"}],
+  "shortcut_guard": "how the tests stop the artifact from calling the binary"
+"""
+
+CRITIC_SYSTEM_EXECREF = """\
+You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
+it reads files, greps, runs builds and tests, and writes its own tests; given a runnable program
+it probes it, but tends to stop probing once its own examples match.
+
+__RULE__
+Given a task spec (JSON), walk through how that agent would probe the binary: which decision
+points its first probes reveal, which it would only find by trying an unusual input, and which
+it would likely miss. The spec is TOO EASY if fewer than __MIN_DECISIONS__ decision points, if a point is
+visible without probing (in `strings` output, an error message, the sample's obvious reading),
+if one probe reveals several points, or if most points match what a programmer assumes anyway.
+It is UNFAIR if a point cannot be observed from inputs of the sample's kinds, if hidden inputs
+need a kind the sample never shows, or if anything depends on timing, randomness or locale.
+
+If results of earlier designs are given, a design that repeats a black_box_kind and domain those
+results show was too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every
+problem while keeping it fair, solvable, deterministic and on the same topic.
+
+The revised spec must keep every key of the original AND include these design keys, filled in:
+{__FIELDS__
+}
+
+Reply with ONE JSON object and nothing else:
+{"walkthrough": ["how the agent would probe the ORIGINAL design, point by point"],
+  "too_easy_because": ["problems found, empty if none"],
+  "spec": {...the full spec, revised if needed, with every key of the original...}}
+"""
+CRITIC_SYSTEM_EXECREF = (CRITIC_SYSTEM_EXECREF.replace("__RULE__", DIFFICULTY_RULE_EXECREF)
+                         .replace("__MIN_DECISIONS__", str(MIN_DECISIONS))
+                         .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_EXECREF.lstrip(",")))
+
+
 GENRES = {
     "spec": {"rule": DIFFICULTY_RULE, "fields": DIFFICULTY_SPEC_FIELDS, "critic": CRITIC_SYSTEM,
              "review": INSTRUCTION_REVIEW_SYSTEM, "mutants": MUTANT_SYSTEM},
@@ -1096,6 +1184,8 @@ GENRES = {
                   "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
     "domain": {"rule": DIFFICULTY_RULE_DOMAIN, "fields": DIFFICULTY_SPEC_FIELDS_DOMAIN, "critic": CRITIC_SYSTEM_DOMAIN,
                "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
+    "exec_ref": {"rule": DIFFICULTY_RULE_EXECREF, "fields": DIFFICULTY_SPEC_FIELDS_EXECREF, "critic": CRITIC_SYSTEM_EXECREF,
+                 "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
 }
 
 

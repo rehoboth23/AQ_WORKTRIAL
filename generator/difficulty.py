@@ -22,9 +22,11 @@ from config import (
     DISCOVERY,
     MAX_FAULTS,
     MAX_RULES,
+    MAX_DECISIONS,
     MAX_KNOWLEDGE,
     MAX_OBSTACLES,
     MAX_SITES,
+    MIN_DECISIONS,
     MIN_KNOWLEDGE,
     MIN_OBSTACLES,
     MIN_PRESERVED,
@@ -338,9 +340,46 @@ def spec_gate_domain(spec: dict) -> list[str]:
     return problems
 
 
+_BLACK_BOX = {"calculator", "file_writer", "validator", "protocol_service", "scheduler", "codec", "rules_engine"}
+_ARTIFACT = {"library", "cli", "server", "parser", "config"}
+
+
+def spec_gate_execref(spec: dict) -> list[str]:
+    """Executable-reference genre: a compiled black box with enough observable decision points,
+    every hidden input kind shown in the sample."""
+    pts = spec.get("decision_points") or []
+    if not isinstance(pts, list) or not all(isinstance(p, dict) for p in pts):
+        return ["`decision_points` must be a list of objects"]
+    problems = []
+    if not (MIN_DECISIONS <= len(pts) <= MAX_DECISIONS):
+        problems.append(f"needs {MIN_DECISIONS} to {MAX_DECISIONS} decision points, has {len(pts)}")
+    keys = ("behaviour", "assumed_instead", "input_kind", "observe")
+    incomplete = [str(i) for i, p in enumerate(pts) if not all(str(p.get(k) or "").strip() for k in keys)]
+    if incomplete:
+        problems.append("every decision point needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
+    kinds = [str(k).strip() for k in spec.get("input_kinds") or [] if str(k).strip()]
+    if len(kinds) < 3:
+        problems.append("needs at least 3 `input_kinds` shown in the sample file")
+    if str(spec.get("black_box_kind") or "").strip().lower() not in _BLACK_BOX:
+        problems.append(f"`black_box_kind` must be one of {sorted(_BLACK_BOX)}")
+    if str(spec.get("artifact_kind") or "").strip().lower() not in _ARTIFACT:
+        problems.append(f"`artifact_kind` must be one of {sorted(_ARTIFACT)}")
+    if str(spec.get("reference_language") or "").strip().lower() != "c":
+        problems.append("`reference_language` must be c (compiled in a build stage, stripped binary shipped)")
+    for key in ("reference_binary", "sample_file"):
+        if not str(spec.get(key) or "").strip().startswith("/"):
+            problems.append(f"`{key}` must be an absolute path in the image")
+    for key in ("interface", "shortcut_guard"):
+        if not str(spec.get(key) or "").strip():
+            problems.append(f"needs `{key}`")
+    if str(spec.get("challenge_kind") or "").strip().lower() != "executable_reference":
+        problems.append("`challenge_kind` must be executable_reference for this genre")
+    return problems
+
+
 def spec_gate(spec: dict, genre: str = "spec") -> list[str]:
     return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement,
-            "long_road": spec_gate_longroad, "domain": spec_gate_domain}[genre](spec)
+            "long_road": spec_gate_longroad, "domain": spec_gate_domain, "exec_ref": spec_gate_execref}[genre](spec)
 
 
 _SPEC_DOC_EXTS = (".md", ".rst", ".txt", ".adoc")

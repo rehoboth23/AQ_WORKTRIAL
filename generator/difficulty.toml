@@ -17,6 +17,8 @@ min_obstacles = 4
 max_obstacles = 8
 min_knowledge = 4
 max_knowledge = 10
+min_decisions = 8
+max_decisions = 15
 # Existing behaviours the instruction does not enumerate but hidden regression tests check.
 min_preserved = 3
 # Hidden-fault genre knobs, retired (every such task scored 4-5/5); kept so old records parse.

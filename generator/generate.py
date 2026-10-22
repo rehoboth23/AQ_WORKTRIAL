@@ -162,6 +162,16 @@ class Spec(BaseModel):
     knowledge_points: list[dict] = Field(default_factory=list)
     verifier_packages: list[str] = Field(default_factory=list)
     reference_check: str = ""
+    # Executable-reference genre
+    black_box_kind: str = ""
+    artifact_kind: str = ""
+    reference_language: str = ""
+    reference_binary: str = ""
+    interface: str = ""
+    sample_file: str = ""
+    input_kinds: list[str] = Field(default_factory=list)
+    decision_points: list[dict] = Field(default_factory=list)
+    shortcut_guard: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
@@ -375,6 +385,11 @@ def mutation_items(spec: dict) -> list[dict]:
                           "wrong_fix": "repair every other obstacle but leave this one unfixed (if a later step cannot run "
                                        "because of it, work around it the cheapest way that skips its real repair)",
                           "counterexample": o.get("symptom"), "caught_by_test": o.get("hidden_test")})
+    for i, d in enumerate(spec.get("decision_points") or []):
+        if isinstance(d, dict) and str(d.get("behaviour") or "").strip():
+            items.append({"where": d.get("input_kind"), "what": f"decision point {i}: {d.get('behaviour')}",
+                          "wrong_fix": "behave as a reasonable implementer would assume instead: " + str(d.get("assumed_instead") or ""),
+                          "counterexample": d.get("observe"), "caught_by_test": f"decision point {i}"})
     for i, k in enumerate(spec.get("knowledge_points") or []):
         if isinstance(k, dict) and str(k.get("detail") or "").strip():
             items.append({"where": k.get("standard_ref"), "what": f"knowledge point {i}: {k.get('detail')}",
@@ -576,7 +591,11 @@ def test_sh(spec: dict) -> str:
     pkgs = [str(p).strip() for p in spec.get("verifier_packages") or []
             if difficulty.VERIFIER_PACKAGE.fullmatch(str(p).strip())]
     extra = "".join(f"  --with {p} \\\n" for p in pkgs)
-    return TEST_SH.replace("  --with pytest-json-ctrf==0.3.5 \\\n", "  --with pytest-json-ctrf==0.3.5 \\\n" + extra)
+    sh = TEST_SH.replace("  --with pytest-json-ctrf==0.3.5 \\\n", "  --with pytest-json-ctrf==0.3.5 \\\n" + extra)
+    if str(spec.get("challenge_kind") or "").lower() == "executable_reference":
+        # the tests compile the pristine reference from tests/reference.c
+        sh = sh.replace("apt-get install -y curl", "apt-get install -y curl gcc libc6-dev")
+    return sh
 
 
 def write_task(task_dir: str, spec: dict, task_name: str, files: dict[str, str]) -> None:

@@ -56,7 +56,7 @@ MAX_INVALID_RERUNS = int(os.environ.get("MAX_INVALID_RERUNS", "3"))
 DIFFICULTY_FILE = os.environ.get(
     "DIFFICULTY_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "difficulty.toml"))
 _DIFFICULTY_DEFAULTS = {
-    "knobs": {"min_rules": 12, "max_rules": 20, "min_themes": 4, "min_sites": 3, "max_sites": 6, "min_obstacles": 4, "max_obstacles": 8, "min_knowledge": 4, "max_knowledge": 10, "min_preserved": 3, "min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
+    "knobs": {"min_rules": 12, "max_rules": 20, "min_themes": 4, "min_sites": 3, "max_sites": 6, "min_obstacles": 4, "max_obstacles": 8, "min_knowledge": 4, "max_knowledge": 10, "min_decisions": 8, "max_decisions": 15, "min_preserved": 3, "min_faults": 2, "max_faults": 4, "min_fault_layers": 1,
               "max_leaked_literals": 1, "critic_found_within": 3},
     "discovery": {"min_gap": 2, "hard_gap": 4, "very_hard_gap": 7, "too_hard_above": 9,
                   "timeout_risk_steps": 60},
@@ -95,6 +95,8 @@ MIN_OBSTACLES = _knob("min_obstacles")               # long_road genre: chained 
 MAX_OBSTACLES = _knob("max_obstacles")
 MIN_KNOWLEDGE = _knob("min_knowledge")               # domain genre: standard details the task turns on
 MAX_KNOWLEDGE = _knob("max_knowledge")
+MIN_DECISIONS = _knob("min_decisions")               # exec_ref genre: decision points of the black box
+MAX_DECISIONS = _knob("max_decisions")
 MIN_PRESERVED = _knob("min_preserved")               # existing behaviours regression-tested (spec, judgement)
 MIN_FAULTS = _knob("min_faults")                     # (hidden-fault genre, retired; kept for old records)
 MAX_FAULTS = _knob("max_faults")                     # cap: more faults = longer proofreading, not harder
