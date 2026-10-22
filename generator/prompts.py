@@ -390,15 +390,15 @@ Check, against the list of checks and tests/test_outputs.py given to you:
      vaguely that two reasonable readings give different results, or that two passages contradict
      (a general rule and an exception instruction.md does not name).
   2. LEAKED ANSWER: expected output beyond trivial examples, a sample that covers the hidden
-Pattern-scan hints may be given below; they are often false alarms (a rule constant is not a
-pasted answer, a file the task must name is not a leak). Act on a hint only if it is a real
-problem by the four checks above.
      inputs, or a hint of which cases the tests probe.
   3. ORACLE: an instruction to run something whose output signals completion, or a pointer to a
      reference implementation (unless the reference IS the specification the task asks to match).
   4. UNSTATED FORMAT: a test requires an exact textual form no sentence states; report it as
      "UNSTATED FORMAT: <test> requires <form>".
 Also make sure the interface is stated: the command or entry point, inputs, outputs, exit codes.
+Pattern-scan hints may be given below; they are often false alarms (a rule constant is not a
+pasted answer, a file the task must name is not a leak). Act on a hint only if it is a real
+problem by the four checks above.
 
 If nothing violates this, reply exactly:
 VERDICT: clean
