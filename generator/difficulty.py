@@ -159,34 +159,86 @@ def answer_gate(spec: dict) -> list[str]:
     if bare:
         return ["every inferred rule needs `rule` and `shown_by` (the training examples that show it); missing on "
                 + ", ".join(bare[:5])]
-    return []
+    return stated_fact_repeats(spec)
 
 
 _NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.]*\d)")
 _SENTENCE = re.compile(r"(?<=[.!?:;])\s+|\n+")
 
 
+_ORDER = re.compile(r"\b(before|after|prior to|followed by|precedence|takes priority|first\b.{0,40}\bthen)\b", re.I)
+_MAPPING = re.compile(r"(→|->|=>|^\s*\|)")
+
+
+def _rule_words(text) -> set[str]:
+    return {w for w in _words(text) if len(w) > 2 and w not in _COMMON}
+
+
+def _rule_texts(spec: dict) -> list[str]:
+    return [str(r.get("rule") if isinstance(r, dict) else r) for r in spec.get("inferred_rules") or []]
+
+
+def _fact_texts(spec: dict) -> list[str]:
+    return [json.dumps(f) if isinstance(f, dict) else str(f) for f in spec.get("stated_facts") or []]
+
+
+def _restates(rule_words: set[str], text_words: set[str]) -> bool:
+    return len(rule_words) >= 3 and len(rule_words & text_words) >= max(3, 0.6 * len(rule_words))
+
+
 def stated_rule_leaks(files: dict[str, str], spec: dict | None) -> list[str]:
-    """On an inferred task: a sentence of instruction.md or a document that carries an inferred rule's
-    value (a threshold, a port, a constant) next to one of that rule's words. Values are matched as
-    whole numbers; values listed under `stated_facts` are allowed."""
+    """On an inferred task, instruction.md or a document must not hand over a rule the agent has to
+    infer. Four signs, each checked against the design's `inferred_rules`: a rule's value (a
+    threshold, a port) next to its words; a sentence that restates most of a rule's words; an
+    ordering sentence (before, after, precedence) naming rule words; a mapping line (table row or
+    arrow) built from one rule's tokens. Text that repeats a `stated_facts` entry is allowed.
+    The address task's README passed the value check alone: its rules were words and orderings."""
     if not inferred(spec):
         return []
-    allowed = set(_NUMBER.findall(json.dumps(spec.get("stated_facts") or [])))
+    facts = _fact_texts(spec)
+    allowed = set(_NUMBER.findall(" ".join(facts)))
+    fact_words = [_rule_words(f) for f in facts]
+    rules = _rule_texts(spec)
+    rwords = [_rule_words(r) for r in rules]
+    rtokens = [set(_words(r)) - _COMMON for r in rules]
+    union = set().union(*rwords) if rwords else set()
     texts = {"instruction.md": files.get("instruction.md", "")}
     texts.update({p: b for p, b in files.items() if p.startswith("environment/") and p.endswith(_SPEC_DOC_EXTS)})
     hits = []
-    for r in spec.get("inferred_rules") or []:
-        rule = str(r.get("rule") if isinstance(r, dict) else r)
-        nums = {n for n in _NUMBER.findall(rule) if (len(n.lstrip("-").replace(".", "")) >= 2 or "." in n)} - allowed
-        words = {w for w in _words(rule) if len(w) > 3 and w not in _COMMON}
-        for path, body in texts.items():
-            for sent in _SENTENCE.split(body):
+    for path, body in texts.items():
+        units = [u for line in body.splitlines() for u in ([line] if _MAPPING.search(line) else _SENTENCE.split(line)) if u.strip()]
+        for sent in units:
+            sw, st = _rule_words(sent), set(_words(sent)) - _COMMON
+            if any(_restates(fw, sw) for fw in fact_words):
+                continue
+            why = ""
+            for rule, rw, rt in zip(rules, rwords, rtokens):
+                nums = {n for n in _NUMBER.findall(rule) if (len(n.lstrip("-").replace(".", "")) >= 2 or "." in n)} - allowed
                 found = nums & set(_NUMBER.findall(sent))
-                if found and words & _words(sent):
-                    hits.append(f"{path}: {sent.strip()[:110]!r} gives {sorted(found)[0]} from rule {rule[:60]!r}")
+                if found and len(rw & sw) >= 2:
+                    why = f"gives {sorted(found)[0]} from rule {rule[:50]!r}"
+                elif _restates(rw, sw):
+                    why = f"restates rule {rule[:50]!r}"
+                elif _MAPPING.search(sent) and len(rt & st) >= 2 and len(rt & st) >= 0.5 * len(st):
+                    why = f"maps tokens of rule {rule[:50]!r}"
+                if why:
                     break
-    return hits[:6]
+            if not why and _ORDER.search(sent) and len(union & sw) >= 2:
+                why = "states an order between inferred rules"
+            if why:
+                hits.append(f"{path}: {sent.strip()[:100]!r} {why}")
+    return hits[:8]
+
+
+def stated_fact_repeats(spec: dict) -> list[str]:
+    """A stated fact may only be something the data cannot show; one that restates an inferred rule
+    hands the rule over (a 'style guide' that lists the rules)."""
+    if not inferred(spec):
+        return []
+    rules = _rule_texts(spec)
+    return [f"`stated_facts` entry {i} restates inferred rule {next(r for r in rules if _restates(_rule_words(r), _rule_words(f)))[:60]!r}; "
+            "drop it: the agent must infer that rule from the data"
+            for i, f in enumerate(_fact_texts(spec)) if any(_restates(_rule_words(r), _rule_words(f)) for r in rules)]
 
 
 REFERENCE_ACCESS = ("none", "frozen_examples", "runnable")
