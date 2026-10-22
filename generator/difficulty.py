@@ -22,7 +22,9 @@ from config import (
     DISCOVERY,
     MAX_FAULTS,
     MAX_RULES,
+    MAX_OBSTACLES,
     MAX_SITES,
+    MIN_OBSTACLES,
     MIN_PRESERVED,
     MIN_RULES,
     MIN_SITES,
@@ -258,8 +260,52 @@ def spec_gate_judgement(spec: dict) -> list[str]:
     return problems
 
 
+_STAGES = {"dependencies", "build_config", "compile_abi", "environment", "stale_state", "service", "long_running", "logic"}
+
+
+def spec_gate_longroad(spec: dict) -> list[str]:
+    """Long-road genre: a chain of real obstacles between a stated failing state and an exact end
+    state, at least one silent (a wrong value), with shortcuts blocked by tests."""
+    obs = spec.get("obstacles") or []
+    if not isinstance(obs, list) or not all(isinstance(o, dict) for o in obs):
+        return ["`obstacles` must be a list of obstacle objects"]
+    problems = []
+    if not (MIN_OBSTACLES <= len(obs) <= MAX_OBSTACLES):
+        problems.append(f"needs {MIN_OBSTACLES} to {MAX_OBSTACLES} obstacles, has {len(obs)}")
+    keys = ("stage", "symptom", "cause", "revealed_by", "fix", "hidden_test")
+    incomplete = [str(i) for i, o in enumerate(obs) if not all(str(o.get(k) or "").strip() for k in keys)]
+    if incomplete:
+        problems.append("every obstacle needs " + ", ".join(f"`{k}`" for k in keys) + "; missing on " + ", ".join(incomplete[:5]))
+    stages = {str(o.get("stage") or "").strip().lower() for o in obs}
+    if len(stages & _STAGES) < 3:
+        problems.append(f"obstacles must span at least 3 different stages of {sorted(_STAGES)}, has {sorted(stages)}")
+    if "logic" not in stages:
+        problems.append("needs a silent `logic` obstacle: the command succeeds but an end-state value is wrong")
+    chained = [o for o in obs if str(o.get("revealed_by") or "").strip().lower() not in ("", "start", "none")]
+    if len(chained) < max(2, len(obs) // 2):
+        problems.append("at least half the obstacles must be revealed only by fixing an earlier one (`revealed_by`)")
+    if len([e for e in spec.get("end_state") or [] if str(e).strip()]) < 2:
+        problems.append("needs at least 2 exact `end_state` conditions")
+    guards = [g for g in spec.get("shortcut_guards") or [] if isinstance(g, dict) and str(g.get("hidden_test") or "").strip()]
+    if not guards:
+        problems.append("needs `shortcut_guards`: each way to fake the end state and the test that blocks it")
+    for key, why in (("failing_state", "the command the user runs and what goes wrong"),
+                     ("offline", "how every package the build needs is already in the image")):
+        if not str(spec.get(key) or "").strip():
+            problems.append(f"needs `{key}`: {why}")
+    v = str(spec.get("reference_in_environment") or "").strip()
+    if v and not re.match(r"(?i)[\s*-]*none\b", v):
+        problems.append(f"`reference_in_environment` must be none ({v[:120]})")
+    if str(spec.get("challenge_kind") or "").strip().lower() != "long_road":
+        problems.append("`challenge_kind` must be long_road for this genre")
+    return problems
+
+
 def spec_gate(spec: dict, genre: str = "spec") -> list[str]:
-    return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement}[genre](spec)
+    return {"spec": spec_gate_spec, "hidden_fault": spec_gate_fault, "judgement": spec_gate_judgement,
+            "long_road": spec_gate_longroad}[genre](spec)
+
+
 _SPEC_DOC_EXTS = (".md", ".rst", ".txt", ".adoc")
 
 
@@ -483,7 +529,7 @@ def answer_key_leaks(files: dict[str, str], spec: dict | None, skip: set[str] = 
     faults = _fault_words(spec or {})
     hits = []
     for path, body in files.items():
-        if not path.startswith("environment/") or path == "environment/Dockerfile":
+        if not path.startswith("environment/") or path == "environment/Dockerfile" or path in skip:
             continue
         for n, text in comment_lines(path, body):
             if not text or "terminal-bench-canary" in text:

@@ -261,6 +261,7 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
                 design = (f"{sp.get('name')}: {sp.get('challenge_kind') or 'no challenge kind'}, "
                           + (f"{len(rules)} rules over {len(themes)} themes" if rules
                              else f"{len(sp.get('sites') or [])} sites" if sp.get("sites")
+                             else f"{len(sp.get('obstacles') or [])} obstacles" if sp.get("obstacles")
                              else f"{len(sp.get('faults') or [])} faults in {layers or '-'}"))
             except (json.JSONDecodeError, OSError):
                 pass

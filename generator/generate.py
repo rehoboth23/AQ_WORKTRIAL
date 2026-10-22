@@ -145,6 +145,12 @@ class Spec(BaseModel):
     reference_in_environment: str = ""
     interaction: str = ""
     runnable_reference: str = ""
+    # Long-road genre
+    failing_state: str = ""
+    end_state: list[str] | str = Field(default_factory=list)
+    obstacles: list[dict] = Field(default_factory=list)
+    shortcut_guards: list[dict] = Field(default_factory=list)
+    offline: str = ""
     expected_agent_steps: float | None = None
 
     @field_validator("description", "scenario", "environment_setup", "instruction_summary", "anti_cheat",
@@ -310,6 +316,17 @@ def mutation_items(spec: dict) -> list[dict]:
             items.append({"where": x.get("where"), "what": f"site {i}: {x.get('mechanism')}",
                           "wrong_fix": "fix every other site but leave this one as it is",
                           "counterexample": x.get("hidden_test_input"), "caught_by_test": f"site {i}"})
+    for i, o in enumerate(spec.get("obstacles") or []):
+        if isinstance(o, dict) and str(o.get("cause") or "").strip():
+            items.append({"where": o.get("stage"), "what": f"obstacle {i}: {o.get('cause')}",
+                          "wrong_fix": "repair every other obstacle but leave this one unfixed (if a later step cannot run "
+                                       "because of it, work around it the cheapest way that skips its real repair)",
+                          "counterexample": o.get("symptom"), "caught_by_test": o.get("hidden_test")})
+    for i, g in enumerate(spec.get("shortcut_guards") or []):
+        if isinstance(g, dict) and str(g.get("shortcut") or "").strip():
+            items.append({"where": f"shortcut {i}", "what": f"shortcut: {g.get('shortcut')}",
+                          "wrong_fix": "take this shortcut instead of the real repair: " + str(g.get("shortcut")),
+                          "counterexample": g.get("shortcut"), "caught_by_test": g.get("hidden_test")})
     return items
 
 

@@ -12,7 +12,8 @@ never sees or edits them.
 import json
 import re
 
-from config import MAX_FAULTS, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_RULES, MIN_SITES, MIN_THEMES
+from config import (MAX_FAULTS, MAX_OBSTACLES, MAX_RULES, MAX_SITES, MIN_FAULT_LAYERS, MIN_FAULTS, MIN_OBSTACLES, MIN_RULES,
+                    MIN_SITES, MIN_THEMES)
 
 # Paths the model is allowed to write. Anything else in a reply is dropped.
 MODEL_FILES = ("instruction.md", "environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py")
@@ -889,12 +890,117 @@ CRITIC_SYSTEM_JUDGEMENT = (CRITIC_SYSTEM_JUDGEMENT.replace("__RULE__", DIFFICULT
                            .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_JUDGEMENT.lstrip(",")))
 
 
+# ---------------------------------------------------------------- long_road genre
+DIFFICULTY_RULE_LONGROAD = f"""\
+- Difficulty target: a strong AI agent (it reads files, greps, runs builds and tests well, and
+  writes its own tests) should solve the task only SOMETIMES (roughly 1-3 times in 5). Tasks where
+  the agent only had to find and fix a few planted bugs were solved 4-5/5: each fix was one quick
+  edit. Here the difficulty is the ROAD to a clearly stated end state, the way real build and ops
+  work goes: no single fix, errors that change as you fix them, and failures that cascade.
+  * instruction.md describes the environment ("a repo that builds X / a service that does Y"), the
+    FAILING STATE (the command the user runs and what goes wrong: it fails, hangs, or prints a wrong
+    value) and the END STATE, stated exactly and observably (the command succeeds from a clean
+    state, the file exists, these values follow this stated rule). It never lists the obstacles,
+    their number, or the fixes.
+  * Between the failing state and the end state lie {MIN_OBSTACLES} to {MAX_OBSTACLES} OBSTACLES, each a real failure
+    mode an expert recognises: offline dependency resolution (a pin the local wheelhouse/mirror
+    cannot satisfy), build backend or config not supported by the available tool version, a
+    compiler or ABI change (an API removed in the installed language version), environment
+    configuration (missing locale/tz data/certificate/env var/PATH entry, permissions), stale state
+    (a lock or pid file left by a crashed run, a stale cache or build dir, a half-applied
+    migration), a service that must be started or is misconfigured, a long-running step that must
+    be made to finish, and a final LOGIC obstacle that produces a wrong value rather than an error.
+  * Chained: most obstacles are only REVEALED by fixing an earlier one (the build error hides the
+    import error, which hides the hang, which hides the wrong value). At least one obstacle is
+    SILENT: the command succeeds but an end-state value is wrong, found only by checking the output
+    against the rule instruction.md states. Errors are realistic and sometimes cryptic (an
+    undefined symbol at import, a resolver message, a hang with one log line); no message names
+    its own fix.
+  * NOT VISIBLE IN THE SOURCE: the agent reads every file before it runs anything. A hand-built
+    task whose six obstacles were all readable mistakes (a version pin next to the wheelhouse
+    listing, a removed C API call, a lock check, a UTC conversion) was fixed in ONE batch of edits
+    in 8 steps, 3/3: reading the repo revealed the whole chain. At most one obstacle may be a
+    readable code mistake. The rest must live where reading the project does not show them and
+    only running does: system and runtime state (a service's own config or data directory, a
+    stale socket or cache outside the repo, file permissions or ownership, a filled disk quota,
+    an installed library whose behaviour differs from its documentation, a dependency's
+    transitive pin that only the resolver reveals, data whose problem shows only at a volume or
+    in records past the first screenful, a process that only fails under its real workload).
+  * Shortcuts are closed: the end state includes what must be KEPT (the C extension stays a C
+    extension, the data files are unchanged, the service runs on the given port), and a hidden
+    test checks each, so deleting the hard part or hard-coding the output fails.
+  * Fair: everything needed is already on the machine (the agent has NO network: vendor every
+    package and wheel in the Dockerfile; the Dockerfile may delete things to create an obstacle,
+    such as tz data, but never in a way the agent cannot repair offline). Each obstacle shows
+    itself through an error, a hang, or a stated end-state condition the agent can check. The
+    end state is exact; a wrong value is wrong only by a rule instruction.md states. Hidden tests
+    check only the stated end state (run from a clean state) and the stated things to keep, never
+    a particular fix: any repair that reaches the end state passes. Deterministic: no clocks,
+    randomness or timing races in what the tests check.
+  * The environment is a realistic project (package, Makefile or build script, data, README), not
+    a puzzle; comments never mark an obstacle. No tests, no reference copy, no .git history that
+    contains the fix.
+"""
+
+DIFFICULTY_SPEC_FIELDS_LONGROAD = """,
+  "challenge_kind": "long_road",
+  "failing_state": "the command instruction.md says the user runs, and what goes wrong now",
+  "end_state": ["each exact, observable condition instruction.md states for done"],
+  "obstacles": [{"stage": "dependencies|build_config|compile_abi|environment|stale_state|service|long_running|logic",
+                 "symptom": "exactly what the agent sees (error text, hang, wrong value)",
+                 "cause": "what is actually wrong",
+                 "revealed_by": "which earlier obstacle's fix exposes this one, or 'start' for the first",
+                 "fix": "one valid repair (others may exist)",
+                 "hidden_test": "which end-state test fails while this obstacle remains"}],
+  "shortcut_guards": [{"shortcut": "a way to reach a fake end state (delete the extension, hard-code the output, edit the data)",
+                       "hidden_test": "the test that fails it"}],
+  "offline": "how every package the build needs is already in the image (no network)",
+  "reference_in_environment": "any code, doc or history in the environment that contains the fixes; must be none"
+"""
+
+CRITIC_SYSTEM_LONGROAD = """\
+You are a red-team reviewer for Terminal-Bench 2 task designs. The reference agent is strong:
+it reads files, greps, runs builds and tests, reads error messages carefully, and writes its own
+tests. It struggles with long chains where each fix reveals a new failure, with cryptic errors,
+with hangs, and with a final wrong value it must notice by checking the output against a rule.
+
+__RULE__
+Given a task spec (JSON), walk through how that agent would solve it: what it runs first, what it
+sees, which obstacle it fixes, what that reveals, and whether it would notice the silent one. The
+spec is TOO EASY if fewer than __MIN_OBSTACLES__ obstacles, if most obstacles are visible at once
+(not chained), if an error message names its own fix, if there is no silent wrong-value obstacle,
+if the agent could reach the end state by a shortcut no test blocks, if the obstacles are one
+kind repeated, or if more than one obstacle is visible by reading the project's files (the agent
+reads everything first and fixes all readable mistakes in one pass). It is UNFAIR if any obstacle needs the network or something not on the machine, if
+a fix is undiscoverable from the symptoms, if the end state is not exact, if a test checks a
+particular fix or anything instruction.md does not state, or if anything is nondeterministic.
+
+If results of earlier designs are given, a design that repeats a shape those results show was
+too easy is too easy. If it is too easy or unfair, rewrite the spec to fix every problem while
+keeping it fair, solvable, deterministic and on the same topic.
+
+The revised spec must keep every key of the original AND include these design keys, filled in:
+{__FIELDS__
+}
+
+Reply with ONE JSON object and nothing else:
+{"walkthrough": ["how the agent would approach the ORIGINAL spec, obstacle by obstacle"],
+  "too_easy_because": ["problems found, empty if none"],
+  "spec": {...the full spec, revised if needed, with every key of the original...}}
+"""
+CRITIC_SYSTEM_LONGROAD = (CRITIC_SYSTEM_LONGROAD.replace("__RULE__", DIFFICULTY_RULE_LONGROAD)
+                          .replace("__MIN_OBSTACLES__", str(MIN_OBSTACLES))
+                          .replace("__FIELDS__", DIFFICULTY_SPEC_FIELDS_LONGROAD.lstrip(",")))
+
+
 GENRES = {
     "spec": {"rule": DIFFICULTY_RULE, "fields": DIFFICULTY_SPEC_FIELDS, "critic": CRITIC_SYSTEM,
              "review": INSTRUCTION_REVIEW_SYSTEM, "mutants": MUTANT_SYSTEM},
     "hidden_fault": {"rule": DIFFICULTY_RULE_FAULT, "fields": DIFFICULTY_SPEC_FIELDS_FAULT, "critic": CRITIC_SYSTEM_FAULT,
                      "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
     "judgement": {"rule": DIFFICULTY_RULE_JUDGEMENT, "fields": DIFFICULTY_SPEC_FIELDS_JUDGEMENT, "critic": CRITIC_SYSTEM_JUDGEMENT,
+                  "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
+    "long_road": {"rule": DIFFICULTY_RULE_LONGROAD, "fields": DIFFICULTY_SPEC_FIELDS_LONGROAD, "critic": CRITIC_SYSTEM_LONGROAD,
                   "review": INSTRUCTION_REVIEW_SYSTEM_FAULT, "mutants": MUTANT_SYSTEM_FAULT},
 }
 
