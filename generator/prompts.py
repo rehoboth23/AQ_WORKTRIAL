@@ -34,6 +34,9 @@ How the task is run (Harbor / Terminal-Bench 2):
 - Inside tests, a bare `python3` is the verifier's uv Python (pytest only, none of the image's
   packages). To run code that needs the image's packages, call the image's interpreter by full
   path (e.g. /usr/local/bin/python3 on python:* images, /usr/bin/python3 on ubuntu/debian).
+  The same goes for anything a test runs that calls python or pip itself (make, a build script):
+  pass env with PATH="/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" and no VIRTUAL_ENV, or the
+  child finds the verifier's uv Python, which has no pip and none of the image's packages.
 - Harbor starts the container with `sleep infinity`: the Dockerfile's CMD/ENTRYPOINT never run,
   so no service or daemon is running when the agent starts. instruction.md must not claim one
   is. If a service is needed, the agent (and solve.sh) start it; tests may start it too.
