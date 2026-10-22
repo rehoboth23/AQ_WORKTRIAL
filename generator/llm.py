@@ -127,6 +127,8 @@ def _relax_json(text: str) -> str:
                 i += 1
             elif c == '"':
                 in_str = False
+                if _missing_comma(text, i + 1):
+                    out.append(",")
         elif c == '"':
             in_str = True
             out.append(c)
@@ -146,10 +148,25 @@ def _relax_json(text: str) -> str:
                 i += 1
                 continue
             out.append(c)
+        elif c in "}]":
+            out.append(c)
+            if _missing_comma(text, i + 1):
+                out.append(",")
         else:
             out.append(c)
         i += 1
     return "".join(out)
+
+
+def _missing_comma(text: str, j: int) -> bool:
+    """True when a value just ended at text[j-1] and, after whitespace that includes a newline, the
+    next value starts (a string, object or array): the model dropped the comma between two list
+    items or two pairs (four 10-20 minute replies were lost to this on 22 Oct). A newline is
+    required so `"a" "b"` on one line (not a JSON slip we have seen) is left alone."""
+    k = j
+    while k < len(text) and text[k] in " \t\r\n":
+        k += 1
+    return "\n" in text[j:k] and k < len(text) and text[k] in '"{['
 
 
 def parse_json_object(text: str) -> dict:
