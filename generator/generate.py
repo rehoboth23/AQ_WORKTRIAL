@@ -572,7 +572,10 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
     files, dropped = clean_files(raw)
 
     reviewed = None  # instruction.md text the reviewer last saw
-    for rnd in range(MAX_REPAIR_ROUNDS + 1):
+    last_round, bonus_used, rnd = MAX_REPAIR_ROUNDS, False, -1
+    while rnd < last_round:
+        rnd += 1
+        mutation_only = False  # the task passes oracle/nop; only a trap is unguarded by the tests
         record = {"round": rnd, "dropped_paths": dropped, "checks": []}
         if (INSTRUCTION_REVIEW and not control and files.get("instruction.md", "").strip()
                 and files["instruction.md"] != reviewed):
@@ -601,6 +604,7 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
                 mut = mutation_check(task_dir, spec, files, log, f"gen-{run_id}-r{rnd}-{time.strftime('%H%M%S')}")
                 record["mutation"] = mut["results"]
                 if mut["survived"]:
+                    mutation_only = True
                     error = ("The tests do not catch these plausible incomplete fixes (each one was run as "
                              "solve.sh and ALL tests passed):\n- "
                              + "\n- ".join(f"fault {x['fault']}: {x['wrong_fix']}"
@@ -617,8 +621,14 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         if not error:
             summary["task_dir"] = task_dir
             return finish("ok", task_name=f"{TASK_ORG}/{task_name}")
-        if rnd == MAX_REPAIR_ROUNDS:
-            break
+        if rnd == last_round:
+            # One bonus round when only the mutation check failed: the task is otherwise correct,
+            # and a missing test is a small, targeted repair (the renderer lost a good design here).
+            if mutation_only and not bonus_used:
+                last_round, bonus_used = last_round + 1, True
+                log.event("bonus_repair_round", round=rnd + 1)
+            else:
+                break
         try:
             patch, _, _ = chat(systems["repair"], prompts.repair_user(spec, files, error),
                                parse_file_blocks, log.llm, f"repair-r{rnd + 1}")
