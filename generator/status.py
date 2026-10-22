@@ -14,7 +14,7 @@ import re
 import subprocess
 import time
 
-from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, N_RUNS, load_difficulty
+from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, load_difficulty
 
 OUT = os.path.join(JOBS_DIR, "dashboard.html")
 # Optional focus: show only processes, runs, jobs and containers whose name or path contains
@@ -272,7 +272,6 @@ def generator_activity(rs: list[dict], alive_since: float | None) -> list[tuple[
         if os.path.exists(spec_path):
             try:
                 sp = json.load(open(spec_path))
-                layers = sorted({str(x.get("layer")) for x in sp.get("faults") or [] if isinstance(x, dict)})
                 checks = sp.get("checks") or []
                 design = (f"{sp.get('name')}: {sp.get('shape') or 'no shape'}, {len(checks)} checks, "
                           f"{len(sp.get('knobs') or [])} knobs")

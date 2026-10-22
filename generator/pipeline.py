@@ -62,8 +62,7 @@ from difficulty import env_lines, solve_lines
 from evaluate import (TRIAL_WALL_SEC, _collect, common_failure, early_stop_reached, prior_band_jobs, review_band,
                       run_band, test_table)
 from adjust import adjust_task
-from generate import RunLog, chat, generate_task
-from llm import LLMError, parse_json_object
+from generate import RunLog, generate_task
 from ledger import Ledger, file_lock, reserve_dir, write_json_atomic, write_text_atomic
 import fcntl
 
@@ -300,7 +299,7 @@ def verdict_md(state: dict) -> str:
         gate = "; ".join(r.get("difficulty_gate") or []) or "pass"
         tol = r.get("mutants_tolerated") or []
         lines.append(f"- round {r['round']}: difficulty gate: {gate[:300]} | checks: {checks}"
-                     + (f" | test weaknesses (mutants tolerated): " + "; ".join(f"fault {m['fault']} ({m['verdict']})" for m in tol) if tol else ""))
+                     + (" | test weaknesses (mutants tolerated): " + "; ".join(f"fault {m['fault']} ({m['verdict']})" for m in tol) if tol else ""))
     lines.append(f"- result: {gen.get('status', '-')}")
     band = rec.get("band") or {}
     if band.get("trials"):

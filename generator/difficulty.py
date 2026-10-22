@@ -16,7 +16,6 @@ import ast
 import json
 import posixpath
 import re
-import statistics
 
 from config import MAX_CHECKS, MAX_LEAKED_LITERALS, MIN_CHECKS
 

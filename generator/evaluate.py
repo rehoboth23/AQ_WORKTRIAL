@@ -18,7 +18,6 @@ import glob
 import json
 import math
 import os
-import posixpath
 import re
 import statistics
 import time
