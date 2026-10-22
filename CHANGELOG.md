@@ -1,6 +1,14 @@
 # Changelog
 
-Document what you did, why, and any design tradeoffs here.
+Each section records what was done, why, the alternative considered, and what the next measurement showed. Sections are in time order; several describe mechanisms that later evidence replaced, and each of those is marked *Superseded* with a pointer to what replaced it.
+
+## Where things stand (2026-10-22, 15:45)
+
+**The pipeline.** A topic (a seed card) → design spec (glm-5.1) → gates (design, seed, reference access, answer source) → critic → project and core files → instruction review → structural validator → oracle (reward 1) and nop (reward 0) → mutants (each wrong fix must fail its named test) → 5-run band eval with terminus-2 + glm-5.3-flash → one band-review call (whose fault was each failure, and the lesson) → kept only if 1–3/5 with every failure the model's fault, then confirmed by a second eval. Batches are ledgered, resumable without re-paying, and safe for several copies at once; every run leaves `events.jsonl`, raw replies and a `VERDICT.md`.
+
+**What the measurements say.** About forty 5-run evaluations across bug-hunt, specification, judgement, long-road, domain, executable-reference, rule-induction and model-fitting shapes. Every task that was fair came out too easy (4–5/5); every task that landed in the band did so because of a task fault that was then fixed. The constant: whatever the agent can read, already knows, or can run to compare against, it checks and gets right. The rules added through the day each closed one such route: no confessing comments, no hints, no reference copies, no runnable answer key, no inferred rules in documents, no study guide, evidence for every hidden case, a stated self-check gap. The hardest fair task so far is the IDS rule induction (100–134 steps, runs timing out at 60 minutes with one rule unsolved); its 2-hour-budget eval, the microgrid forecast and a ten-topic batch under all of today's rules are running.
+
+**Map of superseded mechanisms.** Fault quotas, layers and decoys (21 Oct, "Difficulty knobs") → removed on 21/22 Oct ("Why every generated task was too easy"). The level dial and tuner ("Persistent, self-tuning difficulty config") → removed with the single recipe (22 Oct, late morning). Per-genre recipes and the knowledge probe ("Six task shapes") → folded into the single recipe. The executable reference → retired by the reference-access rule (22 Oct, midday). Stretch goal A (per-task adjustment) exists, off by default, and was tested once by hand.
 
 ## 2026-10-21: Pinned Python environment with uv
 
@@ -152,6 +160,8 @@ Conclusion: the difficulty rule changed designs on paper only. Directional, n=1.
 
 ## 2026-10-21: Difficulty knobs (deep dive) and gates
 
+*Superseded (21/22 Oct): the fault, layer, decoy and size quotas below were removed after they produced filler rather than difficulty; see "Why every generated task was too easy". The evidence and the knob catalogue remain the record of what was tried.*
+
 **Why:** all 6 evaluated tasks were too_easy (5/5). We needed to know what makes a task hard before building more.
 
 **Evidence** from 12 trajectories (2 per task) and the 6 human-made examples:
@@ -194,6 +204,8 @@ Each knob is paired with a fairness guard, because failures must be the model's 
 - *Control arm extended:* `--control` now also removes the spec profile fields and skips the gates and the critic, so the A/B isolates every difficulty lever. The Harbor facts stay in both arms.
 
 ## 2026-10-21: Persistent, self-tuning difficulty config
+
+*Superseded (22 Oct, late morning): the level dial, the tuner and `tune.sh` were removed with the single recipe; `difficulty.toml` now holds only the check-count and leaked-literal knobs.*
 
 **What:** the difficulty gate values are no longer hard-coded guesses. They live in `generator/difficulty.toml` (committed, hand-editable), and `scripts/tune.sh` (`generator/tune.py`) searches for the level that puts tasks in the band, then saves it there.
 
@@ -357,6 +369,8 @@ The half-evaluated or unbuilt task folders moved from `output/` into their log f
 **Watch-out:** if level 2 is also too easy at similar step counts, the saturation rule stops the search. That would mean faults and size aren't the lever for this agent, and the parked alternatives (trajectory hardening; precision, recovery or build-from-goal task types) become the next move.
 
 ## 2026-10-21 (evening): New difficulty scale, spaced discovery, hidden design, problem-not-guide instructions
+*Superseded (21/22 Oct): the fault quota and the discovery-step grading were removed; the meta-leak check, the problem-not-guide rule and the meaning-based test rule survived and are still in force.*
+
 Probe 2 (level 2, 6 faults) was stopped by the user at its first design call to switch to these changes. Nothing was built. All of them apply to the next probe.
 
 ### Knob values set by the user (`generator/difficulty.toml`)
@@ -484,9 +498,11 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 
 **Part 3 status:** `part3-batch-1` (hidden-fault genre, stopped after 3 of 8 topics once the pattern was clear): 1 too easy, 1 rejected as unfair after re-triage, 1 failed generation on its last repair round (an untested trap); $3.04. Spend on all batch reports so far $8.01, plus about $3 of hand experiments. Three runs under the mixed-genre rules (two judgement, one spec) are in progress.
 
-**Open:** the 20-topic batch (`bash scripts/run-batch.sh scripts/topics-draft.txt <batch> 3 6,14`) waits on those three results; a "preserve existing behaviour" rule with regression tests, so rewriting a starter from the spec is the wrong move; a report column comparing the critic's flags with the band result, since its verdicts have never been checked against outcomes; `.bak` cleanup before packaging.
+**Open:** the 20-topic batch (`bash scripts/run-batch.sh scripts/topics-draft.txt <batch> 3 6,14`) waits on those three results; a "preserve existing behaviour" rule with regression tests, so rewriting a starter from the spec is the wrong move; a report column comparing the critic's flags with the band result, since its verdicts have never been checked against outcomes.
 
 ## 2026-10-22: Six task shapes measured; one recipe for every topic
+*Superseded (22 Oct, late morning and midday): the per-genre recipes, the knowledge probe and the executable reference were folded into one recipe and then replaced by the reference-access rule; the measurements and lessons here still stand.*
+
 **Measured with terminus-2 + glm-5.3-flash at high effort, 5 runs each (early stops on):**
 
 | Task | Shape | Result |
@@ -522,7 +538,7 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 - Gateway failures rose from about 2% of calls (00:00–04:00) to about 24% (04:00–05:30): dropped connections and empty replies after long reasoning. Not call length (successful calls ran up to 20 minutes), not our concurrency, not prompt changes; recovered by 05:32.
 - Stopping a background shell does not stop the harbor job it started: its agent containers keep running. Stop the pipeline (its handler cleans up) or run `checks.cleanup_job` on the job.
 
-**Open:** the awk parity result and the first three generated executable-reference tasks (tax calculator, shift scheduler, bond day counts); the Part 3 funnel report for today's runs; `.bak` cleanup before packaging.
+**Open at the time:** the awk parity result and the first three generated executable-reference tasks (resolved in the next section).
 
 ### Later on 2026-10-22: the parity test, gate conflicts, early stop
 - **awk parity port, hand-built (no early stop): 5/5, too easy.** Port a legacy mawk report script to Python, byte-identical on 200 hidden files; the reference port matched mawk on 2,201 of 2,201 files, so the task was solvable. Runs took 38–85 steps (against 8–15 on earlier tasks) and two held wrong beliefs mid-way, but every run kept comparing its output with `awk` until they matched. A runnable reference shows the agent its own mistakes; for the band, the hidden inputs need behaviour the sample's kinds do not lead it to probe.
@@ -544,7 +560,6 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 
 **Stretch goal A, on branch `stretch-goals` (a separate worktree, merged later):** every test's result is kept per run and shown as a per-test table, with a flag naming tests that every failing run failed (it reproduces the three unfair Markdown tests found by hand). A per-task adjustment step (off by default) makes at most two fair edits (harden, ease, or fix only the triaged fault), re-checks with validator, oracle, nop and mutants, restores the task if a check fails, and re-evaluates. Its first real proposal invented mawk behaviour and wrote an expected output for it; edits to data files under tests/ are now refused, and data files are listed rather than pasted (prompt from about 119k to 3k tokens).
 
-**Open:** the five seed-card topics (`seeds5-102558`) and the stretch-test re-run are in progress.
 
 ## 2026-10-22 (midday): seed cards v2, the agent never runs the answer key, one merged branch
 **Why:** the seed-card batch designed faster (specs passed the gate on the first try instead of after one or two rejections, and calls took 5-13 minutes instead of 15-21), but a check of what the agent could still run showed the same weakness that made the awk port 5/5: a reference it can run is an answer key.
@@ -555,7 +570,6 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 - **One branch.** `merged` combines main, `stretch-goals` and `seed-cards-v2` (no conflicts; offline suite 65/65) plus the reference-access rule. The five seed-card topics were stopped in design on main and restarted on `merged` (`merged-105846`).
 - **Operations.** Worktrees share the main `.venv` through a symlink (git-excluded locally): without it, harbor was missing at the first oracle check. Harbor resumes a job whose name already exists, so a re-run with a reused run ID silently returns the old result; pipeline run IDs are unique, test drivers now add a timestamp. The dashboard's eval section reads the extra worktree job folders; "missing on 6" in a gate message is the check's index, not a count.
 
-**Open:** the merged batch (five topics), the v2 batch (three topics) and the hardened awk re-evaluation are running.
 
 ## 2026-10-22 (late midday): back to one branch; designs got heavier
 - **One branch again.** `main` now contains `stretch-goals`, `seed-cards-v2` and `merged` (fast-forward plus one merge of an identical prompt line; offline suite 65/65 on main).
@@ -565,17 +579,16 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 - **Three seeds relaunched on the merged code** (`pick3-112404`): address rules, IDS rules and the microgrid forecast, chosen for evaluation the agent cannot reproduce (held-out data shifted toward rare cells) and quick builds. Estimated chance of landing in band 35-40% each; each card has a dial to move it fairly if it lands outside.
 - **Operations.** The failure watcher alerts on a design rejected twice, not once (a first rejection is the normal retry). All earlier batches were stopped; their ledgers allow a resume.
 
-**Open:** the `pick3` batch; the awk v3 rebuild; removing the three extra worktrees once nothing runs from them.
+**Still open:** the awk v3 rebuild (practice inputs generated, Dockerfile and tests not rewritten); removing the three extra worktrees.
 
-## 2026-10-22 (early afternoon): tentative result: no learnable task yet
-**Status (tentative; to be revised if the 10-topic batch produces a fairly learnable task):** we have not yet produced a task that lands in the 1-3/5 band for glm-5.3-flash. Every task measured so far was too easy, or in band only because of a task fault that was then fixed. The pipeline reliably produces valid, correct tasks (structure, oracle 1, nop 0, mutants); what it has not yet done is induce hardness. Each fix today removed one way the agent could check its own work: readable faults, rules written in the instruction, a runnable reference, inferred rules stated in the documents. Each time the agent found the next route, or the design was still in progress when the day ran out.
+## 2026-10-22 (early afternoon): inferred tasks keep their rules out of the documents
+**Status at the time:** no fairly learnable task yet (see "Where things stand" at the top). The pipeline reliably produced valid, correct tasks; what it had not done was induce hardness, because each fix removed one way the agent could check its own work and the agent found the next.
 
 - **Inferred tasks never state their rules.** A rule-induction design (address normalisation) wrote every rule it should have hidden into instruction.md and its README: the prompt's own fields asked for "the instruction sentence the check follows from", and the review flagged unstated checks. Designs now declare `answer_source` (stated or inferred); an inferred design lists each `inferred_rule` with the training examples that show it, and `stated_facts` for what the data cannot show (the microgrid cold snap below the training range), so fairness is kept. The spec and seed gates enforce the fields, the files gate blocks an inferred rule's value written next to its words, the review gained a STATED ANSWER item and stops asking for inferred rules, and all 15 cards declare their source.
 - **Critics catch real problems.** On all three designs of the latest wave the critic named a genuine weakness (missing public MAPE check, a daylight-saving test that both right and wrong handling passed, the stated rules) and rewrote the design.
 - **Design time.** About 20 minutes per task (median 21 of 6 completed designs), almost all of it two model calls; gate rejections fell from about one per run to none after the seed cards and the list-first line, while critic calls grew to 8-18 minutes. Calls that never answer remain the largest risk (no wall-clock limit per call yet).
 - **The dashboard shows each band eval's verdict** (learnable, too easy, too hard, invalid), and the certain verdict while runs are still going.
 
-**Next:** the 10-topic batch (address, IDS and microgrid from this wave, then reaction kinetics, variable stars, excise return, amplicon variants, checkpoint race, route speed-up and stream cipher) gives the Part 3 funnel; this section is revised with its result.
 
 ## 2026-10-22 (afternoon): hand iteration on address and IDS
 **Address normalisation, three fair measurements, all too easy.**
@@ -592,7 +605,7 @@ Checks: tests resolve links rather than reading their spelling. 13/13 pass on th
 **Pipeline fixes from these runs:** `test.sh` ignores design pins of the runner's own packages (a `pytest==8.3.4` pin made every test error with no repair able to fix it); a mutant caught by a test no check claims counts as caught (repairs add dedicated tests but cannot edit `caught_by_tests`); the inferred-rule leak gate matches words, tables and orderings, not only numbers, and a stated fact may not restate an inferred rule.
 
 ## 2026-10-22 (mid-afternoon): what the instructions were teaching the agent, and the last guards
-**Three fair measurements in one hour showed the same thing from three sides.** Address with the rules in its README: 5/6 passed. Address with the README cut to the file format: 4/5. Address with rare rules at 1-3 examples and a 95% dial: 4/5. The runs read every pair, mine the rules by diffing, and iterate until the practice set reproduces; when the graded pairs come from the same process, that alone fixes the score. IDS, rebuilt the same way, behaved differently: four runs at 100-134 steps still working on the inclusive 60-second window when the 60-minute agent limit arrived, none having written its program; the earlier attempt needed 113-115 steps. Microgrid's first fair failure was a run that saw the long-weekend effect ("the adjacent-holiday dummy was unstable") and dropped it: the data shows the one Friday holiday at 0.62 of a normal Friday against 0.74 for the Tuesday one, at the same temperature, and the notes state the mechanism.
+**The address measurements above (5/6, 4/5, 4/5) all point one way:** the runs read every pair, mine the rules by diffing, and iterate until the practice set reproduces; when the graded pairs come from the same process, that alone fixes the score. IDS, rebuilt the same way, behaved differently: four runs at 100-134 steps still working on the inclusive 60-second window when the 60-minute agent limit arrived, none having written its program; the earlier attempt needed 113-115 steps. Microgrid's first fair failure was a run that saw the long-weekend effect ("the adjacent-holiday dummy was unstable") and dropped it: the data shows the one Friday holiday at 0.62 of a normal Friday against 0.74 for the Tuesday one, at the same temperature, and the notes state the mechanism.
 
 **Decisions.**
 - **No study guide.** The generated instructions carried the seed card's quirk matrix as advice ("rule order matters", "pay special attention to pairs that appear only a few times", "the public tests will not catch ordering issues, rare rules, or near-miss patterns"), and even the modelling method (microgrid: "use `max(0, 14 - T)` as a linear feature; tree models cannot extrapolate"). The prompt rule that every check must follow from a visible sentence had been met by naming each hidden dimension. instruction.md now states the job, the interface, the acceptance criterion, the facts the data cannot show and the tamper sentence, and nothing about how to study the data; the critic and the review flag a study guide. *Fairness:* an exact contract already implies boundaries, and every rule, overlap and decoy is in the practice data.
