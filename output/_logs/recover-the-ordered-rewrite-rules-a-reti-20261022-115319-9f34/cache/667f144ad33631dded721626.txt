@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Input: '123 MAIN ST.E' — Correct: periods removed first → '123 MAIN STE' → STE matches unit designator → '123 MAIN #'. Mutant: direction expansion first → \\bE\\b matches E (period creates word boundary) → '123 MAIN ST.EAST' → periods removed → '123 MAIN STEAST' (STE no longer matches as unit designator).",
+ "reason": "When periods are removed after direction expansion, a period can create a word boundary that causes a single direction letter to be incorrectly expanded. In 'ST.E', the period after ST creates a \\b before E, so the mutant expands E→EAST before periods are stripped, preventing the resulting 'STE' from being recognized as a suite designator."}
+```

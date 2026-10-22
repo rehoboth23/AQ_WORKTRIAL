@@ -1,0 +1,3 @@
+{"time": "2026-10-22T13:31:59", "event": "band_start", "task": "address-normaliser-rule-recovery", "run_id": "address-normaliser-rule-recovery-20261022-133159-ae56"}
+{"time": "2026-10-22T13:37:39", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-address-normaliser-rule-recovery-20261022-133159-ae56-0", "requested": 5, "outcomes": ["pass", "pass", "invalid(CancelledError)", "pass", "pass"]}
+{"time": "2026-10-22T13:37:39", "event": "band_done", "task": "address-normaliser-rule-recovery", "verdict": "too_easy", "passes": 4, "decision": "rejected"}

@@ -1,0 +1,290 @@
+<<<MANIFEST>>>
+environment/docvault/__init__.py
+environment/docvault/config.py
+environment/docvault/db.py
+environment/docvault/helpers.py
+environment/docvault/server.py
+environment/run.sh
+<<<END>>>
+<<<FILE environment/docvault/__init__.py>>>
+# DocVault - Internal Document Management Service
+<<<END>>>
+<<<FILE environment/docvault/config.py>>>
+import os
+
+DB_PATH = os.environ.get('DOCVAULT_DB', 'docvault.db')
+HOST = os.environ.get('DOCVAULT_HOST', '0.0.0.0')
+PORT = int(os.environ.get('DOCVAULT_PORT', '8080'))
+<<<END>>>
+<<<FILE environment/docvault/db.py>>>
+import sqlite3
+from docvault.config import DB_PATH
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_conn()
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS docs (
+            title TEXT PRIMARY KEY,
+            author TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS shortcuts (
+            code TEXT PRIMARY KEY,
+            url TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS prefs (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    ''')
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO shortcuts (code, url) VALUES (?, ?)",
+        ('home', '/dashboard')
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO docs (title, author, content) VALUES (?, ?, ?)",
+        ('Welcome', 'admin', 'Welcome to DocVault, your internal document management service.')
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO prefs (key, value) VALUES (?, ?)",
+        ('layout', 'default')
+    )
+    conn.commit()
+    conn.close()
+
+
+def create_doc(title, author, content):
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO docs (title, author, content) VALUES (?, ?, ?)",
+        (title, author, content)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_docs():
+    conn = get_conn()
+    rows = conn.execute("SELECT title, author FROM docs").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_doc(title):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT title, author, content FROM docs WHERE title = ?",
+        (title,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_shortcut(code):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT url FROM shortcuts WHERE code = ?",
+        (code,)
+    ).fetchone()
+    conn.close()
+    return row['url'] if row else None
+
+
+def create_shortcut(code, url):
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO shortcuts (code, url) VALUES (?, ?)",
+        (code, url)
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_pref(key, value):
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO prefs (key, value) VALUES (?, ?)",
+        (key, value)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pref(key):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT value FROM prefs WHERE key = ?",
+        (key,)
+    ).fetchone()
+    conn.close()
+    return row['value'] if row else None
+<<<END>>>
+<<<FILE environment/docvault/helpers.py>>>
+import json
+import uuid
+
+
+def make_content_disposition(filename):
+    return f'attachment; filename="{filename}"'
+
+
+class RedirectMixin:
+    def do_redirect(self, url):
+        self.send_response(302)
+        self.send_header('Location', url)
+        self.end_headers()
+
+
+def set_starred_cookie(handler, title):
+    handler.send_header('Set-Cookie', f'starred={title}; Path=/')
+
+
+def format_json_response(handler, data, status=200):
+    body = json.dumps(data).encode('utf-8')
+    handler.send_response(status)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(body)))
+    handler.send_header('X-Request-Id', str(uuid.uuid4()))
+    handler.end_headers()
+    handler.wfile.write(body)
+<<<END>>>
+<<<FILE environment/docvault/server.py>>>
+import json
+import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+from docvault import db
+from docvault.helpers import (
+    make_content_disposition,
+    RedirectMixin,
+    set_starred_cookie,
+    format_json_response,
+)
+from docvault.config import HOST, PORT
+
+
+class DocVaultHandler(BaseHTTPRequestHandler, RedirectMixin):
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+
+        if path == '/api/docs':
+            docs = db.list_docs()
+            format_json_response(self, docs)
+
+        elif path.startswith('/api/docs/'):
+            title = urllib.parse.unquote(path[len('/api/docs/'):])
+            doc = db.get_doc(title)
+            if doc:
+                format_json_response(self, doc)
+            else:
+                format_json_response(self, {'error': 'not found'}, 404)
+
+        elif path.startswith('/api/exports/'):
+            filename = urllib.parse.unquote(path[len('/api/exports/'):])
+            disposition = make_content_disposition(filename)
+            self.send_response(200)
+            self.send_header('Content-Disposition', disposition)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.end_headers()
+            self.wfile.write(b'export-data')
+
+        elif path == '/login':
+            next_url = query.get('next', ['/'])[0]
+            self.send_response(302)
+            self.send_header('Location', next_url)
+            self.end_headers()
+
+        elif path.startswith('/api/go/'):
+            code = urllib.parse.unquote(path[len('/api/go/'):])
+            url = db.get_shortcut(code)
+            if url:
+                self.do_redirect(url)
+            else:
+                format_json_response(self, {'error': 'shortcut not found'}, 404)
+
+        else:
+            format_json_response(self, {'error': 'not found'}, 404)
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ''
+
+        if path == '/api/docs':
+            try:
+                data = json.loads(body)
+                title = data.get('title', 'Untitled')
+                author = data.get('author', 'Unknown')
+                content = data.get('content', '')
+                db.create_doc(title, author, content)
+                self.send_response(201)
+                self.send_header('X-Authored-By', author)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'title': title, 'author': author}).encode('utf-8'))
+            except (json.JSONDecodeError, KeyError):
+                format_json_response(self, {'error': 'bad request'}, 400)
+
+        elif path.startswith('/api/docs/') and path.endswith('/star'):
+            title = urllib.parse.unquote(path[len('/api/docs/'):-len('/star')])
+            self.send_response(200)
+            set_starred_cookie(self, title)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'starred': title}).encode('utf-8'))
+
+        elif path == '/api/prefs':
+            try:
+                data = json.loads(body)
+                layout = data.get('layout', 'default')
+                db.set_pref('layout', layout)
+                self.send_response(200)
+                self.send_header('Set-Cookie', f'layout={layout}; Path=/')
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'layout': layout}).encode('utf-8'))
+            except (json.JSONDecodeError, KeyError):
+                format_json_response(self, {'error': 'bad request'}, 400)
+
+        elif path == '/api/shortcuts':
+            try:
+                data = json.loads(body)
+                code = data.get('code', '')
+                url = data.get('url', '')
+                db.create_shortcut(code, url)
+                format_json_response(self, {'code': code, 'url': url}, 201)
+            except (json.JSONDecodeError, KeyError):
+                format_json_response(self, {'error': 'bad request'}, 400)
+
+        else:
+            format_json_response(self, {'error': 'not found'}, 404)
+
+
+def main():
+    db.init_db()
+    server = HTTPServer((HOST, PORT), DocVaultHandler)
+    print(f'DocVault running on {HOST}:{PORT}')
+    server.serve_forever()
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE environment/run.sh>>>
+#!/usr/bin/env bash
+set -e
+exec python3 -m docvault.server
+<<<END>>>

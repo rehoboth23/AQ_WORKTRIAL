@@ -1,0 +1,126 @@
+{
+  "name": "packing-slip-fixed-width-renderer",
+  "description": "Build a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks, slip ordering, whitespace handling, and totals.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "genre": "spec",
+  "run_id": "packing-slip-fixed-width-renderer-20261022-051534-5a28",
+  "features": {
+    "env_lines": 532,
+    "solve_lines": 412,
+    "rules": 19,
+    "themes": 8,
+    "faults": 0,
+    "fault_layers": 0
+  },
+  "verdict": "too_easy",
+  "confirmations": [],
+  "confirmed": false,
+  "lesson": "The task's 19 rules achieved full mutation kill and good separation (2 invalid, 3 pass), but the rules are heavily skewed toward formatting/column-width specifications (R1, R2, R7, R8, R9, R10, R11, R16), making success depend on tedious visual-column arithmetic rather than algorithmic insight. The unicode-width rule (R8) pervasively interacting with all padding rules was the strongest hidden complexity, while pagination (R6) and overflow (R14) added structural difficulty. Next design should keep the multi-rule combinatorial approach but rebalance toward more diverse themes\u2014fewer pure formatting rules, more arithmetic/conditional/edge-input rules\u2014and introduce sharper hidden inputs that can't be caught by eyeballing column positions.",
+  "postmortem": {
+    "lesson": "The task's 19 rules achieved full mutation kill and good separation (2 invalid, 3 pass), but the rules are heavily skewed toward formatting/column-width specifications (R1, R2, R7, R8, R9, R10, R11, R16), making success depend on tedious visual-column arithmetic rather than algorithmic insight. The unicode-width rule (R8) pervasively interacting with all padding rules was the strongest hidden complexity, while pagination (R6) and overflow (R14) added structural difficulty. Next design should keep the multi-rule combinatorial approach but rebalance toward more diverse themes\u2014fewer pure formatting rules, more arithmetic/conditional/edge-input rules\u2014and introduce sharper hidden inputs that can't be caught by eyeballing column positions.",
+    "held": [
+      "R1 (72-column width)",
+      "R3 (SKU sort)",
+      "R12 (error handling)",
+      "R13 (negative quantities)",
+      "R19 (slip ordering)"
+    ],
+    "failed": [
+      "R8 (unicode visual width vs codepoints)",
+      "R6 (pagination at 8 items)",
+      "R14 (20-item overflow)",
+      "R5/R17 (round-half-up Decimal arithmetic)"
+    ]
+  },
+  "passes": 3,
+  "n_valid": 3,
+  "n_invalid": 2,
+  "decision": "rejected",
+  "why": "too_easy (stopped early: 3 passes, no failure yet; EARLY_STOP_PASSES=3)",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/packing-slip-fixed-width-renderer",
+    "verdict": "too_easy",
+    "passes": 3,
+    "n_valid": 3,
+    "n_invalid": 2,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__9mi3pPk",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 1993311,
+        "output_tokens": 78107,
+        "cost_usd": 0.16119793600000001,
+        "episodes": 47,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__BnCSyqA",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 1531939,
+        "output_tokens": 78796,
+        "cost_usd": 0.127648575,
+        "episodes": 39,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__NHPYq9k",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 731588,
+        "output_tokens": 54008,
+        "cost_usd": 0.06425098299999998,
+        "episodes": 25,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__gZGXgdu",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 546681,
+        "output_tokens": 66567,
+        "cost_usd": 0.053259413,
+        "episodes": 21,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__oBqbSME",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 890419,
+        "output_tokens": 86963,
+        "cost_usd": 0.082447171,
+        "episodes": 27,
+        "failed_tests": [],
+        "found_step": 1
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0"
+    ],
+    "tokens": {
+      "input": 5693938,
+      "output": 364441
+    },
+    "cost_usd": 0.4888,
+    "median_steps": 25,
+    "median_found_step": 1,
+    "early_stop": true,
+    "seconds": 700.4,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

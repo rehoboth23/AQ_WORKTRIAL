@@ -1,0 +1,180 @@
+```json
+{
+  "name": "cascade-cipher-plaintext-recovery",
+  "description": "Recover plaintext from new ciphertexts of a custom stream cipher given its source code and a few known plaintext/ciphertext pairs encrypted under the same key and IV.",
+  "difficulty": "hard",
+  "category": "security",
+  "tags": ["cryptanalysis", "stream-cipher", "linear-algebra", "gf2", "known-plaintext"],
+  "expert_time_estimate_min": 75,
+  "junior_time_estimate_min": 180,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A security team captured network traffic encrypted with the company's in-house 'Cascade' stream cipher. They identified several known plaintext/ciphertext pairs from recognizable protocol headers but do not have the encryption key or IV. The cipher source code is available. The team needs a decryption tool that recovers plaintext from any new captured ciphertext encrypted under the same key and IV.",
+  "environment_setup": "The image contains: /app/cipher.py (Cascade stream cipher source, ~120 lines Python) implementing a 128-bit LFSR with an S-box output filter and step counter; /app/README.md (developer documentation with several incorrect cipher descriptions); /app/known/ (3 plaintext/ciphertext pairs of 20, 24, and 16 bytes generated at build time with a hidden key/IV). The key and IV are not in the image—gen_pairs.py runs at build time and is deleted. The cipher uses: STATE_SIZE=16 bytes, SETUP_ROUNDS=200, OUTPUT_TAPS=[0,4,8,12], FEEDBACK_TAPS=[0,11,13,14] (primitive polynomial x^16+x^14+x^13+x^11+1), and an S-box defined as SBOX[x] = gf_mul(0x53, x, 0x11B) ^ 0x89 which is affine over GF(2) but appears nonlinear. The counter continues from setup (starts at 200 for the first keystream byte, wraps at byte 56). The README incorrectly states: 128 setup rounds (actual 200), output taps [0,1,2,3] (actual [0,4,8,12]), feedback taps [0,1,15] (actual [0,11,13,14]), S-box is 'nonlinear' (actual affine), and counter 'resets to 0 for each message' (actual continues from setup). The README includes a precedence note: 'If this document and the source code disagree, the source code is correct.'",
+  "instruction_summary": "Write a Python script at /app/decrypt.py that: (1) takes a single command-line argument—the path to a ciphertext file (raw bytes); (2) reads the ciphertext, decrypts it under the same key and IV as the known pairs, and writes the plaintext to stdout as raw bytes with no extra output; (3) works for ciphertexts of any length, including lengths longer than any known pair; (4) does not require the key or IV as input—it may read /app/cipher.py and /app/known/ at runtime to recover what it needs. Read /app/cipher.py to understand the encryption algorithm. /app/README.md provides a high-level overview but the source code is the authoritative reference.",
+  "solution_outline": [
+    "Read cipher.py to extract parameters: SBOX table, OUTPUT_TAPS=[0,4,8,12], FEEDBACK_TAPS=[0,11,13,14], SETUP_ROUNDS=200, STATE_SIZE=16",
+    "Verify the S-box is affine by checking SBOX[a^b] == SBOX[a]^SBOX[b]^SBOX[0] for sample values; compute SBOX_inv by inverting the 256-entry table",
+    "Read known pairs from /app/known/pair{1,2,3}.{pt,ct}; extract keystream ks[i] = pt[i] ^ ct[i]; verify all pairs agree on overlapping bytes",
+    "Remove counter and S-box to get linear output: lin[i] = SBOX_inv[ks[i] ^ ((200+i) & 0xFF)]",
+    "Build a GF(2) linear system with 128 unknowns (the post-setup state bits): for each step t and bit j, the equation is output_vector_j · (A^t · s0) = lin_bit(t,j), where A is the 128x128 state transition matrix over GF(2) and output_vector_j has 1s at positions 8*tap+j for tap in OUTPUT_TAPS",
+    "Solve via Gaussian elimination over GF(2) to recover the 128-bit post-setup state s0",
+    "Verify: generate keystream from recovered state using the cipher's clock function (with S-box and counter), compare against all known keystream bytes",
+    "Write /app/decrypt.py with the hardcoded recovered state and cipher parameters; the script generates keystream on the fly and XORs with ciphertext"
+  ],
+  "test_plan": [
+    "Test 1: Decrypt a 30-byte ciphertext (beyond 24-byte known keystream) — requires state recovery, not just known keystream XOR",
+    "Test 2: Decrypt a 10000-byte ciphertext — checks long-term keystream correctness and multiple counter wraps (~39 wraps)",
+    "Test 3: Decrypt an empty file (0 bytes) — output must be empty, no crash",
+    "Test 4: Decrypt a 1-byte ciphertext — minimal input edge case",
+    "Test 5: Decrypt a 24-byte ciphertext — boundary at longest known pair length",
+    "Test 6: Decrypt a 60-byte ciphertext — counter wraps from 255 to 0 at byte index 56",
+    "Test 7: Decrypt ciphertext from all-zero plaintext (50 bytes) — ciphertext equals keystream, directly tests keystream generation",
+    "Test 8: Decrypt ciphertext from all-0xFF plaintext (50 bytes) — tests high-byte XOR",
+    "Test 9: Decrypt ciphertext from plaintext containing all 256 byte values (256 bytes) — comprehensive byte coverage",
+    "Test 10: Decrypt ciphertext with embedded null bytes and high bytes (100 bytes) — tests binary file I/O",
+    "Test 11: Run decrypt.py three times on different ciphertexts (10, 50, 100 bytes) — checks stateless behavior",
+    "Test 12: Capture stdout and verify it is raw bytes matching expected plaintext exactly (no hex, no newlines, no debug output)",
+    "Test 13: SHA-256 hash of /app/cipher.py before and after running decrypt.py — file must not change",
+    "Test 14: SHA-256 hashes of /app/known/pair{1,2,3}.{pt,ct} before and after — files must not change",
+    "Test 15: Run decrypt.py twice on the same 30-byte ciphertext, compare outputs — must be identical",
+    "Test 16: Decrypt a 50000-byte ciphertext — checks performance and very long keystream generation"
+  ],
+  "anti_cheat": "The key (8 bytes) and IV (8 bytes) are not anywhere in the image—gen_pairs.py generates the known pairs at build time and is then deleted, so its key/IV constants are not in any file the agent can read. Brute-forcing 2^64 keys is infeasible. The S-box table is in the source code, but its affine property is not stated anywhere—the agent must discover it by testing. The README deliberately misdescribes the cipher (wrong taps, rounds, counter, S-box nature), so trusting it over the source leads to wrong cryptanalysis. The tests use a separate pristine copy of cipher.py (in tests/) with the hardcoded key/IV to generate fresh ciphertexts not present in the image. A solution that hardcodes the known 24-byte keystream fails on any ciphertext longer than 24 bytes. A solution that modifies cipher.py to leak the key fails the file-preservation hash checks. A solution that outputs hex or text instead of raw bytes fails the stdout format check.",
+  "failure_modes": "1) Trusting the README over the source: wrong taps, wrong setup rounds, wrong counter behavior → the GF(2) linear system is inconsistent and has no solution, or solves to a state that fails verification. 2) Not checking the S-box's linearity: assuming it is nonlinear (as the README says) and attempting brute-force or correlation attacks that are far too slow. 3) Bugs in GF(2) Gaussian elimination: wrong bit indexing (MSB vs LSB), not reducing all rows, errors in the augmented column, or forgetting that each bit position is an independent 16-variable subsystem. 4) Using text-mode file I/O ('r' instead of 'rb'): mangles null bytes and high bytes. 5) Outputting hex, debug messages, or trailing newlines to stdout instead of raw bytes. 6) Not testing edge cases (empty, single byte, very long, counter wrap). 7) Modifying cipher.py or known pair files during debugging and not restoring them. 8) Re-deriving the state on every call instead of caching it, causing timeouts on large inputs. All are the agent's fault for not reading the source carefully or not testing thoroughly.",
+  "shape": "cryptanalysis from source — known-plaintext attack on a linear (affine) stream cipher, recovering internal state via GF(2) linear algebra",
+  "hidden_evaluation": "Tests generate fresh ciphertexts (not in the image) using a pristine copy of the cipher with the hidden key/IV. Inputs span lengths 0, 1, 24, 30, 60, 256, 10000, and 50000 bytes and content patterns (all-zeros, all-0xFF, all 256 byte values, random binary with embedded nulls). The agent can fully test their cryptanalysis approach using their own chosen key/IV with the cipher source, but the hidden tests use the specific key/IV from the image and cover edge cases (counter wrap at byte 56, multiple counter wraps, empty input, boundary lengths, binary content) that the agent's own testing might not include.",
+  "checks": [
+    {
+      "requirement": "Works for ciphertexts of any length, including lengths longer than any known pair.",
+      "assumed_instead": "Extract the keystream from known pairs and XOR directly with new ciphertexts, without recovering the cipher's internal state.",
+      "hidden_test_input": "30-byte ciphertext (6 bytes beyond the 24-byte known keystream from the longest known pair)",
+      "why_missed": "The agent might test only with ciphertexts within the 24-byte known keystream length, where simple XOR with the known keystream suffices and state recovery appears unnecessary."
+    },
+    {
+      "requirement": "Works for ciphertexts of any length.",
+      "assumed_instead": "Test only with short ciphertexts, missing bugs in long LFSR sequences or counter handling over many wraps.",
+      "hidden_test_input": "10000-byte random ciphertext (counter wraps approximately 39 times)",
+      "why_missed": "The agent's own tests might not exceed 100 bytes, missing accumulation errors, counter wrap bugs, or LFSR state issues that only manifest after hundreds of clock steps."
+    },
+    {
+      "requirement": "Takes a single command-line argument: the path to a ciphertext file (raw bytes).",
+      "assumed_instead": "Assume input is always non-empty; crash, print an error, or produce garbage on an empty file.",
+      "hidden_test_input": "Empty file (0 bytes) as the ciphertext argument",
+      "why_missed": "The agent might not test the empty-input case; many scripts crash on empty file reads or produce error output instead of empty output."
+    },
+    {
+      "requirement": "Works for ciphertexts of any length.",
+      "assumed_instead": "Assume input is always multi-byte; off-by-one in the keystream generation loop or file reading.",
+      "hidden_test_input": "1-byte ciphertext file",
+      "why_missed": "The agent might not test single-byte input; edge cases in loop initialization or keystream indexing are common at length 1."
+    },
+    {
+      "requirement": "Works for ciphertexts of any length, including lengths longer than any known pair.",
+      "assumed_instead": "Off-by-one at the known keystream boundary; might skip, duplicate, or mishandle the byte at position equal to the longest known pair.",
+      "hidden_test_input": "24-byte ciphertext (exactly the length of the longest known pair)",
+      "why_missed": "The agent might not test the exact boundary length; off-by-one errors at known-keystream boundaries are common and may not surface with other lengths."
+    },
+    {
+      "requirement": "cipher.py source shows out = SBOX[lin] ^ (counter & 0xFF) where counter continues from SETUP_ROUNDS=200; instruction.md says to read cipher.py to understand encryption.",
+      "assumed_instead": "Implement the counter without modular masking (& 0xFF), or assume the counter starts at 0 for keystream generation (as the README incorrectly states).",
+      "hidden_test_input": "60-byte ciphertext (byte index 56 is where counter wraps from 255 to 0, since counter = (200 + 56) & 0xFF = 0)",
+      "why_missed": "The agent's cryptanalysis likely uses the correct counter from reading the source, but their decrypt.py might implement it differently; testing with ciphertexts of 55 bytes or fewer misses the counter wrap point entirely."
+    },
+    {
+      "requirement": "Writes the plaintext to stdout (raw bytes, no extra output).",
+      "assumed_instead": "Process output as text, mangling non-printable bytes, or append a trailing newline.",
+      "hidden_test_input": "50-byte all-zero plaintext encrypted (ciphertext equals the raw keystream, directly exercising keystream generation without XOR masking)",
+      "why_missed": "The agent might test only with ASCII text plaintexts; all-zero plaintext directly verifies keystream byte values and reveals any text-mode processing."
+    },
+    {
+      "requirement": "Writes the plaintext to stdout (raw bytes, no extra output).",
+      "assumed_instead": "Truncate or mangle bytes above 0x7F, or output in a non-binary encoding.",
+      "hidden_test_input": "50-byte all-0xFF plaintext encrypted",
+      "why_missed": "The agent might test only with ASCII-range plaintexts; 0xFF bytes test high-byte handling in both the keystream XOR and stdout write."
+    },
+    {
+      "requirement": "Reads the ciphertext, decrypts it, and writes the plaintext to stdout (raw bytes).",
+      "assumed_instead": "Assume ciphertext and plaintext only contain printable ASCII characters.",
+      "hidden_test_input": "256-byte plaintext containing every byte value from 0x00 through 0xFF in sequence",
+      "why_missed": "The agent might test only with text content; comprehensive byte coverage reveals any byte-level bug in keystream generation, XOR, or I/O that affects specific byte values."
+    },
+    {
+      "requirement": "Reads the ciphertext, decrypts it, and writes the plaintext to stdout (raw bytes).",
+      "assumed_instead": "Use text-mode file I/O (open with 'r' instead of 'rb'), which stops at null bytes, converts line endings, or mangles multi-byte encodings.",
+      "hidden_test_input": "100-byte plaintext with embedded null bytes (0x00) and high bytes (0x80-0xFF) at various positions",
+      "why_missed": "The agent might use text mode during development for readability and forget to switch to binary mode; null bytes and high bytes expose the difference."
+    },
+    {
+      "requirement": "Takes a single command-line argument: the path to a ciphertext file.",
+      "assumed_instead": "Cache state between calls, write temporary files that persist, or modify global state that affects subsequent invocations.",
+      "hidden_test_input": "Three different ciphertexts (10, 50, 100 bytes) decrypted in sequence by three separate process calls to decrypt.py",
+      "why_missed": "The agent might test only a single invocation; if the script writes temp files or caches intermediate results, the second or third call might fail or produce stale output."
+    },
+    {
+      "requirement": "Writes the plaintext to stdout (raw bytes, no extra output).",
+      "assumed_instead": "Output as a hex string, base64, or include debug messages or a trailing newline on stdout.",
+      "hidden_test_input": "20-byte ciphertext; stdout is captured and compared byte-for-byte with the expected 20-byte plaintext",
+      "why_missed": "The agent might print debug info to stdout during development, or format output as hex for readability during testing, and forget to remove it."
+    },
+    {
+      "requirement": "Your script must be self-contained: it may read /app/cipher.py and /app/known/ at runtime, but must not require the key or IV as input.",
+      "assumed_instead": "Modify cipher.py to add debug output, extract hardcoded constants, or change the cipher behavior during analysis.",
+      "hidden_test_input": "SHA-256 hash of /app/cipher.py compared before and after running decrypt.py on a test ciphertext",
+      "why_missed": "The agent might modify cipher.py during debugging (e.g., adding a print statement or temporary function) and forget to restore the original; the modification could be subtle."
+    },
+    {
+      "requirement": "Your script must be self-contained: it may read /app/cipher.py and /app/known/ at runtime, but must not require the key or IV as input.",
+      "assumed_instead": "Modify, truncate, overwrite, or create new files in /app/known/ during cryptanalysis.",
+      "hidden_test_input": "SHA-256 hashes of all six files /app/known/pair{1,2,3}.{pt,ct} compared before and after running decrypt.py",
+      "why_missed": "The agent might write intermediate cryptanalysis results to the known/ directory or accidentally overwrite pair files during development."
+    },
+    {
+      "requirement": "Writes the plaintext to stdout (raw bytes, no extra output).",
+      "assumed_instead": "Use random elements, timestamps, temporary file names with random components, or other non-deterministic operations in the decryption.",
+      "hidden_test_input": "Same 30-byte ciphertext decrypted twice in separate process calls; outputs compared byte-for-byte",
+      "why_missed": "The agent might use non-deterministic temp file names or random padding; testing once appears correct but a second run produces different output."
+    },
+    {
+      "requirement": "Works for ciphertexts of any length.",
+      "assumed_instead": "Use a slow approach (e.g., re-run the full GF(2) cryptanalysis on every call) or hit a memory/resource limit for very large inputs.",
+      "hidden_test_input": "50000-byte random ciphertext",
+      "why_missed": "The agent's approach might be correct but too slow for very large inputs if they re-derive the state from known pairs on every invocation instead of caching the recovered state in the script."
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "cipher.py encrypts correctly: running 'python3 /app/cipher.py encrypt <key> <iv> <infile> <outfile>' produces ciphertext matching the reference cipher implementation.",
+      "hidden_test_input": "Encrypt a 30-byte test plaintext with a test key (0x0011223344556677) and IV (0x8899aabbccddeeff) using /app/cipher.py; compare output to the reference cipher in tests/cipher_ref.py"
+    },
+    {
+      "behaviour": "cipher.py decrypts correctly: running 'python3 /app/cipher.py decrypt <key> <iv> <infile> <outfile>' reverses encryption.",
+      "hidden_test_input": "Decrypt the ciphertext from the previous test using /app/cipher.py; compare output to the original 30-byte plaintext"
+    },
+    {
+      "behaviour": "Known pair files retain their original contents: /app/known/pair{1,2,3}.{pt,ct} are unchanged after decrypt.py runs.",
+      "hidden_test_input": "SHA-256 hash of each of the six known pair files compared before and after running decrypt.py on a test ciphertext"
+    }
+  ],
+  "ground_truth": "Tests use a pristine copy of cipher.py (tests/cipher_ref.py, identical to the image's cipher.py) and the hardcoded key/IV (KEY = bytes.fromhex('a4c9f1e7b3d85602'), IV = bytes.fromhex('1f8a3c5e9270d4b6')) to generate expected plaintexts. For each test: (1) generate a plaintext of the desired length and content, (2) encrypt it with cipher_ref.py using the key/IV, (3) save the ciphertext to a temporary file, (4) run '/usr/local/bin/python3 /app/decrypt.py <tempfile>' via subprocess, (5) capture stdout and compare byte-for-byte with the original plaintext. The key/IV is the same one used by gen_pairs.py (deleted after build) to create the known pairs in the image. Expected values are always computed by the reference cipher, never by the agent's code or by copying known-pair data.",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_in_environment": "cipher.py is the reference program that IS the specification. The tests have their own pristine copy (tests/cipher_ref.py, byte-identical to the image's /app/cipher.py) and use it to generate all expected outputs. The environment's copy at /app/cipher.py is not modified or relied upon by the tests; the agent may read it to understand the algorithm.",
+  "knobs": [
+    {
+      "knob": "Contradicting sources with a stated precedence",
+      "where": "README.md describes the cipher with wrong setup rounds (128 vs actual 200), wrong output taps ([0,1,2,3] vs actual [0,4,8,12]), wrong feedback taps ([0,1,15] vs actual [0,11,13,14]), calls the S-box 'nonlinear' (actually affine over GF(2)), and says the counter 'resets to 0 for each message' (actually continues from setup at 200).",
+      "fairness": "README.md explicitly states: 'If this document and the source code disagree, the source code is correct.' instruction.md also directs the agent to 'Read /app/cipher.py to understand the encryption algorithm' and notes the README is only a 'high-level overview.'"
+    },
+    {
+      "knob": "Hidden-edge coverage",
+      "where": "Known pairs provide only 16–24 bytes of keystream. Hidden tests use ciphertexts of 0, 1, 24, 30, 60, 256, 10000, and 50000 bytes, plus content patterns (all-zeros, all-0xFF, all 256 byte values, embedded nulls). The counter wraps at byte 56 (counter = (200+56) & 0xFF = 0) and again every 256 bytes thereafter.",
+      "fairness": "instruction.md states: 'Works for ciphertexts of any length, including lengths longer than any known pair.' The counter behavior is fully visible in cipher.py's _clock and _setup functions. The agent can test with any length using their own key/IV via the cipher source."
+    },
+    {
+      "knob": "Preservation constraints",
+      "where": "/app/cipher.py and /app/known/pair{1,2,3}.{pt,ct} must not be modified by the decryption script or during development.",
+      "fairness": "instruction.md states: 'Your script must be self-contained: it may read /app/cipher.py and /app/known/ at runtime, but must not require the key or IV as input.' This implies read-only access to these files. The preservation is checked by hashing files before and after."
+    }
+  ]
+}
+```

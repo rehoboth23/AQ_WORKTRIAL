@@ -1,0 +1,322 @@
+Looking at the error, the issue is that `environment/src/reference.c` exists with a filename suggesting it's a reference or self-check, making the task too easy. The Dockerfile only uses `engine.c`, so `reference.c` is redundant and should be removed. The tests already have their own copy embedded as `REFERENCE_C`.
+
+<<<FILE environment/Dockerfile>>>
+FROM python:3.12-slim-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY src/engine.c .
+RUN gcc -O2 -o roster engine.c -lm && strip roster
+
+FROM python:3.12-slim-bookworm
+WORKDIR /app
+COPY --from=builder /build/roster /usr/local/bin/roster
+COPY sample_schedule.txt /app/sample_schedule.txt
+RUN chmod +x /usr/local/bin/roster
+<<<END>>>
+
+<<<FILE environment/src/engine.c>>>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_STAFF 200
+#define MAX_SHIFTS 200
+#define MAX_PREFS 2000
+#define MAX_HOLIDAYS 1000
+#define MAX_ASSIGNED 200
+#define MAX_LINE 512
+#define WEEK_MIN 10080
+
+typedef struct {
+    char id[32];
+    char name[64];
+    char role[16];
+    char skill[8];
+    double max_hrs;
+    double total_hours;
+    int assigned_count;
+    int effective_days[7];
+    int assigned_shift_idx[MAX_ASSIGNED];
+    int num_assigned;
+} Staff;
+
+typedef struct {
+    char id[32];
+    int day;
+    int start_min;
+    int end_min;
+    char skill[8];
+    int slots;
+    int duration_min;
+    double shift_hours;
+    int effective_day;
+    int start_abs;
+    int end_abs;
+    int eligible_count;
+    char assigned[MAX_ASSIGNED][32];
+    int num_filled;
+} Shift;
+
+typedef struct { char staff_id[32], shift_id[32]; int score; } Pref;
+typedef struct { char staff_id[32]; int day; } Holiday;
+
+static Staff staff[MAX_STAFF];
+static int num_staff = 0;
+static Shift shifts[MAX_SHIFTS];
+static int num_shifts = 0;
+static Pref prefs[MAX_PREFS];
+static int num_prefs = 0;
+static Holiday holidays[MAX_HOLIDAYS];
+static int num_holidays = 0;
+
+static int day_to_num(const char *d) {
+    if (!strcmp(d,"Mon")) return 0;
+    if (!strcmp(d,"Tue")) return 1;
+    if (!strcmp(d,"Wed")) return 2;
+    if (!strcmp(d,"Thu")) return 3;
+    if (!strcmp(d,"Fri")) return 4;
+    if (!strcmp(d,"Sat")) return 5;
+    if (!strcmp(d,"Sun")) return 6;
+    return -1;
+}
+
+static int parse_time(const char *t) {
+    int h, m;
+    if (sscanf(t, "%d:%d", &h, &m) == 2) return h * 60 + m;
+    return -1;
+}
+
+static int is_on_holiday(const char *sid, int day) {
+    for (int i = 0; i < num_holidays; i++)
+        if (!strcmp(holidays[i].staff_id, sid) && holidays[i].day == day) return 1;
+    return 0;
+}
+
+static int get_pref_score(const char *sid, const char *shid) {
+    for (int i = 0; i < num_prefs; i++)
+        if (!strcmp(prefs[i].staff_id, sid) && !strcmp(prefs[i].shift_id, shid)) return prefs[i].score;
+    return 2;
+}
+
+static int pref_weight(int score) {
+    if (score <= 2) return 1;
+    if (score <= 4) return 2;
+    return 3;
+}
+
+static int role_bonus(const char *role) {
+    if (!strcmp(role, "senior")) return 2;
+    return 0;
+}
+
+static int count_consecutive(const int *eff, int nd) {
+    int w[7];
+    memcpy(w, eff, sizeof(w));
+    w[nd] = 1;
+    int c = 1;
+    for (int d = nd - 1; d >= 0 && w[d]; d--) c++;
+    for (int d = nd + 1; d <= 6 && w[d]; d++) c++;
+    return c;
+}
+
+static int check_rest(const Staff *s, const Shift *ns) {
+    for (int i = 0; i < s->num_assigned; i++) {
+        const Shift *e = &shifts[s->assigned_shift_idx[i]];
+        int len_e = e->duration_min, len_ns = ns->duration_min;
+        int d = (ns->start_abs - e->start_abs + WEEK_MIN) % WEEK_MIN;
+        if (d < len_e || (WEEK_MIN - d) < len_ns) return 0;
+        int g1 = (ns->start_abs - e->end_abs + WEEK_MIN) % WEEK_MIN;
+        int g2 = (e->start_abs - ns->end_abs + WEEK_MIN) % WEEK_MIN;
+        int g = g1 < g2 ? g1 : g2;
+        if (g < 660) return 0;
+    }
+    return 1;
+}
+
+static int is_eligible(const Staff *s, const Shift *sh) {
+    if (strcmp(s->skill, sh->skill)) return 0;
+    if (is_on_holiday(s->id, sh->effective_day)) return 0;
+    if (s->total_hours + sh->shift_hours > s->max_hrs) return 0;
+    if (count_consecutive(s->effective_days, sh->effective_day) > 5) return 0;
+    if (!check_rest(s, sh)) return 0;
+    return 1;
+}
+
+static int is_init_eligible(const Staff *s, const Shift *sh) {
+    if (strcmp(s->skill, sh->skill)) return 0;
+    if (is_on_holiday(s->id, sh->effective_day)) return 0;
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "Usage: %s <input_file>\n", argv[0]); return 1; }
+    FILE *f = fopen(argv[1], "r");
+    if (!f) { fprintf(stderr, "Cannot open %s\n", argv[1]); return 1; }
+
+    char line[MAX_LINE];
+    int section = -1;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (!line[0]) continue;
+        if (!strcmp(line, "STAFF")) { section = 0; continue; }
+        if (!strcmp(line, "SHIFTS")) { section = 1; continue; }
+        if (!strcmp(line, "PREFERENCES")) { section = 2; continue; }
+        if (!strcmp(line, "HOLIDAYS")) { section = 3; continue; }
+        if (section == 0) {
+            Staff *s = &staff[num_staff];
+            char mx[32];
+            if (sscanf(line, "%31s %63s %15s %7s %31s", s->id, s->name, s->role, s->skill, mx) == 5) {
+                s->max_hrs = atof(mx);
+                s->total_hours = 0.0;
+                s->assigned_count = 0;
+                memset(s->effective_days, 0, sizeof(s->effective_days));
+                s->num_assigned = 0;
+                num_staff++;
+            }
+        } else if (section == 1) {
+            Shift *sh = &shifts[num_shifts];
+            char dy[8], st[8], en[8];
+            if (sscanf(line, "%31s %7s %7s %7s %7s %d", sh->id, dy, st, en, sh->skill, &sh->slots) == 6) {
+                sh->day = day_to_num(dy);
+                sh->start_min = parse_time(st);
+                sh->end_min = parse_time(en);
+                sh->duration_min = (sh->end_min > sh->start_min)
+                    ? (sh->end_min - sh->start_min)
+                    : (1440 - sh->start_min + sh->end_min);
+                sh->shift_hours = (double)(sh->duration_min / 30) * 0.5;
+                sh->effective_day = (sh->start_min >= 1200) ? ((sh->day + 1) % 7) : sh->day;
+                sh->start_abs = sh->day * 1440 + sh->start_min;
+                sh->end_abs = sh->start_abs + sh->duration_min;
+                sh->eligible_count = 0;
+                sh->num_filled = 0;
+                num_shifts++;
+            }
+        } else if (section == 2) {
+            Pref *p = &prefs[num_prefs];
+            if (sscanf(line, "%31s %31s %d", p->staff_id, p->shift_id, &p->score) == 3) num_prefs++;
+        } else if (section == 3) {
+            Holiday *h = &holidays[num_holidays];
+            char dy[8];
+            if (sscanf(line, "%31s %7s", h->staff_id, dy) == 2) {
+                h->day = day_to_num(dy);
+                num_holidays++;
+            }
+        }
+    }
+    fclose(f);
+
+    for (int i = 0; i < num_shifts; i++)
+        for (int j = 0; j < num_staff; j++)
+            if (is_init_eligible(&staff[j], &shifts[i])) shifts[i].eligible_count++;
+
+    int order[MAX_SHIFTS];
+    for (int i = 0; i < num_shifts; i++) order[i] = i;
+    for (int i = 1; i < num_shifts; i++) {
+        int key = order[i], j = i - 1;
+        while (j >= 0) {
+            Shift *a = &shifts[order[j]], *b = &shifts[key];
+            int cmp = (a->eligible_count != b->eligible_count)
+                ? (a->eligible_count - b->eligible_count)
+                : strcmp(a->id, b->id);
+            if (cmp > 0) { order[j+1] = order[j]; j--; } else break;
+        }
+        order[j+1] = key;
+    }
+
+    for (int i = 0; i < num_shifts; i++) {
+        Shift *sh = &shifts[order[i]];
+        for (int slot = 0; slot < sh->slots; slot++) {
+            int best = -1, best_pri = -1;
+            for (int j = 0; j < num_staff; j++) {
+                Staff *s = &staff[j];
+                int already = 0;
+                for (int k = 0; k < sh->num_filled; k++)
+                    if (!strcmp(sh->assigned[k], s->id)) { already = 1; break; }
+                if (already) continue;
+                if (!is_eligible(s, sh)) continue;
+                int pri = pref_weight(get_pref_score(s->id, sh->id)) + role_bonus(s->role);
+                if (best == -1 || pri > best_pri || (pri == best_pri && strcmp(s->id, staff[best].id) < 0)) {
+                    best = j;
+                    best_pri = pri;
+                }
+            }
+            if (best >= 0) {
+                strcpy(sh->assigned[sh->num_filled], staff[best].id);
+                sh->num_filled++;
+                staff[best].total_hours += sh->shift_hours;
+                staff[best].assigned_count++;
+                staff[best].effective_days[sh->effective_day] = 1;
+                staff[best].assigned_shift_idx[staff[best].num_assigned] = order[i];
+                staff[best].num_assigned++;
+            } else {
+                strcpy(sh->assigned[sh->num_filled], "---");
+                sh->num_filled++;
+            }
+        }
+    }
+
+    printf("ROSTER\n");
+    for (int i = 0; i < num_shifts; i++) {
+        Shift *sh = &shifts[order[i]];
+        printf("%s", sh->id);
+        for (int j = 0; j < sh->num_filled; j++) printf(" %s", sh->assigned[j]);
+        printf("\n");
+    }
+
+    printf("SUMMARY\n");
+    int idx[MAX_STAFF], n = 0;
+    for (int i = 0; i < num_staff; i++)
+        if (staff[i].assigned_count > 0) idx[n++] = i;
+    for (int i = 1; i < n; i++) {
+        int key = idx[i], j = i - 1;
+        while (j >= 0) {
+            Staff *a = &staff[idx[j]], *b = &staff[key];
+            int cmp = (a->total_hours != b->total_hours)
+                ? ((a->total_hours < b->total_hours) ? 1 : -1)
+                : strcmp(a->id, b->id);
+            if (cmp > 0) { idx[j+1] = idx[j]; j--; } else break;
+        }
+        idx[j+1] = key;
+    }
+    for (int i = 0; i < n; i++) {
+        Staff *s = &staff[idx[i]];
+        printf("%s %.1f %s %d\n", s->id, s->total_hours,
+               (s->total_hours > 40.0) ? "yes" : "no", s->assigned_count);
+    }
+
+    return 0;
+}
+<<<END>>>
+
+<<<FILE environment/sample_schedule.txt>>>
+STAFF
+S1 Alice senior A 40
+S2 Bob junior A 40
+S3 Carol senior B 30
+S4 Dave junior B 20
+S5 Eve senior A 40
+S6 Frank junior A 15
+S7 Grace senior B 40
+S10 Heidi junior A 40
+SHIFTS
+SH1 Mon 08:00 16:00 A 2
+SH2 Mon 08:00 16:00 B 1
+SH3 Mon 20:00 06:00 A 1
+SH4 Tue 08:00 16:00 A 1
+SH5 Tue 08:30 16:30 A 1
+SH6 Wed 08:00 13:20 A 1
+SH7 Wed 20:00 04:00 B 1
+SH8 Thu 08:00 16:00 C 1
+PREFERENCES
+S1 SH1 5
+S2 SH1 3
+S3 SH2 1
+S4 SH2 4
+S5 SH1 2
+S5 SH3 5
+S6 SH4 5
+S10 SH5 5
+HOLIDAYS
+S1 Tue
+S3 Mon
+<<<END>>>

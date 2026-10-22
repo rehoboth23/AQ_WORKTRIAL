@@ -1,0 +1,1 @@
+[judgement] a billing module where every monetary amount must be rounded the same way at every boundary, violated in several places that use different arithmetic paths

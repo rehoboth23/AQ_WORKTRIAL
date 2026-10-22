@@ -1,0 +1,1239 @@
+<<<FILE instruction.md>>>
+# Vendor Fee Calculator Replacement
+
+A vendor's closed-source tax-and-fee calculator binary (`feecalc`) is installed at `/usr/local/bin/feecalc`. The procurement team needs an open Python replacement before the vendor contract expires. No source code or documentation is available — only the binary and a folder of sample orders.
+
+## Goal
+
+Create `/app/quotelib.py` that behaves identically to `feecalc` for any order input. Specifically, for any input of the kinds shown in `/app/sample.txt`, your program must produce **exactly the same stdout, stderr, and exit status** as `/usr/local/bin/feecalc`.
+
+## Input Format
+
+The program reads text lines from stdin:
+
+- `STATE=<2-letter code>` — US state code
+- `TYPE=<retail|wholesale|government>` — customer type
+- `TAX_EXEMPT=<true|false>` — optional, tax-exempt flag
+- `PAYMENT=<credit_card|debit|ach|cash|gift_card>` — payment method
+- `SHIP_METHOD=<standard|express|overnight>` — shipping method
+- `SHIP_ZONE=<1-5>` — shipping zone
+- `COUPON=<code>` — optional, coupon code
+- `ITEM <category> <quantity> <unit_price>` — one or more item lines
+
+Categories: `general`, `food`, `clothing`, `medicine`. Prices are in dollars with optional cents (e.g., `10.00`, `5`, `3.50`).
+
+Blank lines and unrecognized lines are ignored.
+
+## Output Format
+
+On success (exit 0), write exactly 12 lines to stdout, each as `KEY=<amount>` with amounts formatted to exactly 2 decimal places (e.g., `100.00`, `-0.55`, `0.00`):
+
+```
+SUBTOTAL=<amount>
+QTY_DISCOUNT=<amount>
+BULK_DISCOUNT=<amount>
+COUPON_DISCOUNT=<amount>
+TAXABLE=<amount>
+TAX=<amount>
+SHIPPING=<amount>
+FUEL=<amount>
+HANDLING=<amount>
+SMALL_ORDER_FEE=<amount>
+PAYMENT_SURCHARGE=<amount>
+TOTAL=<amount>
+```
+
+On validation error (exit 1), write `ERROR: <message>` to stderr and **nothing** to stdout.
+
+## Module Interface
+
+The program must also be importable as a Python module:
+
+```python
+from quotelib import calculate
+output = calculate(text: str) -> str  # returns the 12-line output string
+# raises ValueError with the error message on invalid input
+```
+
+When run as a script (`python3 /app/quotelib.py`), it reads from stdin and writes to stdout/stderr with the same contract as `feecalc`.
+
+## Sample File
+
+`/app/sample.txt` contains example orders separated by lines containing only `===`. Each block is a complete order that should be fed individually to `feecalc`. The sample covers every kind of input your program must handle, but does **not** exhaust every edge case — you must probe the binary to discover all rules.
+
+## Rules
+
+1. Your program must **not** call `feecalc` or any external program.
+2. The `feecalc` binary will **not** be available when your program is checked.
+3. Probe the binary systematically to discover every rule: tax rates by state, category exemptions by state, quantity discount tiers, bulk discount tiers, coupon codes and their logic, shipping rates, fuel surcharge, handling fees, small order fees, payment surcharges, fee caps, rounding behavior, and error handling.
+4. Every rule that affects output is observable by running the binary on inputs you can construct.
+5. The comparison is byte-for-byte: stdout, stderr, and exit code must all match exactly.
+
+## How to Probe
+
+Feed individual order blocks to the binary:
+
+```bash
+printf 'STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n' | /usr/local/bin/feecalc
+```
+
+Split the sample file on `===` lines and feed each block individually:
+
+```bash
+awk 'BEGIN{RS="==="} NF{print}' /app/sample.txt | while IFS= read -r line; do
+  printf '%s' "$line" | /usr/local/bin/feecalc
+  echo "exit: $?"
+done
+```
+
+Or more reliably:
+
+```bash
+python3 -c "
+data = open('/app/sample.txt').read()
+for block in data.split('==='):
+    block = block.strip()
+    if block:
+        import subprocess
+        r = subprocess.run(['/usr/local/bin/feecalc'], input=block, capture_output=True, text=True)
+        print(repr(block[:40]), 'rc=', r.returncode)
+        print(r.stdout, end='')
+        if r.stderr: print('STDERR:', r.stderr, end='')
+        print('---')
+"
+```
+
+Vary inputs systematically: change states, customer types, quantities at tier boundaries, subtotals at discount thresholds, categories in different states, coupons with subtotals just above and below minimums, payment methods, shipping methods, and zones. Test exact boundary values and combinations the sample doesn't cover.
+<<<END>>>
+<<<FILE environment/Dockerfile>>>
+FROM ubuntu:24.04 AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+COPY reference.c /tmp/reference.c
+RUN gcc -O2 -std=c11 -o /tmp/feecalc /tmp/reference.c && strip /tmp/feecalc
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc python3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /tmp/feecalc /usr/local/bin/feecalc
+COPY generate_sample.py /tmp/generate_sample.py
+RUN python3 /tmp/generate_sample.py > /app/sample.txt && rm /tmp/generate_sample.py
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat << 'PYEOF' > /app/quotelib.py
+#!/usr/bin/env python3
+"""Vendor fee calculator replacement - Python reimplementation of feecalc."""
+
+import sys
+
+TAX_RATES = {
+    "CA": 725, "TX": 625, "NY": 800, "FL": 600, "WA": 650,
+    "OR": 0, "MA": 625, "IL": 625, "PA": 600, "OH": 575,
+}
+
+SHIP_TABLE = {
+    "standard":  [500, 850, 1200, 1550, 2000],
+    "express":   [1000, 1500, 2000, 2500, 3200],
+    "overnight": [2000, 2800, 3800, 4800, 6000],
+}
+
+PAY_RATES = {
+    "credit_card": 250, "debit": 0, "ach": -50,
+    "cash": 0, "gift_card": 100,
+}
+
+FOOD_EXEMPT_STATES = {"CA", "NY", "MA", "PA"}
+CLOTHING_EXEMPT_STATES = {"PA"}
+SHIP_TAXED_STATES = {"TX", "FL", "OH"}
+
+
+def rhaz(a, b, d):
+    """Round half away from zero: compute round(a * b / d)."""
+    if d == 0:
+        return 0
+    prod = a * b
+    q, r = divmod(prod, d)
+    if prod < 0 and r != 0:
+        q += 1
+        r -= d
+    if prod >= 0:
+        if 2 * r >= d:
+            q += 1
+    else:
+        if 2 * r <= -d:
+            q -= 1
+    return q
+
+
+def parse_price(s):
+    """Parse a price string to cents, matching C's parse_price."""
+    p = s.lstrip(' \t')
+    neg = False
+    if p.startswith('-'):
+        neg = True
+        p = p[1:]
+    whole = 0
+    i = 0
+    while i < len(p) and p[i].isdigit():
+        whole = whole * 10 + int(p[i])
+        i += 1
+    frac = 0
+    fd = 0
+    if i < len(p) and p[i] == '.':
+        i += 1
+        while i < len(p) and p[i].isdigit() and fd < 2:
+            frac = frac * 10 + int(p[i])
+            fd += 1
+            i += 1
+    cents = whole * 100 + (frac * 10 if fd == 1 else frac)
+    if neg:
+        cents = -cents
+    return cents
+
+
+def fmt(cents):
+    """Format cents as a dollar string with 2 decimal places."""
+    neg = cents < 0
+    if neg:
+        cents = -cents
+    s = f"{cents // 100}.{cents % 100:02d}"
+    if neg:
+        s = "-" + s
+    return s
+
+
+def _atoi(s):
+    """C-style atoi."""
+    s = s.lstrip()
+    if not s:
+        return 0
+    sign = 1
+    i = 0
+    if s[0] == '-':
+        sign = -1
+        i = 1
+    elif s[0] == '+':
+        i = 1
+    result = 0
+    while i < len(s) and s[i].isdigit():
+        result = result * 10 + int(s[i])
+        i += 1
+    return sign * result
+
+
+def _parse_llong(s):
+    """Parse a string as a C long long (%lld behavior)."""
+    s = s.lstrip()
+    if not s:
+        return None
+    sign = 1
+    i = 0
+    if s[0] == '-':
+        sign = -1
+        i = 1
+    elif s[0] == '+':
+        i = 1
+    if i >= len(s) or not s[i].isdigit():
+        return None
+    result = 0
+    while i < len(s) and s[i].isdigit():
+        result = result * 10 + int(s[i])
+        i += 1
+    return sign * result
+
+
+def calculate(text):
+    """Calculate fees for an order.
+
+    Args:
+        text: Input text with key=value lines and ITEM lines.
+
+    Returns:
+        String with 12 output lines.
+
+    Raises:
+        ValueError: On validation error, with the error message.
+    """
+    state = ""
+    state_set = False
+    ctype = ""
+    type_set = False
+    texempt = False
+    texempt_set = False
+    pay = ""
+    pay_set = False
+    smeth = ""
+    smeth_set = False
+    zone = 0
+    zone_set = False
+    coup = ""
+    coup_set = False
+    items = []
+
+    for line in text.split('\n'):
+        line = line.rstrip('\r')
+        if len(line) == 0:
+            continue
+
+        if line.startswith("STATE="):
+            state_set = True
+            state = line[6:69]
+        elif line.startswith("TYPE="):
+            type_set = True
+            ctype = line[5:68]
+        elif line.startswith("TAX_EXEMPT="):
+            texempt_set = True
+            texempt = (line[11:] == "true")
+        elif line.startswith("PAYMENT="):
+            pay_set = True
+            pay = line[8:71]
+        elif line.startswith("SHIP_METHOD="):
+            smeth_set = True
+            smeth = line[12:75]
+        elif line.startswith("SHIP_ZONE="):
+            zone_set = True
+            zone = _atoi(line[10:])
+        elif line.startswith("COUPON="):
+            coup_set = True
+            coup = line[7:70]
+        elif line.startswith("ITEM "):
+            if len(items) < 1024:
+                parts = line[5:].split()
+                if len(parts) >= 3:
+                    cat = parts[0][:63]
+                    q = _parse_llong(parts[1])
+                    if q is not None:
+                        price_cents = parse_price(parts[2][:63])
+                        ext_cents = q * price_cents
+                        items.append([cat, q, price_cents, ext_cents, 0])
+
+    if not state_set:
+        raise ValueError("missing STATE")
+    if not type_set:
+        raise ValueError("missing TYPE")
+    if not pay_set:
+        raise ValueError("missing PAYMENT")
+    if not smeth_set:
+        raise ValueError("missing SHIP_METHOD")
+    if not zone_set:
+        raise ValueError("missing SHIP_ZONE")
+    if len(items) == 0:
+        raise ValueError("no items")
+    if state not in TAX_RATES:
+        raise ValueError("unknown state")
+    if ctype not in ("retail", "wholesale", "government"):
+        raise ValueError("unknown type")
+    if pay not in PAY_RATES:
+        raise ValueError("unknown payment method")
+    if smeth not in SHIP_TABLE:
+        raise ValueError("unknown shipping method")
+    if zone < 1 or zone > 5:
+        raise ValueError("invalid zone")
+    for item in items:
+        if item[1] < 0:
+            raise ValueError("negative quantity")
+    for item in items:
+        if item[2] < 0:
+            raise ValueError("negative price")
+
+    tqd = 0
+    for item in items:
+        q = item[1]
+        if q >= 50:
+            p = 10
+        elif q >= 10:
+            p = 5
+        else:
+            p = 0
+        qty_disc = rhaz(item[3], p, 100)
+        item[4] = qty_disc
+        tqd += qty_disc
+
+    sub = sum(item[3] for item in items)
+    pq = sub - tqd
+
+    ws = (ctype == "wholesale")
+    if ws:
+        if pq >= 50000:
+            bp = 5
+        elif pq >= 25000:
+            bp = 3
+        else:
+            bp = 0
+    else:
+        if pq >= 100000:
+            bp = 5
+        elif pq >= 50000:
+            bp = 3
+        else:
+            bp = 0
+    bd = rhaz(pq, bp, 100)
+    pb = pq - bd
+
+    cd = 0
+    fs = False
+    if coup_set and coup:
+        if coup == "SAVE10":
+            cd = rhaz(pb, 10, 100)
+        elif coup == "SAVE20":
+            if pb >= 10000:
+                cd = rhaz(pb, 20, 100)
+        elif coup == "DOLLAR5":
+            if pb >= 5000:
+                cd = 500
+        elif coup == "DOLLAR25":
+            if pb >= 20000:
+                cd = 2500
+        elif coup == "FREESHIP":
+            fs = True
+
+    ds = pb - cd
+
+    shp = SHIP_TABLE[smeth][zone - 1]
+    if fs:
+        shp = 0
+
+    fuel = rhaz(shp, 10, 100)
+    if fuel > 500:
+        fuel = 500
+
+    tq = sum(item[1] for item in items)
+    hdl = 200 + 50 * tq
+    if hdl > 1000:
+        hdl = 1000
+
+    gov = (ctype == "government")
+    sof = 0
+    if sub < 2500 and not gov:
+        sof = 500
+
+    exm = 0
+    for item in items:
+        cat = item[0]
+        ex = False
+        if cat == "food" and state in FOOD_EXEMPT_STATES:
+            ex = True
+        elif cat == "clothing" and state in CLOTHING_EXEMPT_STATES:
+            ex = True
+        elif cat == "medicine" and state != "WA":
+            ex = True
+        if ex:
+            exm += item[3] - item[4]
+
+    if gov or texempt:
+        txbl = 0
+        tax = 0
+    else:
+        txbl = ds - exm
+        if state in SHIP_TAXED_STATES:
+            txbl += shp
+        tax = rhaz(txbl, TAX_RATES[state], 10000)
+
+    pp = ds + tax + shp + fuel + hdl + sof
+    ps = rhaz(pp, PAY_RATES[pay], 10000)
+    tot = pp + ps
+
+    lines = [
+        f"SUBTOTAL={fmt(sub)}",
+        f"QTY_DISCOUNT={fmt(tqd)}",
+        f"BULK_DISCOUNT={fmt(bd)}",
+        f"COUPON_DISCOUNT={fmt(cd)}",
+        f"TAXABLE={fmt(txbl)}",
+        f"TAX={fmt(tax)}",
+        f"SHIPPING={fmt(shp)}",
+        f"FUEL={fmt(fuel)}",
+        f"HANDLING={fmt(hdl)}",
+        f"SMALL_ORDER_FEE={fmt(sof)}",
+        f"PAYMENT_SURCHARGE={fmt(ps)}",
+        f"TOTAL={fmt(tot)}",
+    ]
+    return '\n'.join(lines) + '\n'
+
+
+def main():
+    try:
+        text = sys.stdin.read()
+        output = calculate(text)
+        sys.stdout.write(output)
+    except ValueError as e:
+        sys.stderr.write(f"ERROR: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+PYEOF
+
+chmod +x /app/quotelib.py
+<<<END>>>
+<<<FILE tests/test_outputs.py>><arg_value>"""Tests for the vendor fee calculator replacement task."""
+
+import subprocess
+import os
+import random
+import shutil
+import pytest
+
+IMAGE_PYTHON = "/usr/bin/python3"
+ARTIFACT = "/app/quotelib.py"
+REFERENCE_C = "/tests/reference.c"
+ORIGINAL_BINARY = "/usr/local/bin/feecalc"
+HIDDEN_BINARY = "/usr/local/bin/feecalc.hidden"
+COMPILED_REF = "/tmp/_reftest_bin_feecalc"
+
+SUBENV = {
+    "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LANG": "C",
+    "LC_ALL": "C",
+}
+
+STATES = ["CA", "TX", "NY", "FL", "WA", "OR", "MA", "IL", "PA", "OH"]
+TYPES = ["retail", "wholesale", "government"]
+PAYMENTS = ["credit_card", "debit", "ach", "cash", "gift_card"]
+SHIP_METHODS = ["standard", "express", "overnight"]
+ZONES = ["1", "2", "3", "4", "5"]
+CATEGORIES = ["general", "food", "clothing", "medicine"]
+COUPONS = ["SAVE10", "SAVE20", "DOLLAR5", "DOLLAR25", "FREESHIP", "BOGUS", ""]
+
+
+def run_program(executable, input_text, is_python=False):
+    """Run a program and return (stdout, stderr, returncode)."""
+    if is_python:
+        cmd = [IMAGE_PYTHON, ARTIFACT]
+    else:
+        cmd = [executable]
+    result = subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        env=SUBENV,
+    )
+    return result.stdout, result.stderr, result.returncode
+
+
+def _order(state="CA", ctype="retail", payment="cash", smeth="standard",
+           zone="1", coupon=None, tax_exempt=None, items=None):
+    """Build an order string."""
+    lines = [
+        f"STATE={state}",
+        f"TYPE={ctype}",
+        f"PAYMENT={payment}",
+        f"SHIP_METHOD={smeth}",
+        f"SHIP_ZONE={zone}",
+    ]
+    if tax_exempt:
+        lines.append(f"TAX_EXEMPT={tax_exempt}")
+    if coupon is not None:
+        lines.append(f"COUPON={coupon}")
+    if items:
+        for item in items:
+            lines.append(item)
+    return "\n".join(lines)
+
+
+def _price_str(cents):
+    """Convert cents to a price string."""
+    neg = cents < 0
+    c = abs(cents)
+    s = f"{c // 100}.{c % 100:02d}"
+    if neg:
+        s = "-" + s
+    return s
+
+
+def gen_cases(seed=42):
+    """Generate deterministic test cases covering all input kinds."""
+    rng = random.Random(seed)
+    cases = []
+
+    # --- Random valid orders (150) ---
+    for _ in range(150):
+        state = rng.choice(STATES)
+        ctype = rng.choice(TYPES)
+        payment = rng.choice(PAYMENTS)
+        smeth = rng.choice(SHIP_METHODS)
+        zone = rng.choice(ZONES)
+        coupon = rng.choice(COUPONS)
+        tax_exempt = rng.choice([None, None, None, None, "true", "false"])
+        n_items = rng.randint(1, 4)
+        items = []
+        for _ in range(n_items):
+            cat = rng.choice(CATEGORIES)
+            qty = rng.choice([1, 2, 3, 5, 9, 10, 15, 25, 49, 50, 60, 75, 100])
+            price = rng.choice([
+                1.00, 2.00, 3.50, 5.00, 7.25, 10.00, 15.00, 20.00,
+                25.00, 30.00, 50.00, 75.00, 100.00, 150.00, 200.00,
+            ])
+            items.append(f"ITEM {cat} {qty} {price:.2f}")
+        cases.append(_order(
+            state=state, ctype=ctype, payment=payment,
+            smeth=smeth, zone=zone,
+            coupon=coupon if coupon else None,
+            tax_exempt=tax_exempt, items=items,
+        ))
+
+    # --- Quantity discount boundaries (qty 9/10/49/50/100) ---
+    for qty in [9, 10, 49, 50, 100]:
+        for state in ["CA", "TX", "NY", "FL", "WA"]:
+            cases.append(_order(state=state, items=[f"ITEM general {qty} 10.00"]))
+
+    # --- Bulk discount boundaries: retail/government ---
+    for cents in [49900, 50000, 99900, 100000, 49999, 50001, 99999, 100001]:
+        ps = _price_str(cents)
+        for ctype in ["retail", "government"]:
+            cases.append(_order(ctype=ctype, items=[f"ITEM general 1 {ps}"]))
+
+    # --- Wholesale bulk thresholds ---
+    for cents in [24900, 25000, 49900, 50000, 24999, 25001, 49999, 50001]:
+        ps = _price_str(cents)
+        cases.append(_order(ctype="wholesale", items=[f"ITEM general 1 {ps}"]))
+
+    # --- Bulk on post-qty-discount subtotal ---
+    # 50 items @ $10 = $500 subtotal, qty disc $50, post-qty $450 (below $500)
+    cases.append(_order(items=["ITEM general 50 10.00"]))
+    # 60 items @ $10 = $600, qty disc $60, post-qty $540 (above $500, 3% bulk)
+    cases.append(_order(items=["ITEM general 60 10.00"]))
+    # 100 items @ $10 = $1000, qty disc $100, post-qty $900 (above $500, 3%)
+    cases.append(_order(items=["ITEM general 100 10.00"]))
+    # 200 items @ $10 = $2000, qty disc $200, post-qty $1800 (above $1000, 5%)
+    cases.append(_order(items=["ITEM general 200 10.00"]))
+
+    # --- Category exemptions: all states x all categories ---
+    for state in STATES:
+        for cat in ["food", "clothing", "medicine", "general"]:
+            cases.append(_order(state=state, items=[f"ITEM {cat} 1 100.00"]))
+            # Also test with quantity discount
+            cases.append(_order(state=state, items=[f"ITEM {cat} 10 10.00"]))
+
+    # --- Rounding ties ---
+    for state, cents in [
+        ("CA", 200), ("WA", 100), ("TX", 8), ("CA", 1000), ("OH", 600),
+        ("NY", 100), ("FL", 100), ("MA", 100), ("IL", 100), ("PA", 100),
+        ("CA", 145), ("TX", 160), ("OH", 575),
+    ]:
+        cases.append(_order(state=state, items=[f"ITEM general 1 {_price_str(cents)}"]))
+
+    # --- Tax exempt and government: TAXABLE=0 ---
+    for state in STATES:
+        cases.append(_order(state=state, ctype="government", items=["ITEM general 1 100.00"]))
+        cases.append(_order(state=state, tax_exempt="true", items=["ITEM general 1 100.00"]))
+        cases.append(_order(state=state, ctype="government", items=["ITEM general 50 20.00"]))
+        cases.append(_order(state=state, tax_exempt="true", items=["ITEM food 10 50.00"]))
+
+    # --- Shipping taxed: TX/FL/OH include shipping in taxable ---
+    for state in STATES:
+        for smeth in SHIP_METHODS:
+            for zone in ZONES:
+                cases.append(_order(
+                    state=state, smeth=smeth, zone=zone,
+                    items=["ITEM general 1 100.00"],
+                ))
+
+    # --- FREESHIP zeroes shipping AND fuel ---
+    for smeth in SHIP_METHODS:
+        for zone in ZONES:
+            cases.append(_order(
+                smeth=smeth, zone=zone, coupon="FREESHIP",
+                items=["ITEM general 1 100.00"],
+            ))
+
+    # --- Fee caps: fuel cap at $5, handling cap at $10 ---
+    # Overnight zone 5: shipping $60, fuel $6 -> capped at $5
+    cases.append(_order(smeth="overnight", zone="5", items=["ITEM general 1 10.00"]))
+    # Overnight zone 4: shipping $48, fuel $4.80 (not capped)
+    cases.append(_order(smeth="overnight", zone="4", items=["ITEM general 1 10.00"]))
+    # 16 items: handling = 2 + 8 = $10 (not capped, exactly at cap)
+    cases.append(_order(items=["ITEM general 16 1.00"]))
+    # 17 items: handling = 2 + 8.50 = $10.50 -> capped at $10
+    cases.append(_order(items=["ITEM general 17 1.00"]))
+    # 15 items: handling = 2 + 7.50 = $9.50
+    cases.append(_order(items=["ITEM general 15 1.00"]))
+    # 20 items: handling = 2 + 10 = $12 -> capped at $10
+    cases.append(_order(items=["ITEM general 20 1.00"]))
+
+    # --- Small order fee ---
+    for cents in [100, 2499, 2500, 2501, 5000]:
+        cases.append(_order(items=[f"ITEM general 1 {_price_str(cents)}"]))
+    # Government small order waived
+    for cents in [100, 2499, 2500]:
+        cases.append(_order(ctype="government", items=[f"ITEM general 1 {_price_str(cents)}"]))
+    # Small order with coupon (fee based on pre-discount subtotal)
+    cases.append(_order(coupon="SAVE10", items=["ITEM general 1 20.00"]))
+    cases.append(_order(coupon="DOLLAR5", items=["ITEM general 1 10.00"]))
+
+    # --- Payment methods ---
+    for payment in PAYMENTS:
+        for cents in [1000, 10000, 100000]:
+            cases.append(_order(payment=payment, items=[f"ITEM general 1 {_price_str(cents)}"]))
+
+    # --- Coupon logic ---
+    for coupon in ["SAVE10", "SAVE20", "DOLLAR5", "DOLLAR25", "FREESHIP", "BOGUS", ""]:
+        for cents in [1000, 5000, 10000, 20000, 50000, 100000]:
+            cases.append(_order(coupon=coupon, items=[f"ITEM general 1 {_price_str(cents)}"]))
+
+    # Coupon boundaries (min checked against post-qty-bulk subtotal)
+    # SAVE20 min $100: 20 items @ $5 = $100, qty disc $5, post-qty $95 < $100
+    cases.append(_order(coupon="SAVE20", items=["ITEM general 20 5.00"]))
+    # SAVE20 min $100: 1 item @ $100, no disc, post $100 >= $100
+    cases.append(_order(coupon="SAVE20", items=["ITEM general 1 100.00"]))
+    # DOLLAR5 min $50: 10 items @ $5 = $50, qty disc $2.50, post $47.50 < $50
+    cases.append(_order(coupon="DOLLAR5", items=["ITEM general 10 5.00"]))
+    # DOLLAR5 min $50: 1 item @ $50, no disc, post $50 >= $50
+    cases.append(_order(coupon="DOLLAR5", items=["ITEM general 1 50.00"]))
+    # DOLLAR25 min $200: 10 items @ $20 = $200, qty disc $10, post $190 < $200
+    cases.append(_order(coupon="DOLLAR25", items=["ITEM general 10 20.00"]))
+    # DOLLAR25 min $200: 1 item @ $200, no disc, post $200 >= $200
+    cases.append(_order(coupon="DOLLAR25", items=["ITEM general 1 200.00"]))
+
+    # --- Multi-item orders with mixed categories ---
+    for state in STATES:
+        cases.append(_order(
+            state=state,
+            items=[
+                "ITEM general 5 20.00",
+                "ITEM food 10 10.00",
+                "ITEM clothing 3 30.00",
+                "ITEM medicine 2 50.00",
+            ],
+        ))
+
+    # --- ACH negative surcharge ---
+    for cents in [1000, 5000, 10000, 50000, 100000]:
+        cases.append(_order(payment="ach", items=[f"ITEM general 1 {_price_str(cents)}"]))
+
+    # --- Error cases ---
+    cases.append("TYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00")  # missing STATE
+    cases.append("STATE=CA\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00")  # missing TYPE
+    cases.append("STATE=CA\nTYPE=retail\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00")  # missing PAYMENT
+    cases.append("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_ZONE=1\nITEM general 1 10.00")  # missing SHIP_METHOD
+    cases.append("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nITEM general 1 10.00")  # missing SHIP_ZONE
+    cases.append("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1")  # no items
+    cases.append(_order(state="ZZ", items=["ITEM general 1 10.00"]))  # unknown state
+    cases.append(_order(ctype="business", items=["ITEM general 1 10.00"]))  # unknown type
+    cases.append(_order(payment="bitcoin", items=["ITEM general 1 10.00"]))  # unknown payment
+    cases.append(_order(smeth="teleport", items=["ITEM general 1 10.00"]))  # unknown shipping
+    cases.append(_order(zone="0", items=["ITEM general 1 10.00"]))  # invalid zone 0
+    cases.append(_order(zone="9", items=["ITEM general 1 10.00"]))  # invalid zone 9
+    cases.append(_order(items=["ITEM general -1 10.00"]))  # negative quantity
+    cases.append(_order(items=["ITEM general 1 -10.00"]))  # negative price
+    cases.append(_order(items=["ITEM general -5 -20.00"]))  # both negative (qty first)
+
+    # --- Multi-error priority ---
+    # missing STATE wins over everything
+    cases.append("TYPE=retail\nPAYMENT=bitcoin\nSHIP_METHOD=teleport\nSHIP_ZONE=9\nITEM general -1 -10.00")
+    # missing TYPE wins over unknown payment, negative qty
+    cases.append("STATE=CA\nPAYMENT=bitcoin\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general -1 10.00")
+    # missing PAYMENT wins over unknown shipping, negative qty
+    cases.append("STATE=CA\nTYPE=retail\nSHIP_METHOD=teleport\nSHIP_ZONE=1\nITEM general -1 10.00")
+    # missing SHIP_METHOD wins over invalid zone, negative qty
+    cases.append("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_ZONE=9\nITEM general -1 10.00")
+    # missing SHIP_ZONE wins over no items... wait, no items is checked after SHIP_ZONE
+    # Actually: missing SHIP_ZONE, then no items, then unknown state, etc.
+    cases.append("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard")  # missing SHIP_ZONE + no items
+    # no items wins over unknown state
+    cases.append("STATE=ZZ\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1")
+    # unknown state wins over unknown type
+    cases.append(_order(state="ZZ", ctype="business", payment="bitcoin", smeth="teleport", zone="9", items=["ITEM general -1 -10.00"]))
+    # unknown type wins over unknown payment
+    cases.append(_order(ctype="business", payment="bitcoin", items=["ITEM general -1 -10.00"]))
+    # unknown payment wins over unknown shipping
+    cases.append(_order(payment="bitcoin", smeth="teleport", zone="9", items=["ITEM general -1 -10.00"]))
+    # unknown shipping wins over invalid zone
+    cases.append(_order(smeth="teleport", zone="9", items=["ITEM general -1 -10.00"]))
+    # invalid zone wins over negative quantity
+    cases.append(_order(zone="0", items=["ITEM general -1 10.00"]))
+    # negative quantity wins over negative price
+    cases.append(_order(items=["ITEM general -1 -10.00"]))
+
+    # --- Extra random cases (100) ---
+    for _ in range(100):
+        state = rng.choice(STATES)
+        ctype = rng.choice(TYPES)
+        payment = rng.choice(PAYMENTS)
+        smeth = rng.choice(SHIP_METHODS)
+        zone = rng.choice(ZONES)
+        coupon = rng.choice(COUPONS)
+        tax_exempt = rng.choice([None, None, None, "true"])
+        n_items = rng.randint(1, 3)
+        items = []
+        for _ in range(n_items):
+            cat = rng.choice(CATEGORIES)
+            qty = rng.randint(1, 100)
+            price_cents = rng.choice([
+                1, 8, 50, 100, 200, 350, 500, 725, 1000, 1500, 2000,
+                2500, 5000, 7500, 10000, 15000, 20000, 25000, 30000,
+                50000, 100000,
+            ])
+            items.append(f"ITEM {cat} {qty} {_price_str(price_cents)}")
+        cases.append(_order(
+            state=state, ctype=ctype, payment=payment,
+            smeth=smeth, zone=zone,
+            coupon=coupon if coupon else None,
+            tax_exempt=tax_exempt, items=items,
+        ))
+
+    # --- Wholesale with various subtotals ---
+    for cents in [10000, 15000, 20000, 24900, 25000, 30000, 49900, 50000, 75000, 100000]:
+        cases.append(_order(ctype="wholesale", items=[f"ITEM general 1 {_price_str(cents)}"]))
+
+    # --- Multi-item with various combinations ---
+    for _ in range(20):
+        state = rng.choice(STATES)
+        n = rng.randint(2, 5)
+        items = []
+        for _ in range(n):
+            cat = rng.choice(CATEGORIES)
+            qty = rng.choice([1, 5, 10, 15, 50])
+            price = rng.choice([5.00, 10.00, 20.00, 50.00, 100.00])
+            items.append(f"ITEM {cat} {qty} {price:.2f}")
+        cases.append(_order(state=state, items=items))
+
+    return cases
+
+
+@pytest.fixture(scope="module")
+def ref_bin():
+    """Compile reference and hide original binary."""
+    result = subprocess.run(
+        ["gcc", "-O2", "-std=c11", "-o", COMPILED_REF, REFERENCE_C],
+        capture_output=True,
+        text=True,
+        env=SUBENV,
+    )
+    assert result.returncode == 0, f"Reference compilation failed: {result.stderr}"
+    assert os.path.isfile(COMPILED_REF), "Compiled reference binary not found"
+
+    if os.path.exists(ORIGINAL_BINARY):
+        shutil.move(ORIGINAL_BINARY, HIDDEN_BINARY)
+    assert not os.path.exists(ORIGINAL_BINARY), "Original binary still at original path"
+
+    yield COMPILED_REF
+
+    if os.path.exists(HIDDEN_BINARY):
+        shutil.move(HIDDEN_BINARY, ORIGINAL_BINARY)
+
+
+def compare_one(case, ref_executable):
+    """Compare reference and artifact on a single case."""
+    ref_out, ref_err, ref_rc = run_program(ref_executable, case)
+    art_out, art_err, art_rc = run_program(IMAGE_PYTHON, case, is_python=True)
+    if ref_out != art_out or ref_err != art_err or ref_rc != art_rc:
+        msg = f"Input:\n{case}\n"
+        msg += f"--- Reference ---\n"
+        msg += f"stdout: {ref_out!r}\n"
+        msg += f"stderr: {ref_err!r}\n"
+        msg += f"rc: {ref_rc}\n"
+        msg += f"--- Artifact ---\n"
+        msg += f"stdout: {art_out!r}\n"
+        msg += f"stderr: {art_err!r}\n"
+        msg += f"rc: {art_rc}\n"
+        return False, msg
+    return True, ""
+
+
+def test_artifact_exists():
+    """Assert /app/quotelib.py exists and is a valid Python file."""
+    assert os.path.isfile(ARTIFACT), f"{ARTIFACT} does not exist"
+    result = subprocess.run(
+        [IMAGE_PYTHON, "-c",
+         f"import py_compile; py_compile.compile('{ARTIFACT}', doraise=True)"],
+        capture_output=True,
+        text=True,
+        env=SUBENV,
+    )
+    assert result.returncode == 0, f"Artifact is not valid Python: {result.stderr}"
+
+
+def test_module_importable():
+    """Verify the module interface."""
+    result = subprocess.run(
+        [IMAGE_PYTHON, "-c",
+         'import sys; sys.path.insert(0,"/app"); import quotelib; '
+         'assert hasattr(quotelib, "calculate")'],
+        capture_output=True,
+        text=True,
+        env=SUBENV,
+    )
+    assert result.returncode == 0, f"Module not importable: {result.stderr}"
+
+
+def test_compiled_reference(ref_bin):
+    """Reference binary compiles successfully."""
+    assert os.path.isfile(ref_bin)
+
+
+def test_binary_hidden(ref_bin):
+    """Original binary is hidden during tests."""
+    assert not os.path.exists(ORIGINAL_BINARY), \
+        "Original binary must be hidden during artifact testing"
+
+
+def test_generated_cases(ref_bin):
+    """Run ~500 generated cases and compare reference vs artifact."""
+    cases = gen_cases(42)
+    assert len(cases) >= 400, f"Expected at least 400 cases, got {len(cases)}"
+    failures = []
+    for i, case in enumerate(cases):
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            failures.append(f"Case {i}:\n{msg}")
+            if len(failures) >= 5:
+                break
+    if failures:
+        pytest.fail("\n".join(failures))
+
+
+def test_sample_inputs(ref_bin):
+    """Run each sample block and compare."""
+    with open("/app/sample.txt") as f:
+        content = f.read()
+    blocks = [b.strip() for b in content.split("===") if b.strip()]
+    assert len(blocks) >= 20, f"Expected at least 20 sample blocks, got {len(blocks)}"
+    failures = []
+    for i, block in enumerate(blocks):
+        ok, msg = compare_one(block, ref_bin)
+        if not ok:
+            failures.append(f"Sample block {i}:\n{msg}")
+            if len(failures) >= 3:
+                break
+    if failures:
+        pytest.fail("\n".join(failures))
+
+
+def test_rounding_ties(ref_bin):
+    """Specific rounding tie cases that distinguish half-up from half-even."""
+    tie_cases = [
+        ("CA", 200),   # tax = 200*725/10000 = 14.5 -> 0.15 (half-up)
+        ("WA", 100),   # tax = 100*650/10000 = 6.5 -> 0.07
+        ("TX", 8),     # tax = 8*625/10000 = 0.5 -> 0.01
+        ("CA", 1000),  # tax = 1000*725/10000 = 72.5 -> 0.73
+        ("OH", 600),   # tax = 600*575/10000 = 34.5 -> 0.35
+        ("NY", 100),   # tax = 100*800/10000 = 8.0 -> 0.08 (exact, not a tie)
+        ("FL", 100),   # tax = 100*600/10000 = 6.0 -> 0.06 (exact)
+        ("CA", 145),   # tax = 145*725/10000 = 10.5125 -> 0.11
+    ]
+    cases = [_order(state=s, items=[f"ITEM general 1 {_price_str(c)}"]) for s, c in tie_cases]
+    for i, case in enumerate(cases):
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Rounding tie case {i}:\n{msg}")
+
+
+def test_tax_exempt_taxable_zero(ref_bin):
+    """Government and tax_exempt customers show TAXABLE=0.00 and TAX=0.00."""
+    cases = [
+        _order(state="CA", ctype="government", items=["ITEM general 1 100.00"]),
+        _order(state="TX", ctype="government", items=["ITEM general 50 20.00"]),
+        _order(state="NY", tax_exempt="true", items=["ITEM general 1 100.00"]),
+        _order(state="FL", tax_exempt="true", items=["ITEM food 10 50.00"]),
+        _order(state="WA", ctype="government", items=["ITEM medicine 5 30.00"]),
+    ]
+    for i, case in enumerate(cases):
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Tax exempt case {i}:\n{msg}")
+    # Also verify TAXABLE is actually 0 for government
+    for case in cases:
+        art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+        for line in art_out.strip().split("\n"):
+            if line.startswith("TAXABLE="):
+                assert line == "TAXABLE=0.00", f"Expected TAXABLE=0.00, got {line}"
+            if line.startswith("TAX="):
+                assert line == "TAX=0.00", f"Expected TAX=0.00, got {line}"
+
+
+def test_shipping_taxed(ref_bin):
+    """TX/FL/OH include shipping in taxable amount."""
+    for state in ["TX", "FL", "OH"]:
+        case = _order(state=state, items=["ITEM general 1 100.00"])
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Shipping taxed case {state}:\n{msg}")
+    for state in ["CA", "NY", "WA", "OR", "MA", "IL", "PA"]:
+        case = _order(state=state, items=["ITEM general 1 100.00"])
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Shipping not taxed case {state}:\n{msg}")
+
+
+def test_category_exemptions_all_states(ref_bin):
+    """Food exempt only in CA/NY/MA/PA; clothing only in PA; medicine everywhere except WA."""
+    for state in STATES:
+        for cat in ["food", "clothing", "medicine"]:
+            case = _order(state=state, items=[f"ITEM {cat} 1 100.00"])
+            ok, msg = compare_one(case, ref_bin)
+            if not ok:
+                pytest.fail(f"Exemption {state}/{cat}:\n{msg}")
+
+
+def test_medicine_in_wa(ref_bin):
+    """WA state with medicine must show TAXABLE including medicine."""
+    wa_case = _order(state="WA", items=["ITEM medicine 1 100.00"])
+    ca_case = _order(state="CA", items=["ITEM medicine 1 100.00"])
+    for i, case in enumerate([wa_case, ca_case]):
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Medicine case {i}:\n{msg}")
+    # WA medicine is taxed (TAXABLE > 0)
+    art_out, _, _ = run_program(IMAGE_PYTHON, wa_case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("TAXABLE="):
+            val = float(line.split("=")[1])
+            assert val > 0, f"WA medicine should be taxed, TAXABLE={val}"
+    # CA medicine is exempt (TAXABLE = 0)
+    art_out, _, _ = run_program(IMAGE_PYTHON, ca_case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("TAXABLE="):
+            val = float(line.split("=")[1])
+            assert val == 0.0, f"CA medicine should be exempt, TAXABLE={val}"
+
+
+def test_quantity_discount_boundaries(ref_bin):
+    """Qty 9=no discount, 10=5%, 49=5%, 50=10%."""
+    for qty in [9, 10, 49, 50, 100]:
+        case = _order(items=[f"ITEM general {qty} 10.00"])
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Qty boundary {qty}:\n{msg}")
+    # Verify exact discount amounts
+    for qty, expected_disc in [(9, "0.00"), (10, "5.00"), (49, "24.50"), (50, "50.00")]:
+        case = _order(items=[f"ITEM general {qty} 10.00"])
+        art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+        for line in art_out.strip().split("\n"):
+            if line.startswith("QTY_DISCOUNT="):
+                assert line == f"QTY_DISCOUNT={expected_disc}", \
+                    f"Qty {qty}: expected QTY_DISCOUNT={expected_disc}, got {line}"
+
+
+def test_bulk_discount_boundaries(ref_bin):
+    """Retail: $500=3%, $1000=5%; on post-qty subtotal."""
+    for cents in [49900, 50000, 99900, 100000]:
+        case = _order(items=[f"ITEM general 1 {_price_str(cents)}"])
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Bulk boundary {_price_str(cents)}:\n{msg}")
+
+
+def test_wholesale_bulk_thresholds(ref_bin):
+    """Wholesale: $250=3%, $500=5%; half of retail thresholds."""
+    for cents in [24900, 25000, 49900, 50000]:
+        case = _order(ctype="wholesale", items=[f"ITEM general 1 {_price_str(cents)}"])
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Wholesale bulk {_price_str(cents)}:\n{msg}")
+
+
+def test_coupon_logic(ref_bin):
+    """All coupon types and invalid coupon."""
+    for coupon in ["SAVE10", "SAVE20", "DOLLAR5", "DOLLAR25", "FREESHIP", "BOGUS", ""]:
+        for cents in [5000, 10000, 20000, 50000]:
+            case = _order(coupon=coupon, items=[f"ITEM general 1 {_price_str(cents)}"])
+            ok, msg = compare_one(case, ref_bin)
+            if not ok:
+                pytest.fail(f"Coupon {coupon} @ {_price_str(cents)}:\n{msg}")
+
+
+def test_freeship_fuel(ref_bin):
+    """FREESHIP zeroes both shipping and fuel."""
+    case = _order(smeth="overnight", zone="5", coupon="FREESHIP",
+                  items=["ITEM general 1 100.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"FREESHIP+overnight+zone5:\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("SHIPPING="):
+            assert line == "SHIPPING=0.00", f"FREESHIP should zero shipping: {line}"
+        if line.startswith("FUEL="):
+            assert line == "FUEL=0.00", f"FREESHIP should zero fuel: {line}"
+
+
+def test_fee_caps(ref_bin):
+    """Fuel capped at $5 (strict >), handling capped at $10 (strict >)."""
+    # Overnight zone 5: shipping $60, fuel = 10% = $6 -> capped at $5
+    case = _order(smeth="overnight", zone="5", items=["ITEM general 1 10.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Fuel cap:\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("FUEL="):
+            assert line == "FUEL=5.00", f"Fuel should be capped at 5.00: {line}"
+    # 16 items: handling = 2 + 8 = $10 (exactly at cap, not capped)
+    case = _order(items=["ITEM general 16 1.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Handling exact cap:\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("HANDLING="):
+            assert line == "HANDLING=10.00", f"16 items handling should be 10.00: {line}"
+    # 17 items: handling = 2 + 8.50 = $10.50 -> capped at $10
+    case = _order(items=["ITEM general 17 1.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Handling capped:\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("HANDLING="):
+            assert line == "HANDLING=10.00", f"17 items handling should be capped: {line}"
+
+
+def test_small_order_fee(ref_bin):
+    """Small order fee: $5 if pre-discount subtotal < $25, waived for government."""
+    # Subtotal $24.99 -> fee $5
+    case = _order(items=["ITEM general 1 24.99"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Small order $24.99:\n{msg}")
+    # Subtotal $25.00 -> no fee
+    case = _order(items=["ITEM general 1 25.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Small order $25.00:\n{msg}")
+    # Government with subtotal $20 -> fee waived
+    case = _order(ctype="government", items=["ITEM general 1 20.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Government small order:\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("SMALL_ORDER_FEE="):
+            assert line == "SMALL_ORDER_FEE=0.00", \
+                f"Government small order fee should be waived: {line}"
+
+
+def test_payment_methods(ref_bin):
+    """All 5 payment methods including ACH (negative surcharge)."""
+    for payment in PAYMENTS:
+        case = _order(payment=payment, items=["ITEM general 1 100.00"])
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Payment {payment}:\n{msg}")
+
+
+def test_error_priority(ref_bin):
+    """Multi-error inputs report only the first error in priority order."""
+    multi_error_cases = [
+        # missing STATE wins over unknown payment + negative qty
+        ("TYPE=retail\nPAYMENT=bitcoin\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general -1 10.00",
+         "missing STATE"),
+        # missing TYPE wins over unknown payment
+        ("STATE=CA\nPAYMENT=bitcoin\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+         "missing TYPE"),
+        # no items wins over unknown state
+        ("STATE=ZZ\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1",
+         "no items"),
+        # unknown state wins over unknown type
+        (_order(state="ZZ", ctype="business", items=["ITEM general 1 10.00"]),
+         "unknown state"),
+        # negative quantity wins over negative price
+        (_order(items=["ITEM general -1 -10.00"]),
+         "negative quantity"),
+    ]
+    for i, (case, expected_msg) in enumerate(multi_error_cases):
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Error priority case {i}:\n{msg}")
+        # Verify the error message
+        _, art_err, art_rc = run_program(IMAGE_PYTHON, case, is_python=True)
+        assert art_rc == 1, f"Case {i}: expected exit 1, got {art_rc}"
+        assert expected_msg in art_err, \
+            f"Case {i}: expected '{expected_msg}' in stderr, got {art_err!r}"
+
+
+def test_error_cases(ref_bin):
+    """All error cases: exact stderr and exit code."""
+    error_cases = [
+        (_order(state="ZZ", items=["ITEM general 1 10.00"]), "unknown state"),
+        (_order(ctype="business", items=["ITEM general 1 10.00"]), "unknown type"),
+        (_order(payment="bitcoin", items=["ITEM general 1 10.00"]), "unknown payment method"),
+        (_order(smeth="teleport", items=["ITEM general 1 10.00"]), "unknown shipping method"),
+        (_order(zone="0", items=["ITEM general 1 10.00"]), "invalid zone"),
+        (_order(zone="9", items=["ITEM general 1 10.00"]), "invalid zone"),
+        (_order(items=["ITEM general -1 10.00"]), "negative quantity"),
+        (_order(items=["ITEM general 1 -10.00"]), "negative price"),
+        ("TYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00", "missing STATE"),
+        ("STATE=CA\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00", "missing TYPE"),
+        ("STATE=CA\nTYPE=retail\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00", "missing PAYMENT"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_ZONE=1\nITEM general 1 10.00", "missing SHIP_METHOD"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nITEM general 1 10.00", "missing SHIP_ZONE"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1", "no items"),
+    ]
+    for i, (case, expected_msg) in enumerate(error_cases):
+        ok, msg = compare_one(case, ref_bin)
+        if not ok:
+            pytest.fail(f"Error case {i}:\n{msg}")
+        # Verify no stdout on error
+        _, _, ref_rc = run_program(ref_bin, case)
+        art_out, art_err, art_rc = run_program(IMAGE_PYTHON, case, is_python=True)
+        assert art_rc == 1, f"Error case {i}: expected exit 1, got {art_rc}"
+        assert art_out == "", f"Error case {i}: expected no stdout, got {art_out!r}"
+        assert expected_msg in art_err, \
+            f"Error case {i}: expected '{expected_msg}' in stderr, got {art_err!r}"
+
+
+def test_invalid_coupon_no_error(ref_bin):
+    """Invalid coupon code: no discount, no error, exit 0."""
+    case = _order(coupon="BOGUS", items=["ITEM general 1 100.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Invalid coupon:\n{msg}")
+    _, _, art_rc = run_program(IMAGE_PYTHON, case, is_python=True)
+    assert art_rc == 0, f"Invalid coupon should exit 0, got {art_rc}"
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("COUPON_DISCOUNT="):
+            assert line == "COUPON_DISCOUNT=0.00", \
+                f"Invalid coupon should give 0 discount: {line}"
+
+
+def test_coupon_boundaries(ref_bin):
+    """Coupon minimums checked against post-discount subtotal."""
+    # SAVE20 min $100 post-discount: 20 items @ $5 = $100, qty disc $5, post $95 < $100
+    case = _order(coupon="SAVE20", items=["ITEM general 20 5.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"SAVE20 below min:\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("COUPON_DISCOUNT="):
+            assert line == "COUPON_DISCOUNT=0.00", \
+                f"SAVE20 below min should give 0 discount: {line}"
+    # SAVE20 at exactly $100 post-discount: 1 item @ $100, no qty disc
+    case = _order(coupon="SAVE20", items=["ITEM general 1 100.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"SAVE20 at min:\n{msg}")
+
+
+def test_bulk_on_post_qty(ref_bin):
+    """Bulk discount applies to post-quantity-discount subtotal."""
+    # 50 items @ $10 = $500 subtotal, qty disc $50, post-qty $450 (below $500)
+    case = _order(items=["ITEM general 50 10.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Bulk on post-qty (50 items):\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("BULK_DISCOUNT="):
+            assert line == "BULK_DISCOUNT=0.00", \
+                f"50 items: post-qty $450 < $500, no bulk: {line}"
+    # 60 items @ $10 = $600, qty disc $60, post-qty $540 (above $500, 3%)
+    case = _order(items=["ITEM general 60 10.00"])
+    ok, msg = compare_one(case, ref_bin)
+    if not ok:
+        pytest.fail(f"Bulk on post-qty (60 items):\n{msg}")
+    art_out, _, _ = run_program(IMAGE_PYTHON, case, is_python=True)
+    for line in art_out.strip().split("\n"):
+        if line.startswith("BULK_DISCOUNT="):
+            val = float(line.split("=")[1])
+            assert val > 0, f"60 items: post-qty $540 > $500, should have bulk: {line}"
+<<<END>>>

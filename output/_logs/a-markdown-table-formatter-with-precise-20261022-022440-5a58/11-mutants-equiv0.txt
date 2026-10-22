@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Create a file /tmp/test.md containing:\n| A |\n|---|\n| b |\n\nRun: echo '| A |\\n|---|\\n| b |' | /app/mdtbl\n\nCorrect (padding=1): produces '| A  |' (pipe, space, A, two spaces, pipe — 1 padding space + 3-wide content area + 1 padding space, but with left-align A gets 0 lp so it's 1+1+1+1+1=5 chars between pipes: ' A   ' → '| A   |')\n\nMutant (padding=2): produces '|  A    |' (2 padding spaces each side → 7 chars between pipes)\n\nThe number of spaces between pipe and content differs: 1 vs 2 on each side, violating Rule 1.",
+ "reason": "The mutant sets DEFAULT_PADDING = 2 instead of 1, so every non-compact table output has 2 spaces of padding per side instead of the required 1, producing visibly different pipe-to-content spacing."}
+```

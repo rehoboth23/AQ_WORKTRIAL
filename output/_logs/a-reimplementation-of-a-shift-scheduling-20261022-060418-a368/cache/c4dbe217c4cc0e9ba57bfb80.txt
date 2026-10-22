@@ -1,0 +1,75 @@
+VERDICT: leaks
+- "One line per staff member with at least one assignment" -> reveals decision point 11 (staff with zero assigned shifts excluded from SUMMARY)
+- UNSTATED FORMAT: test requires SUMMARY lines sorted by total hours descending, ties broken by staff ID ascending lexicographically
+<<<FILE instruction.md>>>
+# Shift Scheduling Roster Engine
+
+## Goal
+
+A compiled shift-scheduling engine at `/usr/local/bin/roster` produces weekly staff rosters from schedule input files. Your task is to write a Python reimplementation at `/app/roster.py` that produces **byte-for-byte identical stdout and exit status** to the reference binary for any valid schedule input of the kinds shown in `/app/sample_schedule.txt`.
+
+## Interface
+
+- **Invocation:** `python3 /app/roster.py <input_file>`
+- **Input:** A schedule file path given as the first command-line argument
+- **Output:** Written to stdout
+- **Exit status:** 0 on success, 1 on error (missing argument or unreadable file)
+
+## Input Format
+
+The input file contains four sections, each beginning with a header line on its own. Fields within a line are whitespace-separated.
+
+### STAFF
+`id name role skill max_hrs`
+- `id` — staff identifier (e.g., `S1`)
+- `name` — staff name (single word)
+- `role` — `senior` or `junior`
+- `skill` — skill identifier (e.g., `A`, `B`)
+- `max_hrs` — maximum weekly hours as a number (e.g., `40`)
+
+### SHIFTS
+`id day start end skill slots`
+- `id` — shift identifier (e.g., `SH1`)
+- `day` — day of week: `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun`
+- `start` — start time `HH:MM` (e.g., `08:00`)
+- `end` — end time `HH:MM`; may be earlier than `start` if the shift crosses midnight (e.g., `06:00`)
+- `skill` — required skill (e.g., `A`, `B`, `C`)
+- `slots` — number of staff needed (positive integer)
+
+### PREFERENCES
+`staff_id shift_id score`
+- `score` — integer from 1 to 5
+
+### HOLIDAYS
+`staff_id day`
+
+## Output Format
+
+Two sections are printed to stdout:
+
+### ROSTER
+- Header line: `ROSTER`
+- One line per shift (in the order the engine processes them): `shift_id` followed by space-separated assigned staff IDs, or `---` for each unfilled slot
+
+### SUMMARY
+- Header line: `SUMMARY`
+- One line per staff member, sorted by total hours descending: `staff_id hours overtime shift_count`
+  - `hours` — total hours with one decimal place (e.g., `8.0`)
+  - `overtime` — `yes` or `no`
+  - `shift_count` — number of shifts assigned
+
+## Constraints
+
+1. `/app/roster.py` must **not** invoke `/usr/local/bin/roster` or any other external program.
+2. The reference binary will be **removed** before your script is evaluated.
+3. Your script must handle any valid input of the kinds shown in `/app/sample_schedule.txt`.
+4. Output must be byte-for-byte identical, including all whitespace and newlines.
+
+## Approach
+
+1. Study `/app/sample_schedule.txt` to see all input kinds the engine handles.
+2. Run `/usr/local/bin/roster` on the sample file and on your own crafted inputs to observe behavior.
+3. Probe systematically: vary one thing at a time (preference scores, shift durations, night vs day shifts, holidays, full-time vs part-time staff, multi-slot shifts, staff with and without preferences, skills with no matching staff).
+4. Implement `/app/roster.py` to match the binary's behavior exactly.
+5. Verify your implementation against the binary on many diverse inputs before you finish.
+<<<END>>>

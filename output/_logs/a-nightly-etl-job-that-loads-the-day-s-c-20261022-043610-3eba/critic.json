@@ -1,0 +1,201 @@
+{
+  "too_easy_because": [
+    "Lock file error message ('Error: ETL lock file found at /tmp/etl.lock. Another instance may be running.') names its own exact fix \u2014 the file path and the implied action are both in the message, violating the 'no message names its own fix' criterion.",
+    "Manifest obstacle prints 'Skipping already imported: customers.csv' etc., which is a diagnostic message that directly explains the cause. The agent needs zero investigation \u2014 it just looks for the manifest and deletes it. A real stale-state obstacle should require the agent to discover WHY zero records were loaded.",
+    "The silent logic bug (missing WHERE status='completed' in queries.sql) is also the only readable code mistake. A careful agent that reads queries.sql before running catches it immediately, so the 'silent wrong value only found by checking output' property is lost for that agent. The task needs the silent obstacle to live in runtime state, not in source the agent already read.",
+    "All six non-logic obstacles produce immediate, clear error messages (no hangs, no cryptic output, no misleading symptoms). The reference agent specifically struggles with hangs and cryptic errors; this task has neither.",
+    "A methodical agent that reads the code can anticipate 5 of 7 obstacles (lock file, PostgreSQL, database, manifest, report path) and batch-check/fix them before ever running the script, reducing the chain to 1\u20132 iterations instead of 7."
+  ],
+  "walkthrough": [
+    "Agent reads all project files first: /app/etl_runner.py, /app/db/queries.sql, CSV files in /data/imports/, and any other files under /app/.",
+    "From reading queries.sql, a careful agent notices the four SQL queries lack WHERE status='completed' filters. This is the one readable code mistake \u2014 the agent may fix it now or miss it.",
+    "From reading etl_runner.py, the agent sees a lock file check at /tmp/etl.lock, a manifest check referencing /data/imports/.manifest, locale.setlocale(LC_ALL, 'en_US.UTF-8'), and report writing to /data/reports/daily_summary.txt.",
+    "Agent runs `python3 /app/etl_runner.py`. The script prints 'Error: ETL lock file found at /tmp/etl.lock. Another instance may be running.' and exits with code 1. The error message names the exact file path, making the fix trivial: rm /tmp/etl.lock.",
+    "Agent runs again. Gets psycopg2.OperationalError: connection refused on port 5432. Standard error \u2014 agent starts PostgreSQL with pg_ctlcluster 15 main start.",
+    "Agent runs again. Gets FATAL: database \"etl_db\" does not exist. Standard error \u2014 agent creates the database.",
+    "Agent runs again. Script prints 'Skipping already imported: customers.csv', 'Skipping already imported: orders.csv', 'Skipping already imported: products.csv'. These messages directly explain what is wrong and why. Agent removes /data/imports/.manifest.",
+    "Agent runs again. Gets locale.Error: unsupported locale setting. Agent runs locale-gen en_US.UTF-8.",
+    "Agent runs again. Gets NotADirectoryError on /data/reports/daily_summary.txt. Agent removes /data/reports file and mkdir -p /data/reports.",
+    "Agent runs again. Script completes with exit 0. If the agent already fixed the SQL bug from step 2, the report is correct. If not, the report shows Total Orders: 10 and Total Revenue: $730.00 \u2014 the agent must check against the business rules to notice this is wrong, then fix queries.sql.",
+    "Key weaknesses exposed: (a) the lock file error literally names the file path and its fix, (b) the 'Skipping already imported' messages are diagnostic crutches that remove all investigation from the manifest obstacle, (c) the only silent wrong-value obstacle is also the only readable-in-code obstacle, so a careful reader never encounters the silence."
+  ],
+  "spec": {
+    "name": "etl-pipeline-restore",
+    "description": "Fix a broken nightly ETL job that loads CSV exports into PostgreSQL and generates a summary report, diagnosing chained runtime obstacles and a silent logic bug.",
+    "difficulty": "hard",
+    "category": "system-administration",
+    "tags": [
+      "etl",
+      "postgresql",
+      "locale",
+      "debugging",
+      "data-pipeline"
+    ],
+    "expert_time_estimate_min": 40.0,
+    "junior_time_estimate_min": 120.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "A company's nightly ETL job at /app/etl_runner.py loads the day's CSV exports from /data/imports/ into a local PostgreSQL 15 database (etl_db) and publishes a summary report at /data/reports/daily_summary.txt. After a recent crash and some system changes, the job no longer completes. The agent must diagnose and fix all issues so a clean run produces a correct report following the stated business rules.",
+    "environment_setup": "The Dockerfile installs PostgreSQL 15, psycopg2-binary (via pip from a local wheel at /opt/wheels/), and the locales package. It initializes the PostgreSQL cluster and creates the etl_user (superuser) with password etl_pass, but does NOT create the etl_db database. It then sets up eight obstacles: (1) psycopg2-binary is NOT installed system-wide; the wheel sits at /opt/wheels/psycopg2_binary-2.9.9-cp312-cp312-linux_x86_64.whl but pip install was never run, (2) a stale lock file at /tmp/etl.lock, (3) PostgreSQL service is not started at container boot, (4) the etl_db database does not exist, (5) a hidden manifest file /data/imports/.manifest marking all CSVs as already imported, (6) the en_US.UTF-8 locale is listed in /etc/locale.gen but never generated with locale-gen, (7) /data/reports exists as a named pipe (FIFO) not a directory, causing the script to hang on open() when writing the report, and (8) a PostgreSQL RULE on the orders table rewrites SELECT queries to ignore the status column filter, so even correct-looking WHERE status='completed' clauses in queries.sql are silently bypassed at the database level. The CSV data includes 5 customers, 5 products, and 10 orders (8 completed, 2 cancelled). The Python script uses locale.setlocale for currency formatting and server-side COPY FROM for bulk loading. The RULE is created via an init script in /etc/postgresql/15/main/startup.sql (not in /app/), which the project code does not reference.",
+    "instruction_summary": "Fix /app/etl_runner.py's environment and code so that running `python3 /app/etl_runner.py` from a clean state (no stale lock, no pre-imported manifest entries) completes without error and produces /data/reports/daily_summary.txt. The report must follow these business rules: (1) Revenue and order counts include only completed orders (status='completed'); cancelled orders are excluded from ALL totals and breakdowns. (2) Regional breakdown lists regions alphabetically. (3) Top products are sorted by revenue descending, then product name ascending for ties. (4) All monetary amounts use dollar sign, comma thousands separator, and exactly two decimal places (e.g. $1,234.56). Database: PostgreSQL 15 on localhost:5432, database etl_db, user etl_user, password etl_pass.",
+    "solution_outline": [
+      "pip install /opt/wheels/psycopg2_binary-2.9.9-cp312-cp312-linux_x86_64.whl",
+      "rm -f /tmp/etl.lock",
+      "pg_ctlcluster 15 main start && sleep 2",
+      "sudo -u postgres psql -c \"CREATE DATABASE etl_db OWNER etl_user;\"",
+      "rm -f /data/imports/.manifest",
+      "locale-gen en_US.UTF-8",
+      "rm -f /data/reports && mkdir -p /data/reports",
+      "sudo -u postgres psql -d etl_db -c \"DROP RULE IF EXISTS include_all_orders ON orders;\"",
+      "python3 /app/etl_runner.py"
+    ],
+    "test_plan": [
+      "test_psycopg2_importable: python3 -c 'import psycopg2' succeeds",
+      "test_postgresql_running: pg_isready returns 0 on localhost:5432",
+      "test_database_exists: psql -h localhost -U etl_user -d etl_db -c 'SELECT 1' succeeds",
+      "test_no_select_rule_hidden: psql -h localhost -U etl_user -d etl_db -c \"SELECT tablename, rulename FROM pg_rules WHERE tablename='orders'\" returns no rows",
+      "test_customers_loaded: SELECT COUNT(*) FROM customers returns 5",
+      "test_orders_loaded: SELECT COUNT(*) FROM orders returns 10",
+      "test_products_loaded: SELECT COUNT(*) FROM products returns 5",
+      "test_report_file_exists: /data/reports/daily_summary.txt is a regular file",
+      "test_report_total_orders: report line 'Total Orders:' shows 8",
+      "test_report_total_revenue: report line 'Total Revenue:' shows $610.00",
+      "test_report_regional_breakdown: East=1/$50.00, North=4/$350.00, South=1/$100.00, West=2/$110.00",
+      "test_report_top_products: Sensor Delta=$200.00, Widget Alpha=$200.00, Gadget Beta=$150.00, Module Epsilon=$60.00 appear in order",
+      "test_cancelled_excluded_hidden: insert a large cancelled order (ORD_CHK, qty=1000, price=25, status=cancelled), call the script's generate_report via Python import, verify Total Revenue is still $610.00, then clean up",
+      "test_csv_data_in_db_hidden: SELECT name FROM customers WHERE customer_id='C002' contains 'Alpine', proving data comes from CSV not hardcoding",
+      "test_no_tool_gamma_hidden: 'Tool Gamma' does not appear anywhere in the report (its only orders are cancelled)",
+      "test_no_fifo_hidden: test -p /data/reports returns 1 (not a named pipe)"
+    ],
+    "anti_cheat": "The PostgreSQL RULE is created during cluster init via /etc/postgresql/15/main/startup.sql, not in any project file under /app/. The queries in /app/db/queries.sql already contain WHERE status='completed', so reading the project source suggests the SQL is correct. Hard-coding report values fails because test_cancelled_excluded_hidden inserts fresh data and re-runs report generation. Deleting cancelled rows from the CSV fails because test_orders_loaded expects 10 rows total. Changing cancelled statuses to 'completed' in the CSV fails because test_cancelled_excluded_hidden adds a new cancelled order that the unfixed RULE would still expose. The manifest, lock file, locale, FIFO, and missing package obstacles are all runtime state invisible in the project source.",
+    "failure_modes": "An agent that only reads the project code and never runs the script will miss all runtime obstacles (missing package, lock, PostgreSQL down, missing DB, stale manifest, locale, FIFO hang, database RULE). An agent that fixes errors one at a time without checking the final report output will miss the silent RULE bug. An agent who doesn't use ls -la to check for hidden files will miss the .manifest dotfile. An agent who sees the script hang on the FIFO may kill it and assume a transient issue rather than investigating the file type. An agent who reads queries.sql and sees WHERE status='completed' will think the SQL is correct and must discover the RULE by querying pg_rules or testing the database directly. An agent who hard-codes report output passes basic value checks but fails the hidden test that inserts additional data and regenerates.",
+    "faults": [],
+    "requirements": [],
+    "themes": [],
+    "starter": "",
+    "spec_document": "",
+    "property": "",
+    "reported_symptom": "",
+    "sites": [],
+    "partial_fix": "",
+    "preserved_behaviours": [],
+    "decoys": [],
+    "hidden_edge_cases": [],
+    "why_not_textbook": "",
+    "static_read": "",
+    "crux": "",
+    "challenge_kind": "long_road",
+    "sequence_invariant": "",
+    "nameable_fix": "",
+    "self_check_blind_spot": "",
+    "reference_in_environment": "None. There is no .git history, no backup of the correct queries.sql, no test files, and no comments in the code marking any obstacle. The queries.sql contains correct WHERE clauses. The PostgreSQL RULE is in /etc/postgresql/15/main/startup.sql (outside /app/) with no comment marking it as a bug. The wheel file is at /opt/wheels/ with no README.",
+    "interaction": "",
+    "runnable_reference": "",
+    "failing_state": "Running `python3 /app/etl_runner.py` prints 'ModuleNotFoundError: No module named psycopg2' and exits with code 1.",
+    "end_state": [
+      "Running `python3 /app/etl_runner.py` completes with exit code 0 and no errors on stderr",
+      "The file /data/reports/daily_summary.txt exists and is a regular file",
+      "The report contains 'Total Orders: 8'",
+      "The report contains 'Total Revenue: $610.00'",
+      "The report's regional breakdown shows East: 1 orders/$50.00, North: 4 orders/$350.00, South: 1 orders/$100.00, West: 2 orders/$110.00",
+      "The report's top products include Sensor Delta, Widget Alpha, Gadget Beta, and Module Epsilon with their correct revenues",
+      "The report does not contain 'Tool Gamma' (cancelled-only product)",
+      "The etl_db database contains 5 customers, 5 products, and 10 orders matching the CSV data",
+      "The orders table has no SELECT-rewriting RULEs (pg_rules returns no rows for tablename='orders')",
+      "/data/reports is a directory (not a FIFO or regular file)"
+    ],
+    "obstacles": [
+      {
+        "stage": "dependencies",
+        "symptom": "ModuleNotFoundError: No module named 'psycopg2' \u2014 the script fails at import before any logic runs.",
+        "cause": "psycopg2-binary was never pip-installed; the wheel sits at /opt/wheels/psycopg2_binary-2.9.9-cp312-cp312-linux_x86_64.whl but the Dockerfile only copied it, never ran pip install.",
+        "revealed_by": "start",
+        "fix": "pip install /opt/wheels/psycopg2_binary-2.9.9-cp312-cp312-linux_x86_64.whl",
+        "hidden_test": "test_psycopg2_importable"
+      },
+      {
+        "stage": "stale_state",
+        "symptom": "Script prints 'Error: ETL run cannot proceed (lock held). Exiting.' and exits with code 1. No file path is mentioned.",
+        "cause": "A stale /tmp/etl.lock PID file left by a previous crashed run. The script checks for its existence before proceeding.",
+        "revealed_by": "fixing obstacle 1 (psycopg2 importable, script begins execution)",
+        "fix": "Remove the lock file: rm -f /tmp/etl.lock",
+        "hidden_test": "test_report_file_exists"
+      },
+      {
+        "stage": "service",
+        "symptom": "psycopg2.OperationalError: connection to server at localhost (127.0.0.1), port 5432 failed: Connection refused",
+        "cause": "PostgreSQL service is not running; the container starts with sleep infinity, not pg_ctlcluster.",
+        "revealed_by": "fixing obstacle 2 (lock removed, script proceeds to DB connection attempt)",
+        "fix": "Start PostgreSQL: pg_ctlcluster 15 main start",
+        "hidden_test": "test_postgresql_running"
+      },
+      {
+        "stage": "environment",
+        "symptom": "psycopg2.OperationalError: FATAL: database \"etl_db\" does not exist",
+        "cause": "The etl_db database was never created; the Dockerfile only created the user.",
+        "revealed_by": "fixing obstacle 3 (PostgreSQL running, script attempts connection to etl_db)",
+        "fix": "Create the database: sudo -u postgres psql -c \"CREATE DATABASE etl_db OWNER etl_user;\"",
+        "hidden_test": "test_database_exists"
+      },
+      {
+        "stage": "stale_state",
+        "symptom": "Script completes without error but report shows Total Orders: 0, Total Revenue: $0.00. The data-load step prints 'Data load complete: 0 customers, 0 products, 0 orders' with no explanation for why nothing was loaded.",
+        "cause": "A hidden manifest file /data/imports/.manifest (dotfile invisible to plain ls) records all three CSVs as already imported from the previous run, causing the script to skip them silently.",
+        "revealed_by": "fixing obstacle 4 (database exists, script runs schema creation and proceeds to data loading)",
+        "fix": "Delete the manifest: rm -f /data/imports/.manifest",
+        "hidden_test": "test_orders_loaded"
+      },
+      {
+        "stage": "environment",
+        "symptom": "locale.Error: unsupported locale setting when generate_report() calls locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')",
+        "cause": "The en_US.UTF-8 locale is listed in /etc/locale.gen but was never compiled with locale-gen; the slim image has the locales package but no generated locale data.",
+        "revealed_by": "fixing obstacle 5 (data loads successfully, script proceeds to report generation which requires locale)",
+        "fix": "Generate the locale: locale-gen en_US.UTF-8",
+        "hidden_test": "test_report_total_revenue"
+      },
+      {
+        "stage": "environment",
+        "symptom": "The script hangs indefinitely after printing 'Generating report...' \u2014 it never returns and never writes the file. No error is produced; the process is stuck in the open() syscall.",
+        "cause": "/data/reports exists as a named pipe (FIFO, created by mkfifo in the Dockerfile), not a directory. When the script calls open('/data/reports/daily_summary.txt', 'w'), the kernel attempts to resolve the path through the FIFO, which blocks because no reader has the FIFO open. The agent must recognize the hang and investigate the file type.",
+        "revealed_by": "fixing obstacle 6 (locale set, script proceeds to write the report file)",
+        "fix": "Remove the FIFO and create a directory: rm -f /data/reports && mkdir -p /data/reports",
+        "hidden_test": "test_no_fifo_hidden"
+      },
+      {
+        "stage": "logic",
+        "symptom": "Script completes successfully with no errors, but the report shows Total Orders: 10 and Total Revenue: $730.00 instead of the correct 8 and $610.00. Cancelled orders (ORD003, ORD007) are incorrectly included. The queries in /app/db/queries.sql already contain WHERE status='completed', so reading the source gives a false sense of correctness.",
+        "cause": "A PostgreSQL RULE named 'include_all_orders' on the orders table (created by /etc/postgresql/15/main/startup.sql during cluster init) rewrites SELECT queries to replace WHERE status='completed' with a condition that is always true, silently bypassing the filter at the database level. This is runtime database state, not in any project source file under /app/.",
+        "revealed_by": "fixing obstacle 7 (script runs end-to-end without error; silent wrong output only found by checking against business rules, then querying pg_rules or testing DB directly)",
+        "fix": "Drop the RULE: sudo -u postgres psql -d etl_db -c \"DROP RULE IF EXISTS include_all_orders ON orders;\"",
+        "hidden_test": "test_cancelled_excluded_hidden"
+      }
+    ],
+    "shortcut_guards": [
+      {
+        "shortcut": "Delete cancelled orders from the CSV files so only 8 completed orders remain, avoiding the need to fix the SQL filter or database RULE",
+        "hidden_test": "test_orders_loaded checks for exactly 10 orders in the database (including the 2 cancelled ones from the original CSV)"
+      },
+      {
+        "shortcut": "Change the status of cancelled orders from 'cancelled' to 'completed' in the CSV data",
+        "hidden_test": "test_cancelled_excluded_hidden inserts a new cancelled order (ORD_CHK) with revenue $25,000 and regenerates the report; if the RULE still exists, the report shows $25,610.00 and fails"
+      },
+      {
+        "shortcut": "Hard-code the report file with the correct values instead of generating it from the database",
+        "hidden_test": "test_cancelled_excluded_hidden inserts fresh data and calls the script's generate_report function; a hard-coded report won't reflect the new cancelled order being properly excluded"
+      },
+      {
+        "shortcut": "Remove the locale.setlocale call entirely without generating the locale, causing number formatting to differ",
+        "hidden_test": "test_report_total_revenue parses the dollar-formatted value; without en_US.UTF-8 locale the thousands separator may be wrong or missing, causing the value parse to fail"
+      },
+      {
+        "shortcut": "Instead of dropping the RULE, modify queries.sql to use a subquery that bypasses the RULE (e.g., SELECT * FROM (SELECT * FROM orders) AS o WHERE status='completed')",
+        "hidden_test": "test_no_select_rule_hidden checks that pg_rules returns no rows for tablename='orders'; any remaining RULE on the orders table fails the test"
+      },
+      {
+        "shortcut": "Instead of removing the FIFO and creating a directory, write the report to a different path like /tmp/daily_summary.txt and symlink or copy it",
+        "hidden_test": "test_report_file_exists checks that /data/reports/daily_summary.txt exists as a regular file AND test_no_fifo_hidden checks /data/reports is not a named pipe"
+      }
+    ],
+    "offline": "All packages are pre-placed in the image: PostgreSQL 15 (apt), the psycopg2-binary wheel at /opt/wheels/psycopg2_binary-2.9.9-cp312-cp312-linux_x86_64.whl, and the locales package (apt). locale-gen compiles locale data from on-disk definitions without network. pip install from the local wheel requires no network. No apt-get or internet access is needed at solve time.",
+    "expected_agent_steps": null
+  }
+}

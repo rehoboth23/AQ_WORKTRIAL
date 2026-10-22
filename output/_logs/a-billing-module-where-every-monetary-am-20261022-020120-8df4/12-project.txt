@@ -1,0 +1,641 @@
+<<<MANIFEST>>>
+environment/billing/__init__.py
+environment/billing/utils.py
+environment/billing/core.py
+environment/billing/discounts.py
+environment/billing/fees.py
+environment/billing/bulk.py
+environment/billing/tax.py
+environment/invoices/sample.json
+environment/run_invoice.py
+<<<END>>>
+<<<FILE environment/billing/__init__.py>>>
+"""Billing module for invoice calculations.
+
+All monetary amounts should be rounded using round-half-up
+to 2 decimal places (standard business rounding).
+"""
+
+from billing.utils import round_money, format_money, TWO_PLACES
+from billing.core import (
+    calculate_subtotal,
+    calculate_line_tax,
+    calculate_line_total,
+    calculate_tax,
+    calculate_total,
+)
+from billing.discounts import (
+    calculate_volume_discount,
+    calculate_loyalty_discount,
+    calculate_early_payment_discount,
+)
+from billing.fees import (
+    calculate_service_fee,
+    calculate_processing_fee,
+    calculate_late_fee,
+)
+from billing.bulk import (
+    calculate_surcharge,
+    calculate_bulk_discount,
+)
+from billing.tax import (
+    calculate_additional_tax,
+    calculate_compound_tax,
+    calculate_withholding,
+)
+
+__all__ = [
+    'round_money',
+    'format_money',
+    'TWO_PLACES',
+    'calculate_subtotal',
+    'calculate_line_tax',
+    'calculate_line_total',
+    'calculate_tax',
+    'calculate_total',
+    'calculate_volume_discount',
+    'calculate_loyalty_discount',
+    'calculate_early_payment_discount',
+    'calculate_service_fee',
+    'calculate_processing_fee',
+    'calculate_late_fee',
+    'calculate_surcharge',
+    'calculate_bulk_discount',
+    'calculate_additional_tax',
+    'calculate_compound_tax',
+    'calculate_withholding',
+]
+<<<END>>>
+<<<FILE environment/billing/utils.py>>>
+"""Utility functions for monetary calculations.
+
+Provides the standard rounding function used throughout the billing
+module. All monetary amounts must be rounded to 2 decimal places
+using round-half-up (standard business rounding).
+"""
+
+from decimal import Decimal, ROUND_HALF_UP
+
+TWO_PLACES = Decimal('0.01')
+
+
+def round_money(amount):
+    """Round a monetary amount to 2 decimal places using round-half-up.
+
+    Standard business rounding: when a value is exactly halfway
+    between two possibilities, it rounds away from zero.
+
+    Args:
+        amount: A Decimal value to round.
+
+    Returns:
+        Decimal: The amount rounded to 2 decimal places with ROUND_HALF_UP.
+    """
+    if amount is None:
+        return Decimal('0.00')
+    return amount.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
+def format_money(amount):
+    """Format a monetary amount for display.
+
+    Rounds the amount using round_money, then formats as a string
+    with 2 decimal places.
+
+    Args:
+        amount: A Decimal value to format.
+
+    Returns:
+        str: The amount formatted as a currency string.
+    """
+    rounded = round_money(amount)
+    return f"{rounded:.2f}"
+<<<END>>>
+<<<FILE environment/billing/core.py>>>
+"""Core billing calculations: subtotals, line items, taxes, and totals."""
+
+from decimal import Decimal
+
+from billing.utils import round_money
+
+
+def calculate_line_total(quantity, unit_price):
+    """Calculate the total for a single line item.
+
+    Args:
+        quantity: Number of units (int or Decimal).
+        unit_price: Price per unit (Decimal).
+
+    Returns:
+        Decimal: The line total rounded to 2 decimal places.
+    """
+    total = Decimal(str(quantity)) * unit_price
+    return round_money(total)
+
+
+def calculate_subtotal(items):
+    """Calculate the subtotal for a list of line items.
+
+    Each item is a dict with 'quantity' (int) and 'unit_price' (Decimal).
+
+    Args:
+        items: List of dicts with 'quantity' and 'unit_price' keys.
+
+    Returns:
+        Decimal: The subtotal rounded to 2 decimal places.
+    """
+    subtotal = Decimal('0')
+    for item in items:
+        line_total = Decimal(str(item['quantity'])) * item['unit_price']
+        subtotal += line_total
+    return round_money(subtotal)
+
+
+def calculate_line_tax(subtotal, rate):
+    """Calculate tax on a subtotal at the given rate.
+
+    Uses standard rounding for tax amounts.
+
+    Args:
+        subtotal: The taxable amount (Decimal).
+        rate: The tax rate as a decimal (e.g., 0.0625 for 6.25%).
+
+    Returns:
+        Decimal: The tax amount rounded to 2 decimal places.
+    """
+    tax = subtotal * rate
+    return round(tax, 2)
+
+
+def calculate_tax(subtotal, rate, tax_exempt=False):
+    """Calculate tax with optional tax-exempt status.
+
+    Args:
+        subtotal: The taxable amount (Decimal).
+        rate: The tax rate as a decimal (e.g., 0.0625 for 6.25%).
+        tax_exempt: Whether the item is tax-exempt.
+
+    Returns:
+        Decimal: The tax amount, or 0.00 if tax-exempt.
+    """
+    if tax_exempt:
+        return Decimal('0.00')
+    tax = subtotal * rate
+    return round_money(tax)
+
+
+def calculate_total(subtotal, tax, discount, fees):
+    """Calculate the final invoice total.
+
+    total = subtotal + tax - discount + fees
+
+    Args:
+        subtotal: The subtotal amount (Decimal).
+        tax: The total tax amount (Decimal).
+        discount: The total discount amount (Decimal).
+        fees: The total fees amount (Decimal).
+
+    Returns:
+        Decimal: The final total rounded to 2 decimal places.
+    """
+    total = subtotal + tax - discount + fees
+    return round_money(total)
+<<<END>>>
+<<<FILE environment/billing/discounts.py>>>
+"""Discount calculations: volume, loyalty, and early payment discounts."""
+
+from decimal import Decimal, ROUND_DOWN
+
+from billing.utils import round_money
+
+
+def calculate_volume_discount(amount, rate):
+    """Calculate volume discount based on order amount.
+
+    Truncate to ensure we never over-discount the customer.
+
+    Args:
+        amount: The base amount to discount (Decimal).
+        rate: The discount rate as a decimal (e.g., 0.125 for 12.5%).
+
+    Returns:
+        Decimal: The discount amount rounded to 2 decimal places.
+    """
+    discount = amount * rate
+    return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+
+
+def calculate_loyalty_discount(amount, rate):
+    """Calculate loyalty program discount.
+
+    Args:
+        amount: The base amount to discount (Decimal).
+        rate: The loyalty discount rate as a decimal.
+
+    Returns:
+        Decimal: The discount amount rounded to 2 decimal places.
+    """
+    discount = amount * rate
+    return round_money(discount)
+
+
+def calculate_early_payment_discount(amount, days_early, rate_per_day):
+    """Calculate early payment discount.
+
+    The discount increases with the number of days early,
+    capped at a maximum rate to prevent over-discounting.
+
+    Args:
+        amount: The invoice amount (Decimal).
+        days_early: Number of days the payment is early (int).
+        rate_per_day: Discount rate per day as a decimal.
+
+    Returns:
+        Decimal: The discount amount rounded to 2 decimal places.
+    """
+    effective_rate = rate_per_day * Decimal(str(days_early))
+    discount = amount * effective_rate
+    return round_money(discount)
+<<<END>>>
+<<<FILE environment/billing/fees.py>>>
+"""Fee calculations: service fees, processing fees, and late fees."""
+
+from decimal import Decimal
+
+from billing.utils import round_money
+
+PROCESSING_FEE_RATE = Decimal('0.025')
+PROCESSING_FEE_MINIMUM = Decimal('0.50')
+
+
+def calculate_service_fee(amount, rate):
+    """Calculate service fee as a percentage of the amount.
+
+    Format to standard currency display precision.
+
+    Args:
+        amount: The base amount (Decimal).
+        rate: The service fee rate as a decimal (e.g., 0.05 for 5%).
+
+    Returns:
+        Decimal: The service fee rounded to 2 decimal places.
+    """
+    fee = amount * rate
+    return Decimal(f"{fee:.2f}")
+
+
+def calculate_processing_fee(amount):
+    """Calculate processing fee: 2.5% with a minimum of $0.50.
+
+    Args:
+        amount: The base amount (Decimal).
+
+    Returns:
+        Decimal: The processing fee rounded to 2 decimal places.
+    """
+    fee = amount * PROCESSING_FEE_RATE
+    fee = round_money(fee)
+    if fee < PROCESSING_FEE_MINIMUM:
+        return PROCESSING_FEE_MINIMUM
+    return fee
+
+
+def calculate_late_fee(amount, days_late, daily_rate):
+    """Calculate late payment fee.
+
+    Args:
+        amount: The outstanding amount (Decimal).
+        days_late: Number of days the payment is late (int).
+        daily_rate: Daily late fee rate as a decimal.
+
+    Returns:
+        Decimal: The late fee rounded to 2 decimal places.
+    """
+    fee = amount * daily_rate * Decimal(str(days_late))
+    return round_money(fee)
+<<<END>>>
+<<<FILE environment/billing/bulk.py>>>
+"""Bulk order calculations: surcharges and bulk discounts."""
+
+from decimal import Decimal
+
+from billing.utils import round_money
+
+
+def calculate_surcharge(amount, rate):
+    """Calculate surcharge as a percentage of the amount.
+
+    Convert to cents for precision, then back to dollars.
+
+    Args:
+        amount: The base amount (Decimal).
+        rate: The surcharge rate as a decimal (e.g., 0.125 for 12.5%).
+
+    Returns:
+        Decimal: The surcharge rounded to 2 decimal places.
+    """
+    surcharge = amount * rate
+    # Cents conversion for precise rounding
+    cents = int(surcharge * 100)
+    return Decimal(cents) / 100
+
+
+def calculate_bulk_discount(amount, rate):
+    """Calculate bulk order discount.
+
+    Args:
+        amount: The base amount (Decimal).
+        rate: The bulk discount rate as a decimal.
+
+    Returns:
+        Decimal: The discount amount rounded to 2 decimal places.
+    """
+    discount = amount * rate
+    return round_money(discount)
+<<<END>>>
+<<<FILE environment/billing/tax.py>>>
+"""Tax calculations: additional taxes, compound taxes, and withholding."""
+
+from decimal import Decimal, ROUND_FLOOR
+
+from billing.utils import round_money
+
+
+def calculate_additional_tax(amount, rate):
+    """Calculate additional regulatory tax.
+
+    Floor rounding to avoid over-collection of tax.
+
+    Args:
+        amount: The base amount (Decimal).
+        rate: The additional tax rate as a decimal (e.g., 0.125 for 12.5%).
+
+    Returns:
+        Decimal: The additional tax rounded to 2 decimal places.
+    """
+    tax = amount * rate
+    # Convert to cents, floor, convert back
+    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)
+    return cents / 100
+
+
+def calculate_compound_tax(amount, rate1, rate2):
+    """Calculate compound tax with two rates applied sequentially.
+
+    First rate is applied to the base amount, then second rate
+    is applied to the amount including the first tax.
+
+    Args:
+        amount: The base amount (Decimal).
+        rate1: The first tax rate as a decimal.
+        rate2: The second tax rate as a decimal.
+
+    Returns:
+        Decimal: The total compound tax rounded to 2 decimal places.
+    """
+    first_tax = round_money(amount * rate1)
+    second_tax = round_money((amount + first_tax) * rate2)
+    return first_tax + second_tax
+
+
+def calculate_withholding(amount, rate):
+    """Calculate tax withholding amount.
+
+    Args:
+        amount: The base amount (Decimal).
+        rate: The withholding rate as a decimal.
+
+    Returns:
+        Decimal: The withholding amount rounded to 2 decimal places.
+    """
+    withholding = amount * rate
+    return round_money(withholding)
+<<<END>>>
+<<<FILE environment/invoices/sample.json>>>
+{
+    "INV-1001": {
+        "customer": "Acme Corp",
+        "items": [
+            {"description": "Office Supplies", "quantity": 10, "unit_price": "15.00"},
+            {"description": "Printer Paper", "quantity": 5, "unit_price": "8.50"}
+        ],
+        "tax_rate": "0.0625"
+    },
+    "INV-1002": {
+        "customer": "Global Industries",
+        "items": [
+            {"description": "Bulk Widget Order", "quantity": 20, "unit_price": "10.00"}
+        ],
+        "tax_rate": "0.0625",
+        "discount_type": "volume",
+        "discount_rate": "0.10"
+    },
+    "INV-1003": {
+        "customer": "Metro Services",
+        "items": [
+            {"description": "Consulting Service", "quantity": 1, "unit_price": "150.00"}
+        ],
+        "tax_rate": "0.0625",
+        "fee_type": "service",
+        "fee_rate": "0.03"
+    },
+    "INV-1004": {
+        "customer": "Riverdale Co",
+        "items": [
+            {"description": "Equipment Rental", "quantity": 2, "unit_price": "40.00"}
+        ],
+        "tax_rate": "0.0625",
+        "surcharge_rate": "0.05"
+    },
+    "INV-1005": {
+        "customer": "Summit LLC",
+        "items": [
+            {"description": "Software License", "quantity": 1, "unit_price": "120.00"}
+        ],
+        "tax_rate": "0.0625",
+        "additional_tax_rate": "0.02"
+    },
+    "INV-1042": {
+        "customer": "TechStart Inc.",
+        "items": [
+            {"description": "Consulting Hours", "quantity": 4, "unit_price": "9.78"}
+        ],
+        "tax_rate": "0.0625"
+    }
+}
+<<<END>>>
+<<<FILE environment/run_invoice.py>>>
+#!/usr/bin/env python3
+"""Invoice runner - calculate and display invoices from sample data."""
+
+import json
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+from billing import (
+    calculate_subtotal,
+    calculate_line_tax,
+    calculate_line_total,
+    calculate_tax,
+    calculate_total,
+    calculate_volume_discount,
+    calculate_loyalty_discount,
+    calculate_early_payment_discount,
+    calculate_service_fee,
+    calculate_processing_fee,
+    calculate_late_fee,
+    calculate_surcharge,
+    calculate_bulk_discount,
+    calculate_additional_tax,
+    calculate_compound_tax,
+    calculate_withholding,
+)
+
+
+def load_invoices():
+    """Load invoice data from the sample JSON file."""
+    invoices_path = Path(__file__).parent / 'invoices' / 'sample.json'
+    with open(invoices_path) as f:
+        return json.load(f)
+
+
+def run_invoice(invoice_id):
+    """Calculate and display an invoice.
+
+    Args:
+        invoice_id: The invoice ID to process.
+
+    Returns:
+        dict: The calculated invoice amounts.
+    """
+    invoices = load_invoices()
+
+    if invoice_id not in invoices:
+        print(f"Invoice {invoice_id} not found.")
+        sys.exit(1)
+
+    inv = invoices[invoice_id]
+
+    # Parse line items
+    items = []
+    for item in inv.get('items', []):
+        items.append({
+            'description': item['description'],
+            'quantity': item['quantity'],
+            'unit_price': Decimal(item['unit_price']),
+        })
+
+    # Calculate subtotal
+    subtotal = calculate_subtotal(items)
+
+    # Calculate primary tax
+    tax_rate = Decimal(inv.get('tax_rate', '0'))
+    tax_exempt = inv.get('tax_exempt', False)
+    if tax_exempt:
+        tax = calculate_tax(subtotal, tax_rate, tax_exempt=True)
+    elif tax_rate != 0:
+        tax = calculate_line_tax(subtotal, tax_rate)
+    else:
+        tax = Decimal('0.00')
+
+    # Calculate discounts
+    discount = Decimal('0.00')
+    discount_type = inv.get('discount_type', '')
+    if discount_type == 'volume':
+        discount = calculate_volume_discount(
+            subtotal, Decimal(inv.get('discount_rate', '0'))
+        )
+    elif discount_type == 'loyalty':
+        discount = calculate_loyalty_discount(
+            subtotal, Decimal(inv.get('discount_rate', '0'))
+        )
+    elif discount_type == 'early_payment':
+        days_early = inv.get('days_early', 0)
+        rate_per_day = Decimal(inv.get('discount_rate', '0'))
+        discount = calculate_early_payment_discount(subtotal, days_early, rate_per_day)
+
+    # Calculate fees
+    fees = Decimal('0.00')
+    fee_type = inv.get('fee_type', '')
+    if fee_type == 'service':
+        fees = calculate_service_fee(
+            subtotal, Decimal(inv.get('fee_rate', '0'))
+        )
+    elif fee_type == 'processing':
+        fees = calculate_processing_fee(subtotal)
+    elif fee_type == 'late':
+        days_late = inv.get('days_late', 0)
+        daily_rate = Decimal(inv.get('fee_rate', '0'))
+        fees = calculate_late_fee(subtotal, days_late, daily_rate)
+
+    # Calculate surcharges
+    surcharge = Decimal('0.00')
+    surcharge_rate_str = inv.get('surcharge_rate', '0')
+    if surcharge_rate_str and Decimal(surcharge_rate_str) != 0:
+        surcharge = calculate_surcharge(subtotal, Decimal(surcharge_rate_str))
+
+    # Calculate additional taxes
+    additional_tax = Decimal('0.00')
+    additional_tax_rate_str = inv.get('additional_tax_rate', '0')
+    if additional_tax_rate_str and Decimal(additional_tax_rate_str) != 0:
+        additional_tax = calculate_additional_tax(
+            subtotal, Decimal(additional_tax_rate_str)
+        )
+
+    # Calculate total
+    total_tax = tax + additional_tax
+    total_fees = fees + surcharge
+    total = calculate_total(subtotal, total_tax, discount, total_fees)
+
+    # Display invoice
+    print(f"{'=' * 48}")
+    print(f"  INVOICE: {invoice_id}")
+    if 'customer' in inv:
+        print(f"  Customer: {inv['customer']}")
+    print(f"{'=' * 48}")
+
+    for item in items:
+        line = calculate_line_total(item['quantity'], item['unit_price'])
+        qty = item['quantity']
+        price = item['unit_price']
+        print(
+            f"  {item['description']:30s}  {qty:3d} x "
+            f"${price:>7.2f}  = ${line:>8.2f}"
+        )
+
+    print(f"{'-' * 48}")
+    print(f"  {'Subtotal':30s}  ${subtotal:>9.2f}")
+    print(f"  {'Tax':30s}  ${tax:>9.2f}")
+
+    if discount > 0:
+        print(f"  {'Discount':30s} -${discount:>8.2f}")
+    if fees > 0:
+        print(f"  {'Fees':30s}  ${fees:>9.2f}")
+    if surcharge > 0:
+        print(f"  {'Surcharge':30s}  ${surcharge:>9.2f}")
+    if additional_tax > 0:
+        print(f"  {'Additional Tax':30s}  ${additional_tax:>9.2f}")
+
+    print(f"{'=' * 48}")
+    print(f"  {'TOTAL':30s}  ${total:>9.2f}")
+    print(f"{'=' * 48}")
+
+    return {
+        'subtotal': subtotal,
+        'tax': tax,
+        'discount': discount,
+        'fees': fees,
+        'surcharge': surcharge,
+        'additional_tax': additional_tax,
+        'total': total,
+    }
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print("Usage: python run_invoice.py <invoice_id>")
+        print("Available invoices can be found in invoices/sample.json")
+        sys.exit(1)
+    run_invoice(sys.argv[1])
+<<<END>>>

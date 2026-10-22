@@ -1,0 +1,45 @@
+# mdtbl — Style Guide Compliance
+
+You inherit a Markdown table formatter called `mdtbl` somewhere in the container. It reformats Markdown tables, but its current output does not match the project's style guide. Your job is to find the tool, understand its current behaviour, and update it so every rule below is followed exactly. A sample Markdown file with tables is also somewhere under the project directory for ad-hoc testing. There is no reference formatter, no expected-output file, and no verify command — you must read the rules carefully and implement each one precisely.
+
+## Rules
+
+1. **Cell padding** is exactly 1 space between the pipe character and the cell content on each side. Empty cells render as `|  |` (pipe, space, space, pipe). With `--compact`, padding is 0.
+
+2. **Display width** counts characters in Unicode ranges U+4E00–U+9FFF, U+3040–U+30FF, and U+AC00–U+D7AF as 2; all other non-combining characters as 1. Do NOT use the Unicode East Asian Width property or external width libraries — only these three ranges are double-width.
+
+3. The **content area** of every column must be at least 3 characters wide (by display width), even if all cells (header and data) are narrower or empty.
+
+4. For a **left-aligned** column, the delimiter cell content is all dashes (`-`), exactly as many as the column content width (by display width).
+
+5. For a **right-aligned** column, the delimiter cell content is dashes followed by a colon (`:`). The total display width equals the column content width. The last character is always `:`.
+
+6. For a **center-aligned** column, the delimiter cell content is a colon, then dashes, then a colon. The total display width equals the column content width. When the column content width is exactly 3, the delimiter cell is `:-:` (colon, one dash, colon).
+
+7. A column is **numeric** if ALL non-empty data cells (not the header) match: optional `+` or `-`, then one or more digits, then optionally a decimal point followed by one or more digits. Regex: `^[+-]?\d+(\.\d+)?$`. No commas, no underscores, no scientific notation. Empty cells are ignored (neither confirm nor deny). If any non-empty data cell fails, the column is text.
+
+8. In **numeric columns**, data cells are right-aligned and the header cell is center-aligned. Center-aligned means left-padding is `floor((col_width - content_width) / 2)` and right-padding is `ceil((col_width - content_width) / 2)`. In non-numeric columns, all cells are left-aligned.
+
+9. In numeric columns, **normalize numbers** before output: strip any leading `+` sign; strip trailing zeros after the decimal point; if all digits after the decimal point are zero (or there are none left after stripping), remove the decimal point too. The minus sign is never stripped. Examples: `+3.50` → `3.5`, `100.0` → `100`, `-0.50` → `-0.5`, `+7` → `7`.
+
+10. `--sort N` sorts data rows by column N (1-based) in ascending order. For numeric columns, sort by numeric value (float comparison). For text columns, sort case-insensitively using `str.lower()`. The sort is stable: rows with equal sort keys preserve their original relative order.
+
+11. `--sort-desc` (flag, no argument) reverses the sort direction when combined with `--sort`. Without `--sort` it has no effect. With `--sort` and `--sort-desc` together, rows are in descending order by the sort column.
+
+12. Before any other cell processing, replace each **tab** character (U+0009) with exactly 4 spaces.
+
+13. **Strip** leading and trailing whitespace from each cell's content. **Collapse** any internal run of whitespace characters (spaces, tabs already expanded by rule 12) to a single space. A cell that becomes empty after stripping is treated as an empty cell.
+
+14. The sequence `\|` in cell content represents a **literal pipe** character and must not be treated as a cell separator when parsing rows. It is preserved as `\|` in the output. For display width calculation, `\|` counts as 1 character (the visible pipe it represents); the backslash is not displayed and not counted.
+
+15. If a data row has **fewer cells** than the number of header columns, pad it on the right with empty cells. If a data row has **more cells** than the number of header columns, merge the extra cells into the last column by joining them with a single space.
+
+16. Format **all tables** found in the input, not just the first. Non-table lines (including blank lines) between and around tables are preserved in the output exactly as they appear in the input, byte-for-byte. A table is defined as a header row followed immediately by a delimiter row, then zero or more data rows.
+
+17. When `--max-width N` is given, cells whose display width exceeds N are **truncated**. Show as many leading characters (by display width) as fit in N−1 width, followed by the single Unicode ellipsis character `…` (U+2026, display width 1). If N is 1, show just `…`. If no characters fit before the ellipsis (the first character's display width exceeds N−1), show just `…`. The total display width of the truncated cell content must not exceed N.
+
+18. The tool's output must end with **exactly one newline** character (`\n`). After all table formatting and non-table line preservation, if the assembled output does not end with `\n`, append one; if it ends with multiple `\n`, remove extras so only one remains. If the output is empty (zero bytes), do not add a newline.
+
+## Existing features
+
+Everything the tool does today must keep working: `--compact` (zero padding), `--no-header` (first row treated as data), `--align SPEC` (overrides auto-detected alignment per column), `--input FILE`, `--check` (validate without reformatting), `--version`, and exit code 0 on success / 1 on error.

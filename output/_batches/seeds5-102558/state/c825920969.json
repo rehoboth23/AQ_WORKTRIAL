@@ -1,0 +1,11 @@
+{
+  "topic": "@seeds/microgrid-forecast.yaml",
+  "key": "c825920969",
+  "stage": "generating",
+  "calibration": "",
+  "arm": "treatment",
+  "genre": "task",
+  "updated": "2026-10-22T10:25:58",
+  "started": "2026-10-22T10:25:58",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/forecast-hourly-electricity-demand-for-a-20261022-102558-c3a5"
+}

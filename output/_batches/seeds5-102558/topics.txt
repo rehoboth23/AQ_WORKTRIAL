@@ -1,0 +1,5 @@
+@seeds/microgrid-forecast.yaml
+@seeds/ids-rules.yaml
+@seeds/address-rules.yaml
+@seeds/reaction-kinetics.yaml
+@seeds/stream-cipher.yaml

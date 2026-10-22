@@ -1,0 +1,70 @@
+```json
+{
+  "name": "http-header-crlf-injection-audit",
+  "description": "Fix all CRLF injection vulnerabilities across a small URL-shortener HTTP service that sets headers through varied code paths and abstraction layers.",
+  "difficulty": "hard",
+  "category": "security",
+  "tags": ["http", "header-injection", "crlf", "code-audit", "python"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "LinkVault is a small URL-shortener service built on Python's http.server. A security review flagged that visiting a redirect endpoint whose target URL contains CRLF characters causes extra, attacker-controlled headers to appear in the HTTP response. The service is used in production and the codebase spans several modules: a main handler, an auth helper module, a JSON response builder class, and a SQLite storage layer. The developer who wrote it was conscientious about functionality but unaware of header injection risks, so user-supplied values flow into response headers through several different mechanisms without any sanitization.",
+  "environment_setup": "The Dockerfile installs curl (for the agent to test with), copies the LinkVault Python package into /app/linkvault/ (files: __init__.py, app.py, auth.py, response.py, store.py), and creates /app/data/ for the SQLite database. The database is initialised on first server start (tables created, an 'admin' user seeded with password 'admin123' and display name 'Administrator', plus two sample short links). No pip packages are needed—only the Python standard library is used. The service starts with `python3 -m linkvault.app` on port 8080. All five CRLF-injection sites are present in the shipped code; none is marked or commented as a vulnerability.",
+  "instruction_summary": "instruction.md explains that a header injection bug was found in the LinkVault URL shortener: when a short link's target URL contains CRLF (\\r\\n), visiting the redirect causes extra headers in the response. It states the property: 'No user-supplied value can ever put a line break (CR or LF) into any HTTP response header, cookie value, or redirect location. This must hold for every endpoint and every code path.' It tells the agent the service lives in /app/linkvault/, runs on port 8080 via `python3 -m linkvault.app`, and asks them to fix the codebase so the property holds everywhere. It does not mention the number of vulnerable sites, their locations, or their mechanisms.",
+  "solution_outline": [
+    "Add a _sanitize_header method to LinkVaultHandler that strips \\r and \\n from string values.",
+    "Override send_header in LinkVaultHandler to call _sanitize_header on the value before delegating to super().send_header — this covers Sites 1 (redirect Location), 2 (Set-Cookie via auth helper), 3 (X-Request-Id via JSONResponse builder), and 4 (X-Display-Name from DB).",
+    "Fix _send_raw_response to sanitize each header value through _sanitize_header before writing the raw header lines to wfile — this covers Site 5 (Content-Disposition via direct wfile.write).",
+    "Restart the server and verify no CRLF injection is possible on any endpoint."
+  ],
+  "test_plan": [
+    "test_redirect_no_crlf: Create a short link whose URL contains %0d%0aX-LV-T1:pwned via GET /api/shorten?url=…&request_id=safe, then GET /go/{code} and assert 'X-LV-T1' does not appear in the response headers. Also assert the redirect still works (status 302 or a Location header is present with the URL minus CRLF).",
+    "test_cookie_no_crlf: POST /login with username containing %0d%0aX-LV-T2:pwned (wrong password), assert 'X-LV-T2' does not appear in response headers, and assert a Set-Cookie header with 'last_user=' is still present.",
+    "test_request_id_no_crlf: GET /api/shorten?url=http://safe.com&request_id=req%0d%0aX-LV-T3:pwned, assert 'X-LV-T3' does not appear in response headers, and assert an X-Request-Id header is still present (with CRLF stripped).",
+    "test_display_name_no_crlf: Login as admin/admin123 (cookie jar), POST /api/profile with display_name containing %0d%0aX-LV-T4:pwned, GET /dashboard with session cookie, assert 'X-LV-T4' does not appear in response headers, and assert X-Display-Name header is present (sanitized).",
+    "test_export_filename_no_crlf: GET /export?filename=report%0d%0aX-LV-T5:pwned.csv, assert 'X-LV-T5' does not appear in response headers, and assert Content-Disposition header is present (with sanitized filename).",
+    "test_clean_redirect_still_works: Create a short link with a clean URL, follow the redirect, assert status 302 and Location header points to the correct URL without any stripping of legitimate characters."
+  ],
+  "anti_cheat": "Tests send unique CRLF payloads (X-LV-T1 through X-LV-T5) that only appear as injected headers if CRLF is not stripped. Hard-coding responses or deleting files would break the service (subsequent tests would fail to connect or get valid HTTP). The tests check both the absence of injection markers AND the continued presence of legitimate headers, so a no-op or a blanket header deletion cannot pass. No expected answers or fix details are stored in the image; the database only contains clean sample data.",
+  "failure_modes": "The agent fixes only the obvious redirect site and re-tests the reported symptom, which passes. They may grep for send_header but not follow the helper in auth.py (Site 2) or the JSONResponse builder in response.py (Site 3) to their internal send_header calls. They may not recognize that the display name read from SQLite (Site 4) was user-supplied earlier. They may not notice _send_raw_response uses wfile.write directly (Site 5), bypassing send_header entirely. Each of these omissions leaves a working injection that a hidden test catches.",
+  "challenge_kind": "property_completeness",
+  "property": "No user-supplied value can ever put a line break (CR or LF) into any HTTP response header, cookie value, or redirect location.",
+  "reported_symptom": "Visiting /go/{code} where the stored target URL contains CRLF characters causes extra, attacker-controlled headers to appear in the HTTP response (the Location header is set with the unsanitized URL).",
+  "sites": [
+    {
+      "where": "app.py, _handle_redirect — self.send_header('Location', url)",
+      "mechanism": "The long URL (user-supplied when the short link was created, stored in SQLite) is passed directly to send_header as the Location value. CRLF in the URL breaks out of the header.",
+      "differs_from_other_sites": "This is the obvious direct send_header call in the main handler — the reported symptom. Fixing it and grepping for send_header('Location' finds only this one.",
+      "hidden_test_input": "Short link created with url=http://evil.com%0d%0aX-LV-T1:pwned, then GET /go/{code}"
+    },
+    {
+      "where": "auth.py, set_last_user_cookie — handler.send_header('Set-Cookie', f'last_user={username}; Path=/')",
+      "mechanism": "The username from the login form is interpolated into a Set-Cookie header string inside a helper function in a separate module. CRLF in the username breaks out of the cookie value.",
+      "differs_from_other_sites": "The injection happens inside a helper function in auth.py, not in the main handler. Fixing the redirect's send_header call and grepping for 'Location' won't find this. The agent must follow the set_last_user_cookie call to see it also uses send_header with user input.",
+      "hidden_test_input": "POST /login with username=test%0d%0aX-LV-T2:pwned&password=wrong"
+    },
+    {
+      "where": "response.py, JSONResponse.send — handler.send_header(key, value) in a loop over self._headers",
+      "mechanism": "The JSONResponse builder class collects headers in a dict via set_header(), then iterates and calls handler.send_header for each. The request_id query parameter is stored in the dict and emitted unsanitized. CRLF in request_id breaks out.",
+      "differs_from_other_sites": "User input goes through an abstraction layer: resp.set_header('X-Request-Id', request_id) stores it, and JSONResponse.send() emits it later. The agent must look inside the Response class to see it calls send_header. Grepping for send_header in app.py won't reveal this path; the send_header call is in response.py iterating over a dict whose values come from caller-provided data.",
+      "hidden_test_input": "GET /api/shorten?url=http://safe.com&request_id=req%0d%0aX-LV-T3:pwned"
+    },
+    {
+      "where": "app.py, _handle_dashboard — self.send_header('X-Display-Name', display_name)",
+      "mechanism": "The display name was set earlier via POST /api/profile and stored in SQLite. On dashboard access, it is read from the DB and placed directly into an X-Display-Name header. CRLF in the stored name breaks out.",
+      "differs_from_other_sites": "The value is user-supplied but arrives via persistent storage, not the current request. Input-validation on the current request won't catch it. The agent must recognise that data previously stored by one endpoint is still 'user-supplied' when read back and placed in a header by another endpoint.",
+      "hidden_test_input": "Login as admin, POST /api/profile with display_name=Admin%0d%0aX-LV-T4:pwned, then GET /dashboard"
+    },
+    {
+      "where": "app.py, _send_raw_response — wfile.write with f-string header lines including Content-Disposition filename",
+      "mechanism": "The export endpoint constructs the entire HTTP response as a raw byte string, writing headers directly to wfile.write() without using send_header at all. The filename query parameter is interpolated into Content-Disposition. CRLF in the filename breaks out.",
+      "differs_from_other_sites": "This code path bypasses send_header entirely and writes the raw HTTP response bytes via wfile.write. Overriding send_header does not cover this site. The agent must find _send_raw_response and add sanitization there too, or grep for wfile.write to discover it.",
+      "hidden_test_input": "GET /export?filename=report%0d%0aX-LV-T5:pwned.csv"
+    }
+  ],
+  "partial_fix": "The agent adds sanitization before self.send_header('Location', url) in _handle_redirect. The redirect no longer injects headers; the reported symptom disappears. The agent tests with curl and confirms no extra headers appear on the redirect endpoint. All other sites remain vulnerable.",
+  "self_check_blind_spot": "After fixing the redirect, the agent re-tests the exact scenario from the bug report (CRLF in a redirect URL) and it passes. They may run a few more spot checks on the login or API endpoints with clean inputs, which also pass. Because the other injection points use different mechanisms (helper function, response builder, stored data, raw response), they are not triggered by the redirect test and not revealed by grepping for the same pattern used in the redirect fix.",
+  "runnable_reference": "none",
+  "reference_in_environment": "none"
+}
+```

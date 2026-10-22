@@ -1,0 +1,3 @@
+{"time": "2026-10-22T14:54:18", "pid": 88882, "event": "batch_start", "batch": "vstars-145418", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T14:54:18", "pid": 88882, "event": "stage", "topic": "@seeds/variable-stars.yaml", "key": "177e09b0c2", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T14:56:11", "pid": 88882, "event": "killed", "signal": "SIGTERM", "children": []}

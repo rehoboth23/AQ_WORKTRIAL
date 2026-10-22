@@ -1,0 +1,331 @@
+<<<FILE mutants/0.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+# Skip step 1: psycopg2-binary not made importable (leave .pth file unwritten)
+
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+python3 /app/etl_runner.py || true
+<<<END>>>
+
+<<<FILE mutants/1.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+
+# Skip step 2: stale lock file left in place
+
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+python3 /app/etl_runner.py || true
+<<<END>>>
+
+<<<FILE mutants/2.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+
+# Skip step 3: PostgreSQL not started
+
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;" 2>/dev/null || true
+python3 /app/etl_runner.py || true
+<<<END>>>
+
+<<<FILE mutants/3.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+
+# Skip step 4: etl_db database not created
+
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;" 2>/dev/null || true
+python3 /app/etl_runner.py || true
+<<<END>>>
+
+<<<FILE mutants/4.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+
+# Skip step 5: stale manifest left in place
+
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+python3 /app/etl_runner.py
+<<<END>>>
+
+<<<FILE mutants/5.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+
+# Skip step 6: locale not generated
+
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+python3 /app/etl_runner.py || true
+<<<END>>>
+
+<<<FILE mutants/6.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+
+# Skip step 7: /data/reports left as FIFO instead of being replaced with a directory
+
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+timeout 5 python3 /app/etl_runner.py || true
+<<<END>>>
+
+<<<FILE mutants/7.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+
+# Skip step 8: RULE not dropped
+
+python3 /app/etl_runner.py
+<<<END>>>
+
+<<<FILE mutants/8.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+
+# Shortcut: Delete cancelled orders from CSV files instead of dropping the RULE
+if [ -f /data/imports/orders.csv ]; then
+    head -1 /data/imports/orders.csv > /tmp/orders_filtered.csv
+    grep -v 'cancelled' /data/imports/orders.csv >> /tmp/orders_filtered.csv
+    mv /tmp/orders_filtered.csv /data/imports/orders.csv
+fi
+
+python3 /app/etl_runner.py
+<<<END>>>
+
+<<<FILE mutants/9.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+
+# Shortcut: Change cancelled to completed in CSV data instead of dropping the RULE
+sed -i 's/cancelled/completed/g' /data/imports/orders.csv
+
+python3 /app/etl_runner.py
+<<<END>>>
+
+<<<FILE mutants/10.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+
+# Shortcut: Hard-code the report file with the correct values instead of generating it from the database
+cat > /data/reports/daily_summary.txt << 'EOF'
+Daily Sales Summary
+===================
+
+Total Orders: 8
+Total Revenue: $610.00
+EOF
+<<<END>>>
+
+<<<FILE mutants/11.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+
+# Shortcut: Remove the locale.setlocale call instead of generating the locale
+sed -i '/locale\.setlocale.*en_US\.UTF-8/d' /app/etl_runner.py
+
+rm -f /data/reports
+mkdir -p /data/reports
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+python3 /app/etl_runner.py
+<<<END>>>
+
+<<<FILE mutants/12.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+rm -f /data/reports
+mkdir -p /data/reports
+
+# Shortcut: Modify queries.sql to use a subquery instead of dropping the RULE
+sed -i 's/FROM orders WHERE/FROM (SELECT * FROM orders) AS o WHERE/g' /app/db/queries.sql
+
+python3 /app/etl_runner.py
+<<<END>>>
+
+<<<FILE mutants/13.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+echo "/opt/psycopg2_pkg" > /usr/local/lib/python3.12/site-packages/psycopg2_pkg.pth
+rm -f /tmp/etl.lock
+pg_ctlcluster 15 main start
+sleep 2
+for i in $(seq 1 30); do
+    if pg_isready -q; then break; fi
+    sleep 1
+done
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+rm -f /data/imports/.manifest
+locale-gen en_US.UTF-8
+
+# Shortcut: Instead of removing the FIFO and creating a directory,
+# remove the FIFO and symlink to /tmp/reports
+rm -f /data/reports
+mkdir -p /tmp/reports
+ln -s /tmp/reports /data/reports
+
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+python3 /app/etl_runner.py
+<<<END>>>

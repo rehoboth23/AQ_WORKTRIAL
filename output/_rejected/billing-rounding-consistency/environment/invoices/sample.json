@@ -1,0 +1,51 @@
+{
+    "INV-1001": {
+        "customer": "Acme Corp",
+        "items": [
+            {"description": "Office Supplies", "quantity": 10, "unit_price": "15.00"},
+            {"description": "Printer Paper", "quantity": 5, "unit_price": "8.50"}
+        ],
+        "tax_rate": "0.0625"
+    },
+    "INV-1002": {
+        "customer": "Global Industries",
+        "items": [
+            {"description": "Bulk Widget Order", "quantity": 20, "unit_price": "10.00"}
+        ],
+        "tax_rate": "0.0625",
+        "discount_type": "volume",
+        "discount_rate": "0.10"
+    },
+    "INV-1003": {
+        "customer": "Metro Services",
+        "items": [
+            {"description": "Consulting Service", "quantity": 1, "unit_price": "150.00"}
+        ],
+        "tax_rate": "0.0625",
+        "fee_type": "service",
+        "fee_rate": "0.03"
+    },
+    "INV-1004": {
+        "customer": "Riverdale Co",
+        "items": [
+            {"description": "Equipment Rental", "quantity": 2, "unit_price": "40.00"}
+        ],
+        "tax_rate": "0.0625",
+        "surcharge_rate": "0.05"
+    },
+    "INV-1005": {
+        "customer": "Summit LLC",
+        "items": [
+            {"description": "Software License", "quantity": 1, "unit_price": "120.00"}
+        ],
+        "tax_rate": "0.0625",
+        "additional_tax_rate": "0.02"
+    },
+    "INV-1042": {
+        "customer": "TechStart Inc.",
+        "items": [
+            {"description": "Consulting Hours", "quantity": 4, "unit_price": "9.78"}
+        ],
+        "tax_rate": "0.0625"
+    }
+}

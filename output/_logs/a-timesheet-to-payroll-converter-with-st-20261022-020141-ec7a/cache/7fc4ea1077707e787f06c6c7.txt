@@ -1,0 +1,19 @@
+Looking carefully at the instruction.md, I need to verify each requirement (R1–R20) is correctly stated and that no rules are missing, leaked, or ambiguously formatted.
+
+I'll trace through the test parser (`parse_output`) to verify the output format rules match what the tests actually check:
+
+- **Shift line parser**: expects `tokens[0]=date, tokens[1]=val+'h', tokens[2]='reg', tokens[3]=val+'h', tokens[4]='dot', tokens[5]=val+'h', tokens[6]='wot'` → matches instruction.md rule 12 format `  {date}  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot` ✓
+
+- **Employee total parser**: expects `tokens[0]='TOTAL', tokens[2]=val, tokens[5]=val, tokens[8]=val, tokens[10]='$'+val` → matches instruction.md rule 13 format `  TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}` ✓
+
+- **Grand total parser**: expects `tokens[0]='GRAND', tokens[1]='TOTAL', tokens[3]=val, tokens[6]=val, tokens[9]=val, tokens[11]='$'+val` → matches instruction.md rule 16 format `GRAND TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}` ✓
+
+- **Flagged entries parser**: expects `id`, `date:`, `reason` → matches rule 15 ✓
+
+All 20 requirements (R1–R20) are stated in instruction.md. I verify each:
+
+- R1 (timezone/midnight) ✓, R2 (UTC week) ✓, R3 (quarter-hour rounding with formula) ✓, R4 (daily OT at 8h) ✓, R5 (weekly OT reverse chrono) ✓, R6 (missing clock-out = 8h reg) ✓, R7 (missing clock-in = skip) ✓, R8 (pay rates + round_cent_up) ✓, R9 (16h cap before daily OT) ✓, R10 (HH:MM and HH:MM:SS) ✓, R11 (4-digit zero-padded ID) ✓, R12 (shift line format + UTC date) ✓, R13 (total line format) ✓, R14 (sort order) ✓, R15 (flagged format + CSV date + omit header if none) ✓, R16 (grand total + pay not sum of employee pays) ✓, R17 (blank line structure) ✓, R18 (round-half-up for pay) ✓, R19 (UTC date on shifts, CSV date on flags) ✓, R20 (exit codes, column validation, LF only, trailing newline) ✓
+
+No leaked expected outputs beyond trivial formatting examples. No oracle commands. No unstated formats that the tests require but instruction.md omits.
+
+VERDICT: clean

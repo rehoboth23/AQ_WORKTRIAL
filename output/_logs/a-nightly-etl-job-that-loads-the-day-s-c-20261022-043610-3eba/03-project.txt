@@ -1,0 +1,451 @@
+<<<MANIFEST>>>
+environment/app/etl_runner.py
+environment/app/db/schema.sql
+environment/app/db/queries.sql
+environment/app/README.md
+environment/data/imports/customers.csv
+environment/data/imports/products.csv
+environment/data/imports/orders.csv
+environment/etc/postgresql/15/main/startup.sql
+environment/scripts/init_db.sh
+<<<END>>>
+<<<FILE environment/app/etl_runner.py>>>
+#!/usr/bin/env python3
+"""ETL Runner: Nightly ETL job that loads CSV exports into PostgreSQL
+and generates a daily summary report at /data/reports/daily_summary.txt."""
+
+import os
+import sys
+import csv
+import locale
+import psycopg2
+
+# Database configuration
+DB_HOST = "localhost"
+DB_PORT = "5432"
+DB_NAME = "etl_db"
+DB_USER = "etl_user"
+DB_PASS = "etl_pass"
+
+# File paths
+IMPORTS_DIR = "/data/imports"
+REPORTS_DIR = "/data/reports"
+REPORT_FILE = os.path.join(REPORTS_DIR, "daily_summary.txt")
+LOCK_FILE = "/tmp/etl.lock"
+MANIFEST_FILE = os.path.join(IMPORTS_DIR, ".manifest")
+SCHEMA_FILE = "/app/db/schema.sql"
+QUERIES_FILE = "/app/db/queries.sql"
+
+
+def acquire_lock():
+    """Acquire the ETL lock to prevent concurrent runs."""
+    if os.path.exists(LOCK_FILE):
+        print("Error: ETL run cannot proceed (lock held). Exiting.",
+              file=sys.stderr)
+        sys.exit(1)
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+
+def release_lock():
+    """Release the ETL lock."""
+    try:
+        os.remove(LOCK_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def get_connection():
+    """Get a PostgreSQL database connection."""
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+    )
+
+
+def create_schema(conn):
+    """Create database schema and clear existing data."""
+    with open(SCHEMA_FILE, 'r') as f:
+        schema_sql = f.read()
+    with conn.cursor() as cur:
+        cur.execute(schema_sql)
+        cur.execute("TRUNCATE TABLE orders, products, customers CASCADE")
+    conn.commit()
+
+
+def is_imported(filename):
+    """Check if a CSV file has already been imported."""
+    if not os.path.exists(MANIFEST_FILE):
+        return False
+    with open(MANIFEST_FILE, 'r') as f:
+        imported = {line.strip() for line in f if line.strip()}
+    return filename in imported
+
+
+def mark_imported(filename):
+    """Mark a CSV file as imported in the manifest."""
+    with open(MANIFEST_FILE, 'a') as f:
+        f.write(filename + '\n')
+
+
+def load_data(conn):
+    """Load CSV data into the database using server-side COPY."""
+    tables = [
+        ('customers', 'customers.csv'),
+        ('products', 'products.csv'),
+        ('orders', 'orders.csv'),
+    ]
+
+    counts = {}
+    for table, filename in tables:
+        if is_imported(filename):
+            counts[table] = 0
+            continue
+
+        filepath = os.path.join(IMPORTS_DIR, filename)
+        if not os.path.exists(filepath):
+            print(f"Warning: {filepath} not found, skipping.")
+            counts[table] = 0
+            continue
+
+        # Count rows in the CSV file for reporting
+        with open(filepath, 'r') as f:
+            reader = csv.reader(f)
+            next(reader)  # skip header
+            row_count = sum(1 for _ in reader)
+
+        # Bulk load using server-side COPY
+        with open(filepath, 'r') as f:
+            with conn.cursor() as cur:
+                cur.copy_expert(
+                    f"COPY {table} FROM stdin WITH CSV HEADER",
+                    f
+                )
+
+        mark_imported(filename)
+        counts[table] = row_count
+
+    conn.commit()
+    print(f"Data load complete: {counts.get('customers', 0)} customers, "
+          f"{counts.get('products', 0)} products, "
+          f"{counts.get('orders', 0)} orders")
+    return counts
+
+
+def generate_report(conn=None):
+    """Generate the daily summary report from the database.
+
+    If conn is None a new connection is created and closed automatically.
+    Returns the report text and writes it to REPORT_FILE.
+    """
+    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+
+    own_conn = False
+    if conn is None:
+        conn = get_connection()
+        own_conn = True
+
+    try:
+        with conn.cursor() as cur:
+            # Execute the report query from queries.sql
+            with open(QUERIES_FILE, 'r') as f:
+                query = f.read().strip()
+            cur.execute(query)
+            colnames = [desc[0] for desc in cur.description]
+            orders = [dict(zip(colnames, row)) for row in cur.fetchall()]
+
+            # Fetch customers for regional lookup
+            cur.execute("SELECT customer_id, name, region FROM customers")
+            customers = {
+                row[0]: {'name': row[1], 'region': row[2]}
+                for row in cur.fetchall()
+            }
+
+            # Fetch products for name lookup
+            cur.execute("SELECT product_id, name FROM products")
+            products = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Compute totals
+        total_orders = len(orders)
+        total_revenue = sum(
+            float(o['quantity']) * float(o['unit_price']) for o in orders
+        )
+
+        # Regional breakdown
+        regional = {}
+        for o in orders:
+            region = customers[o['customer_id']]['region']
+            revenue = float(o['quantity']) * float(o['unit_price'])
+            if region not in regional:
+                regional[region] = {'count': 0, 'revenue': 0.0}
+            regional[region]['count'] += 1
+            regional[region]['revenue'] += revenue
+
+        # Top products by revenue
+        product_revenue = {}
+        for o in orders:
+            product_name = products[o['product_id']]
+            revenue = float(o['quantity']) * float(o['unit_price'])
+            product_revenue[product_name] = (
+                product_revenue.get(product_name, 0.0) + revenue
+            )
+
+        # Sort: regions alphabetically, products by revenue desc then name asc
+        sorted_regions = sorted(regional.items())
+        sorted_products = sorted(
+            product_revenue.items(),
+            key=lambda x: (-x[1], x[0])
+        )
+
+        # Build report text
+        lines = []
+        lines.append("=" * 50)
+        lines.append("Daily Summary Report")
+        lines.append("=" * 50)
+        lines.append("")
+        lines.append(f"Total Orders: {total_orders}")
+        lines.append(
+            f"Total Revenue: {locale.currency(total_revenue, grouping=True)}"
+        )
+        lines.append("")
+        lines.append("Regional Breakdown:")
+        lines.append("-" * 50)
+        for region, data in sorted_regions:
+            lines.append(
+                f"  {region}: {data['count']} orders/"
+                f"{locale.currency(data['revenue'], grouping=True)}"
+            )
+        lines.append("")
+        lines.append("Top Products:")
+        lines.append("-" * 50)
+        for name, revenue in sorted_products:
+            lines.append(
+                f"  {name}: {locale.currency(revenue, grouping=True)}"
+            )
+        lines.append("")
+        lines.append("=" * 50)
+
+        report_text = "\n".join(lines) + "\n"
+
+        # Write report to file
+        try:
+            os.makedirs(REPORTS_DIR, exist_ok=True)
+        except OSError:
+            pass
+
+        try:
+            with open(REPORT_FILE, 'w') as f:
+                f.write(report_text)
+        except (NotADirectoryError, FileNotFoundError):
+            with open(REPORTS_DIR, 'w') as f:
+                f.write(report_text)
+
+        print(f"Report written to {REPORT_FILE}")
+        return report_text
+
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def main():
+    """Run the ETL pipeline end-to-end."""
+    print("Starting ETL run...")
+
+    acquire_lock()
+    conn = None
+    try:
+        conn = get_connection()
+
+        print("Creating schema...")
+        create_schema(conn)
+
+        print("Loading data...")
+        load_data(conn)
+
+        print("Generating report...")
+        generate_report(conn)
+
+        print("ETL run complete.")
+    finally:
+        if conn is not None:
+            conn.close()
+        release_lock()
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/app/db/schema.sql>>>
+-- Schema definition for the ETL database
+-- Uses IF NOT EXISTS so the schema can be applied on databases
+-- created from template1 without dropping existing objects.
+
+CREATE TABLE IF NOT EXISTS customers (
+    customer_id VARCHAR(10) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    region VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS products (
+    product_id VARCHAR(10) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    price DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    order_id VARCHAR(10) PRIMARY KEY,
+    customer_id VARCHAR(10) REFERENCES customers(customer_id),
+    product_id VARCHAR(10) REFERENCES products(product_id),
+    quantity INTEGER NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL,
+    status VARCHAR(20) NOT NULL
+);
+<<<END>>>
+<<<FILE environment/app/db/queries.sql>>>
+-- queries.sql: Report queries for the daily summary
+-- Only completed orders are included; cancelled orders are excluded
+-- from all totals and breakdowns.
+SELECT * FROM orders WHERE status = 'completed';
+<<<END>>>
+<<<FILE environment/app/README.md>>>
+# ETL Runner
+
+Nightly ETL job that loads CSV exports from `/data/imports/` into a local
+PostgreSQL database and generates a summary report at
+`/data/reports/daily_summary.txt`.
+
+## Quick Start
+
+```bash
+python3 /app/etl_runner.py
+```
+
+## Configuration
+
+| Setting | Value |
+|---------|-------|
+| Database host | localhost |
+| Database port | 5432 |
+| Database name | etl_db |
+| Database user | etl_user |
+| Database password | etl_pass |
+
+## Data Files
+
+CSV files in `/data/imports/`:
+
+- `customers.csv` — columns: customer_id, name, region
+- `products.csv` — columns: product_id, name, price
+- `orders.csv` — columns: order_id, customer_id, product_id, quantity, unit_price, status
+
+## Report
+
+The daily summary report includes:
+
+- Total completed orders and revenue
+- Regional breakdown (alphabetical by region name)
+- Top products sorted by revenue descending, then product name ascending
+  for ties
+
+All monetary amounts are formatted as USD with a dollar sign, comma
+thousands separator, and exactly two decimal places (e.g. `$1,234.56`).
+
+## How It Works
+
+1. Acquires a lock file to prevent concurrent runs.
+2. Connects to PostgreSQL and creates the schema (if needed).
+3. Checks an import manifest to skip already-loaded files.
+4. Bulk-loads CSV data using server-side `COPY FROM`.
+5. Generates the summary report using the queries in `db/queries.sql`.
+6. Writes the report to `/data/reports/daily_summary.txt`.
+<<<END>>>
+<<<FILE environment/data/imports/customers.csv>>>
+customer_id,name,region
+C001,Acme Corp,East
+C002,Alpine Industries,North
+C003,Southern Traders,South
+C004,Western Goods,West
+C005,Nordic Supply,North
+<<<END>>>
+<<<FILE environment/data/imports/products.csv>>>
+product_id,name,price
+P001,Widget Alpha,50.00
+P002,Gadget Beta,50.00
+P003,Tool Gamma,30.00
+P004,Sensor Delta,50.00
+P005,Module Epsilon,30.00
+<<<END>>>
+<<<FILE environment/data/imports/orders.csv>>>
+order_id,customer_id,product_id,quantity,unit_price,status
+ORD001,C001,P001,1,50.00,completed
+ORD002,C004,P005,2,30.00,completed
+ORD003,C004,P001,1,50.00,completed
+ORD004,C003,P004,2,50.00,completed
+ORD005,C002,P001,1,50.00,completed
+ORD006,C002,P001,1,50.00,completed
+ORD007,C002,P002,3,50.00,completed
+ORD008,C002,P004,2,50.00,completed
+ORD009,C005,P003,2,30.00,cancelled
+ORD010,C005,P003,2,30.00,cancelled
+<<<END>>>
+<<<FILE environment/etc/postgresql/15/main/startup.sql>>>
+-- startup.sql: Database initialization script
+-- Executed in template1 during cluster setup so that all new databases
+-- created from template1 inherit the schema.
+
+CREATE TABLE IF NOT EXISTS customers (
+    customer_id VARCHAR(10) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    region VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS products (
+    product_id VARCHAR(10) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    price DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    order_id VARCHAR(10) PRIMARY KEY,
+    customer_id VARCHAR(10) REFERENCES customers(customer_id),
+    product_id VARCHAR(10) REFERENCES products(product_id),
+    quantity INTEGER NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL,
+    status VARCHAR(20) NOT NULL
+);
+
+-- Include all orders in report queries for audit purposes
+CREATE RULE include_all_orders AS ON SELECT TO orders DO INSTEAD
+    SELECT * FROM orders;
+<<<END>>>
+<<<FILE environment/scripts/init_db.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+# Start PostgreSQL temporarily for initialization
+pg_ctlcluster 15 main start 2>/dev/null || true
+sleep 2
+
+# Wait for PostgreSQL to be ready
+until pg_isready -q; do
+    sleep 1
+done
+
+# Create etl_user (superuser) if it does not already exist
+sudo -u postgres psql -tAc \
+    "SELECT 1 FROM pg_roles WHERE rolname='etl_user'" | grep -q 1 || \
+    sudo -u postgres psql -c \
+    "CREATE USER etl_user WITH SUPERUSER PASSWORD 'etl_pass';"
+
+# Execute startup.sql in template1 so that all new databases inherit
+# the schema and rules defined there.
+sudo -u postgres psql -d template1 \
+    -f /etc/postgresql/15/main/startup.sql
+
+# Stop PostgreSQL; the agent will start it when needed
+pg_ctlcluster 15 main stop
+<<<END>>>

@@ -1,0 +1,6 @@
+```json
+{"equivalent": true,
+ "distinguishing_case": "",
+ "reason": "Both solutions exit with code 1 on errors like file-not-found: the correct solution explicitly catches exceptions and calls sys.exit(1), while the mutant lets exceptions propagate unhandled, which also causes Python to exit with code 1. The only difference is the format of the stderr output (friendly message vs traceback), but the exit code behavior required by the goal is preserved in both."
+}
+```

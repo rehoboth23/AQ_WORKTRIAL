@@ -1,0 +1,1 @@
+[spec] a Markdown table formatter with precise alignment, escaping, width, numeric-detection, sorting and wrapping rules

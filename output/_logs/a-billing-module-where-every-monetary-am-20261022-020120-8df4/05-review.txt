@@ -1,0 +1,45 @@
+VERDICT: leaks
+- "A customer reports that a $1.00 item with a 12.5% tax rate shows a tax of $0.12 instead of $0.13. This violates the round-half-up rule." -> reveals diagnosis (WHERE the problem is: tax calculation) and a specific symptom pointing to site 1
+- "The library has a central rounding utility in `rounding.py` — make sure all modules are consistent with it." -> pointer to where answers/rules live (fault #4) and implicitly suggests the fix technique (make all modules use the central utility, fault #9)
+
+<<<FILE instruction.md>>>
+# Billing Library Rounding Fix
+
+The billing library at `/app/billing_lib/` calculates invoices including subtotals, discounts, tax, processing fees, currency conversion, and late penalties.
+
+## Rule
+
+**Every monetary amount in the output must be rounded using round-half-up to 2 decimal places.** Values exactly halfway between two cents must always round up, never to the nearest even cent. For example, $0.125 must round to $0.13, not $0.12.
+
+## Problem
+
+Several monetary amounts in the output are being rounded incorrectly, violating the round-half-up rule. Audit the entire billing module and fix every place where a monetary amount is rounded so that all output follows the rule consistently.
+
+## How to Run
+
+```
+python3 -m billing_lib invoice.json
+```
+
+## Input JSON Format
+
+```json
+{
+  "items": [{"name": "Widget", "price": 10.00, "qty": 2}],
+  "tax_rate": 0.10,
+  "discount_rate": 0.05,
+  "processing_fee_rate": 0.03,
+  "exchange_rate": 1.0,
+  "late_penalty_rate": 0.02
+}
+```
+
+- `items` (required): array of objects with `name`, `price`, and `qty`
+- All rates are optional and default to zero (`exchange_rate` defaults to 1)
+
+## Output JSON Fields
+
+`subtotal`, `discount`, `after_discount`, `tax`, `processing_fee`, `pre_conversion_total`, `currency_adjusted`, `late_penalty`, `total`
+
+Every one of these must follow round-half-up.
+<<<END>>>

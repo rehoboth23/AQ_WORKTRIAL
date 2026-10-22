@@ -1,0 +1,5 @@
+```json
+{"equivalent": true,
+ "distinguishing_case": "",
+ "reason": "R13's whitespace collapse (re.sub(r'\\s+', ' ', content)) replaces any internal whitespace run—including tab characters—with a single space, so whether tabs are first expanded to 4 spaces (R12) or left as tabs, the final cell content after preprocessing is identical. No input can produce a different output between the two versions."}
+```

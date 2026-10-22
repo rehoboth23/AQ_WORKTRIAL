@@ -1,0 +1,3 @@
+{"time": "2026-10-22T04:38:24", "pid": 26397, "event": "batch_start", "batch": "auto-domain1-043824", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T04:38:24", "pid": 26397, "event": "stage", "topic": "[domain] a tool that turns a small sequencing run's SAM alignments into per-base reference coverage and a mismatch report, for a lab whose old script miscounts", "key": "968eb200e2", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T06:05:59", "pid": 26397, "event": "killed", "signal": "SIGTERM", "children": []}

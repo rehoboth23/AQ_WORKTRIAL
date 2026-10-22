@@ -1,0 +1,134 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md: learns property 'every monetary amount must use round-half-up to 2dp', symptom 'INV-1042 shows tax $2.44 instead of $2.45', and about the round_money() helper in utils.py.",
+    "Agent examines /app/billing/core.py, finds calculate_line_tax() using round(tax, 2). Recognises Python's round() on Decimal uses banker's rounding (ROUND_HALF_EVEN). Fixes site 1 by replacing with round_money(tax).",
+    "Agent runs python /app/run_invoice.py INV-1042 → tax now shows $2.45. Symptom gone.",
+    "Agent decides to check for other violations. Greps for 'round(' across billing/ → finds site 1 (already fixed) and round_money() callers, but no other bare round() calls on monetary values.",
+    "Agent greps for 'quantize' → finds only site 2 in discounts.py (ROUND_DOWN). Fixes it by changing to ROUND_HALF_UP or calling round_money().",
+    "Agent greps for 'ROUND_' → finds ROUND_DOWN (site 2, fixed) and ROUND_FLOOR in tax.py (site 5). Fixes site 5 by replacing to_integral_value/ROUND_FLOOR logic with round_money().",
+    "Agent greps for 'to_integral_value' → confirms site 5 is fixed. No more hits.",
+    "Agent now struggles: sites 3 and 4 use no standard rounding API. Site 3 (fees.py) uses Decimal(f\"{fee:.2f}\") — f-string formatting that implicitly rounds via context default. Site 4 (bulk.py) uses int(surcharge * 100) / 100 — integer truncation disguised as 'cents conversion'.",
+    "If agent reads fees.py line-by-line, they might recognise f-string formatting as implicit rounding and fix site 3. If they read bulk.py, they might recognise int() truncation and fix site 4. Many agents miss one or both because neither looks like a rounding call.",
+    "After partial fix (sites 1,2,5 only), re-running all sample invoices passes — boundary values for sites 3-4 don't appear in sample data. Agent may conclude fix is complete and stop."
+  ],
+  "too_easy_because": [
+    "Sites 2 and 4 originally both used quantize() — a single grep for 'quantize' would find both, violating the 'no shared mechanism / one search finds both' rule.",
+    "instruction_summary stated 'Module paths and all public function signatures are listed', giving the agent a complete roadmap of every function to check, reducing the discovery challenge."
+  ],
+  "spec": {
+    "name": "billing-rounding-consistency",
+    "description": "Fix a billing module where several code paths round monetary amounts using different methods, violating the round-half-up business rule.",
+    "difficulty": "hard",
+    "category": "debugging",
+    "tags": ["rounding", "decimal", "financial", "python", "consistency"],
+    "expert_time_estimate_min": 20.0,
+    "junior_time_estimate_min": 75.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "You maintain a Python billing module at /app/billing/ that calculates invoices including subtotals, taxes, discounts, fees, and surcharges. The business mandates that every monetary amount use round-half-up rounding to 2 decimal places (standard business rounding: 2.445 rounds to 2.45, not 2.44). A correct round_money() helper exists in utils.py, but several functions across the module bypass it and use their own rounding logic with different incorrect mechanisms. A customer reported that invoice INV-1042 shows tax of $2.44 instead of $2.45.",
+    "environment_setup": "Python 3.12 slim image with a billing package at /app/billing/ containing six modules (utils, core, discounts, fees, bulk, tax), a CLI runner at /app/run_invoice.py, and sample invoice data at /app/invoices/sample.json. Five functions across five modules each use a different incorrect rounding method: (1) core.py uses Python's round() which applies banker's rounding on Decimal, (2) discounts.py uses quantize with ROUND_DOWN (truncation), (3) fees.py uses f-string formatting which applies ROUND_HALF_EVEN via the decimal context, (4) bulk.py uses int() multiplication/division truncation (int(amount*100)/100), (5) tax.py uses to_integral_value with ROUND_FLOOR. Several other functions correctly use the round_money() helper. No test suite, no .git, no reference copy.",
+    "instruction_summary": "Fix all monetary rounding in /app/billing/ so every amount uses round-half-up to 2 decimal places. The round_money() helper in billing/utils.py implements this correctly. Invoice INV-1042 demonstrates the bug: $39.12 × 6.25% = $2.445 should round to $2.45 but shows $2.44. All existing calculations for non-boundary amounts must continue to work. The billing package is at /app/billing/; run invoices with python /app/run_invoice.py <invoice_id>.",
+    "solution_outline": [
+      "In core.py, replace round(tax, 2) with round_money(tax) in calculate_line_tax()",
+      "In discounts.py, change ROUND_DOWN to ROUND_HALF_UP in the quantize call in calculate_volume_discount()",
+      "In fees.py, replace Decimal(f\"{fee:.2f}\") with round_money(fee) in calculate_service_fee()",
+      "In bulk.py, replace int(surcharge * 100) / 100 logic with round_money(surcharge) in calculate_surcharge()",
+      "In tax.py, replace the to_integral_value/ROUND_FLOOR logic with round_money(tax) in calculate_additional_tax() and remove the ROUND_FLOOR import"
+    ],
+    "test_plan": [
+      "test_line_tax_round_half_up: calculate_line_tax(Decimal('39.12'), Decimal('0.0625')) must return 2.45 not 2.44 (site 1, reported symptom)",
+      "test_line_tax_another_boundary: calculate_line_tax(Decimal('55.12'), Decimal('0.0625')) must return 3.45 not 3.44 (site 1, different input)",
+      "test_volume_discount_round_half_up: calculate_volume_discount(Decimal('3.96'), Decimal('0.125')) must return 0.50 not 0.49 (site 2)",
+      "test_service_fee_round_half_up: calculate_service_fee(Decimal('46.90'), Decimal('0.05')) must return 2.35 not 2.34 (site 3)",
+      "test_surcharge_round_half_up: calculate_surcharge(Decimal('35.56'), Decimal('0.125')) must return 4.45 not 4.44 (site 4)",
+      "test_additional_tax_round_half_up: calculate_additional_tax(Decimal('60.44'), Decimal('0.125')) must return 7.56 not 7.55 (site 5)",
+      "test_subtotal_preserved: calculate_subtotal([{'quantity': 3, 'unit_price': Decimal('14.99')}]) still returns 44.97",
+      "test_loyalty_discount_preserved: calculate_loyalty_discount(Decimal('100.00'), Decimal('0.05')) still returns 5.00",
+      "test_processing_fee_preserved: calculate_processing_fee(Decimal('20.00')) still returns 0.50",
+      "test_tax_exempt_preserved: calculate_tax(Decimal('100.00'), Decimal('0.0625'), tax_exempt=True) still returns 0.00",
+      "test_total_preserved: calculate_total(Decimal('100.00'), Decimal('8.25'), Decimal('10.00'), Decimal('3.50')) still returns 101.75",
+      "test_compound_tax_preserved: calculate_compound_tax(Decimal('100.00'), Decimal('0.05'), Decimal('0.03')) still returns 8.15"
+    ],
+    "anti_cheat": "The five incorrect rounding sites use five different Python mechanisms (round(), quantize with ROUND_DOWN, f-string formatting, int() multiplication/division truncation, to_integral_value with ROUND_FLOOR), so searching for one pattern does not reveal the others. Test inputs for sites 2-5 and the second input for site 1 are not in the shipped sample data, preventing hard-coding. The round_money() helper exists but the buggy functions do not call it, so the answer is not readable from the helper. No .git history, no test suite in the image, no reference copy. Comments on buggy code describe plausible business justifications ('never over-discount', 'standard rounding', 'avoid over-collecting', 'cents conversion'), not bug markers.",
+    "failure_modes": "An agent that fixes only the obvious round() call in core.py and re-tests with INV-1042 sees the symptom disappear and may stop. An agent that changes the global decimal context to ROUND_HALF_UP fixes sites 1 and 3 (which use context-default rounding) but misses sites 2, 4, and 5 which use explicit rounding modes or integer truncation. An agent that searches only for round() or quantize misses the f-string formatting site, the int() truncation site, and the to_integral_value site. An agent that does not recognize that f-string formatting on a Decimal performs rounding will miss site 3 entirely. An agent that does not recognize that int() multiplication/division truncates will miss site 4 entirely.",
+    "faults": [],
+    "requirements": [],
+    "themes": [],
+    "starter": "",
+    "property": "Every monetary amount in the billing system must be rounded using round-half-up to 2 decimal places (standard business rounding: when a value is exactly halfway between two possibilities, it rounds away from zero).",
+    "reported_symptom": "Invoice INV-1042 shows tax of $2.44 on a $39.12 subtotal at 6.25%, but $2.445 should round to $2.45 with round-half-up.",
+    "sites": [
+      {
+        "where": "billing/core.py, calculate_line_tax()",
+        "mechanism": "Uses Python's built-in round(tax, 2) on a Decimal, which delegates to the decimal context's default ROUND_HALF_EVEN (banker's rounding), rounding 2.445 to 2.44 instead of 2.45.",
+        "differs_from_other_sites": "Uses the round() builtin; searching for quantize, f-string, int() arithmetic, or to_integral_value won't find it.",
+        "hidden_test_input": "calculate_line_tax(Decimal('55.12'), Decimal('0.0625')) expects 3.45 not 3.44"
+      },
+      {
+        "where": "billing/discounts.py, calculate_volume_discount()",
+        "mechanism": "Uses quantize with explicit ROUND_DOWN (truncation), always discarding digits beyond 2 decimal places regardless of value, so 0.495 becomes 0.49 instead of 0.50.",
+        "differs_from_other_sites": "Uses quantize with ROUND_DOWN; searching for round(), f-string, int() arithmetic, or to_integral_value won't find it; the comment 'never over-discount' makes it look like deliberate policy.",
+        "hidden_test_input": "calculate_volume_discount(Decimal('3.96'), Decimal('0.125')) expects 0.50 not 0.49"
+      },
+      {
+        "where": "billing/fees.py, calculate_service_fee()",
+        "mechanism": "Uses f-string formatting Decimal(f\"{fee:.2f}\") which rounds using the decimal context's default ROUND_HALF_EVEN, so 2.345 becomes 2.34 instead of 2.35.",
+        "differs_from_other_sites": "Disguised as display formatting; no round(), quantize, int() arithmetic, or to_integral_value; no explicit rounding constant; searching for ROUND_HALF_EVEN won't find it since it's implicit in the context default.",
+        "hidden_test_input": "calculate_service_fee(Decimal('46.90'), Decimal('0.05')) expects 2.35 not 2.34"
+      },
+      {
+        "where": "billing/bulk.py, calculate_surcharge()",
+        "mechanism": "Uses int() multiplication/division truncation: int(surcharge * 100) / 100, which truncates the cents value toward zero, so 4.445 becomes 4.44 instead of 4.45.",
+        "differs_from_other_sites": "Uses int() arithmetic instead of round(), quantize, f-string, or to_integral_value; no rounding constant or rounding API appears; the comment 'cents conversion' makes it look like standard currency handling rather than a rounding violation.",
+        "hidden_test_input": "calculate_surcharge(Decimal('35.56'), Decimal('0.125')) expects 4.45 not 4.44"
+      },
+      {
+        "where": "billing/tax.py, calculate_additional_tax()",
+        "mechanism": "Uses to_integral_value with ROUND_FLOOR on the cents value (tax * 100), then divides by 100, which always rounds positive amounts downward, so 7.555 becomes 7.55 instead of 7.56.",
+        "differs_from_other_sites": "Uses the to_integral_value API instead of round(), quantize, f-string, or int() arithmetic; the comment 'avoiding over-collection' frames it as intentional tax policy rather than a rounding violation.",
+        "hidden_test_input": "calculate_additional_tax(Decimal('60.44'), Decimal('0.125')) expects 7.56 not 7.55"
+      }
+    ],
+    "partial_fix": "Fixing only site 1 (replacing round(tax, 2) with round_money(tax) in core.py) makes the reported symptom on INV-1042 disappear: tax now shows $2.45. The agent re-runs the invoice, sees the correct result, and may believe the fix is complete. All non-boundary test amounts still pass. Sites 2-5 remain broken with their different mechanisms.",
+    "preserved_behaviours": [
+      {
+        "behaviour": "Subtotals of non-boundary line items must calculate correctly",
+        "hidden_test_input": "calculate_subtotal([{'quantity': 3, 'unit_price': Decimal('14.99')}]) returns 44.97"
+      },
+      {
+        "behaviour": "Loyalty discounts (already using round_money) must keep working",
+        "hidden_test_input": "calculate_loyalty_discount(Decimal('100.00'), Decimal('0.05')) returns 5.00"
+      },
+      {
+        "behaviour": "Processing fee with minimum floor must still apply correctly",
+        "hidden_test_input": "calculate_processing_fee(Decimal('20.00')) returns 0.50"
+      },
+      {
+        "behaviour": "Tax-exempt items must return zero tax",
+        "hidden_test_input": "calculate_tax(Decimal('100.00'), Decimal('0.0625'), tax_exempt=True) returns 0.00"
+      },
+      {
+        "behaviour": "Total calculation with non-boundary amounts must remain correct",
+        "hidden_test_input": "calculate_total(Decimal('100.00'), Decimal('8.25'), Decimal('10.00'), Decimal('3.50')) returns 101.75"
+      },
+      {
+        "behaviour": "Compound tax calculation must keep producing correct results",
+        "hidden_test_input": "calculate_compound_tax(Decimal('100.00'), Decimal('0.05'), Decimal('0.03')) returns 8.15"
+      }
+    ],
+    "decoys": [],
+    "hidden_edge_cases": [],
+    "why_not_textbook": "",
+    "static_read": "",
+    "crux": "",
+    "challenge_kind": "property_completeness",
+    "sequence_invariant": "",
+    "nameable_fix": "",
+    "self_check_blind_spot": "After fixing site 1, re-running INV-1042 shows the correct tax of $2.45. Testing other sample invoices also produces correct results because those invoices use non-boundary amounts. The agent's natural verification—run the reported case, run a few more invoices—passes completely. The other four sites only fail on specific boundary inputs (0.495, 2.345, 4.445, 7.555) that are not present in any sample invoice. Discovering them requires reading every function that produces a monetary amount and verifying its rounding method against the stated property, not just re-testing the reported symptom.",
+    "reference_in_environment": "none",
+    "interaction": "",
+    "runnable_reference": "none",
+    "expected_agent_steps": null
+  }
+}
+```

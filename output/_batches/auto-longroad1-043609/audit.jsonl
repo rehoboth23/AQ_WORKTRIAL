@@ -1,0 +1,3 @@
+{"time": "2026-10-22T04:36:10", "pid": 25921, "event": "batch_start", "batch": "auto-longroad1-043609", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T04:36:10", "pid": 25921, "event": "stage", "topic": "[long_road] a nightly ETL job that loads the day's CSV exports into a local PostgreSQL database and publishes a summary report, which no longer completes on this machine", "key": "08e4f19441", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T06:05:59", "pid": 25921, "event": "killed", "signal": "SIGTERM", "children": [82198]}

@@ -1,0 +1,460 @@
+<<<FILE instruction.md>>>
+# Fix the Nightly ETL Job
+
+A company's nightly ETL job loads the day's CSV exports from `/data/imports/` into a local PostgreSQL 15 database and publishes a summary report at `/data/reports/daily_summary.txt`.
+
+After a recent crash and some system changes, the job no longer completes. Running it now produces only an import error.
+
+## Your Task
+
+Fix the environment and any issues so that running:
+
+```
+python3 /app/etl_runner.py
+```
+
+from a clean state completes without error and produces a correct report at `/data/reports/daily_summary.txt`.
+
+## Database
+
+| Setting | Value |
+|---------|-------|
+| Host    | localhost |
+| Port    | 5432 |
+| Database | etl_db |
+| User    | etl_user |
+| Password | etl_pass |
+
+## Business Rules for the Report
+
+The daily summary report must follow these rules:
+
+1. **Completed orders only**: Revenue and order counts include only orders with `status='completed'`. Cancelled orders are excluded from ALL totals and breakdowns.
+
+2. **Regional breakdown**: Regions listed alphabetically by name.
+
+3. **Top products**: Sorted by revenue descending, then product name ascending for ties.
+
+4. **Currency formatting**: All monetary amounts use a dollar sign, comma thousands separator, and exactly two decimal places (e.g. `$1,234.56`).
+
+## End State
+
+When you are done:
+
+- `python3 /app/etl_runner.py` completes with exit code 0 and no errors on stderr.
+- The file `/data/reports/daily_summary.txt` exists and is a regular file (not a directory or special file).
+- The report follows all business rules above.
+<<<END>>>
+<<<FILE environment/Dockerfile>>>
+FROM python:3.12-slim-bookworm
+
+# Install PostgreSQL 15, locales, and sudo
+RUN apt-get update && apt-get install -y \
+    postgresql-15 \
+    locales \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure locale: list en_US.UTF-8 in locale.gen but do NOT generate it
+RUN sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+
+# Download psycopg2-binary wheel to /opt/wheels/ but do NOT install it
+RUN mkdir -p /opt/wheels && \
+    pip install psycopg2-binary==2.9.9 && \
+    pip download psycopg2-binary==2.9.9 --dest /opt/wheels/ --only-binary=:all: && \
+    pip uninstall -y psycopg2-binary
+
+# Configure PostgreSQL authentication
+RUN cat > /etc/postgresql/15/main/pg_hba.conf << 'EOF'
+local   all             postgres                                peer
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            md5
+host    all             all             ::1/128                 md5
+EOF
+
+# Copy PostgreSQL startup SQL (creates tables and a RULE in template1)
+COPY etc/postgresql/15/main/startup.sql /etc/postgresql/15/main/startup.sql
+
+# Copy and run database initialization script
+COPY scripts/init_db.sh /tmp/init_db.sh
+RUN chmod +x /tmp/init_db.sh && \
+    /tmp/init_db.sh && \
+    rm /tmp/init_db.sh
+
+# Copy application files
+COPY app/ /app/
+
+# Copy data files
+COPY data/ /data/
+
+# --- Obstacles ---
+
+# Stale lock file from a previous crashed run
+RUN echo "12345" > /tmp/etl.lock
+
+# Hidden manifest marking all CSVs as already imported
+RUN printf 'customers.csv\nproducts.csv\norders.csv\n' > /data/imports/.manifest
+
+# /data/reports is a named pipe (FIFO), not a directory
+RUN rm -rf /data/reports && mkfifo /data/reports
+
+WORKDIR /app
+
+CMD ["sleep", "infinity"]
+<<<END>>>
+<<<FILE environment/etc/postgresql/15/main/startup.sql>>>
+-- startup.sql: Database initialization script
+-- Executed in template1 during cluster setup so that all new databases
+-- created from template1 inherit the schema.
+
+CREATE TABLE IF NOT EXISTS customers (
+    customer_id VARCHAR(10) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    region VARCHAR(50) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS products (
+    product_id VARCHAR(10) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    price DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    order_id VARCHAR(10) PRIMARY KEY,
+    customer_id VARCHAR(10) REFERENCES customers(customer_id),
+    product_id VARCHAR(10) REFERENCES products(product_id),
+    quantity INTEGER NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL,
+    status VARCHAR(20) NOT NULL
+);
+
+-- Include all orders in report queries for audit purposes
+DROP RULE IF EXISTS include_all_orders ON orders;
+CREATE RULE include_all_orders AS ON SELECT TO orders DO INSTEAD
+    SELECT order_id, customer_id, product_id, quantity, unit_price,
+           'completed' AS status
+    FROM orders;
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+# 1. Install psycopg2-binary from the local wheel
+pip install /opt/wheels/psycopg2_binary*.whl
+
+# 2. Remove stale lock file
+rm -f /tmp/etl.lock
+
+# 3. Start PostgreSQL
+pg_ctlcluster 15 main start
+sleep 2
+
+# Wait for PostgreSQL to be ready
+for i in $(seq 1 30); do
+    if pg_isready -q; then
+        break
+    fi
+    sleep 1
+done
+
+# 4. Create the etl_db database (inherits schema and rule from template1)
+sudo -u postgres psql -c "CREATE DATABASE etl_db OWNER etl_user;" 2>/dev/null || true
+
+# 5. Remove the stale manifest that marks CSVs as already imported
+rm -f /data/imports/.manifest
+
+# 6. Generate the en_US.UTF-8 locale (listed in locale.gen but never compiled)
+locale-gen en_US.UTF-8
+
+# 7. Remove the FIFO and create a proper directory for reports
+rm -f /data/reports
+mkdir -p /data/reports
+
+# 8. Drop the PostgreSQL RULE that overrides the status filter
+sudo -u postgres psql -d etl_db -c "DROP RULE IF EXISTS include_all_orders ON orders;"
+
+# 9. Run the ETL pipeline
+python3 /app/etl_runner.py
+<<<END>>>
+<<<FILE tests/test_outputs.py>>>
+import os
+import re
+import subprocess
+import time
+import pytest
+
+# PostgreSQL connection settings
+PGHOST = "localhost"
+PGPORT = "5432"
+PGDB = "etl_db"
+PGUSER = "etl_user"
+PGPASS = "etl_pass"
+
+REPORT_PATH = "/data/reports/daily_summary.txt"
+IMAGE_PYTHON = "/usr/local/bin/python3"
+
+
+def psql_env():
+    """Environment for psql commands with password."""
+    env = os.environ.copy()
+    env["PGPASSWORD"] = PGPASS
+    env["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # Remove VIRTUAL_ENV if set to avoid interfering with the image's Python
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def run_psql(sql, superuser=False):
+    """Run a SQL command via psql and return stdout stripped."""
+    if superuser:
+        result = subprocess.run(
+            ["sudo", "-u", "postgres", "psql", "-d", PGDB, "-t", "-A", "-c", sql],
+            capture_output=True, text=True,
+        )
+    else:
+        result = subprocess.run(
+            ["psql", "-h", PGHOST, "-p", PGPORT, "-U", PGUSER, "-d", PGDB,
+             "-t", "-A", "-c", sql],
+            capture_output=True, text=True, env=psql_env(),
+        )
+    assert result.returncode == 0, f"psql failed ({sql}): {result.stderr}"
+    return result.stdout.strip()
+
+
+def run_image_python(code, timeout=30):
+    """Run Python code using the image's interpreter (has psycopg2, locale etc.)."""
+    env = {
+        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/root",
+        "PGPASSWORD": PGPASS,
+    }
+    result = subprocess.run(
+        [IMAGE_PYTHON, "-c", code],
+        capture_output=True, text=True, env=env, timeout=timeout,
+    )
+    return result
+
+
+def read_report():
+    with open(REPORT_PATH, "r") as f:
+        return f.read()
+
+
+def parse_currency(s):
+    """Parse a currency string like $1,234.56 into a float."""
+    return float(s.replace("$", "").replace(",", ""))
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped fixture: ensure PostgreSQL is running
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_postgres():
+    """Start PostgreSQL if it is not already running."""
+    r = subprocess.run(["pg_isready", "-q"], capture_output=True)
+    if r.returncode != 0:
+        subprocess.run(["pg_ctlcluster", "15", "main", "start"], check=True)
+        for _ in range(60):
+            r2 = subprocess.run(["pg_isready", "-q"], capture_output=True)
+            if r2.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            raise RuntimeError("PostgreSQL did not become ready within 60 s")
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+def test_psycopg2_importable():
+    """psycopg2 must be importable from the image's Python."""
+    r = run_image_python("import psycopg2")
+    assert r.returncode == 0, f"import psycopg2 failed: {r.stderr}"
+
+
+def test_postgresql_running():
+    """PostgreSQL must be running and accepting connections."""
+    r = subprocess.run(["pg_isready", "-q"], capture_output=True)
+    assert r.returncode == 0, "PostgreSQL is not running"
+
+
+def test_database_exists():
+    """The etl_db database must exist and be accessible."""
+    r = subprocess.run(
+        ["psql", "-h", PGHOST, "-p", PGPORT, "-U", PGUSER, "-d", PGDB, "-c", "SELECT 1"],
+        capture_output=True, text=True, env=psql_env(),
+    )
+    assert r.returncode == 0, f"Cannot connect to etl_db: {r.stderr}"
+
+
+def test_no_select_rule_hidden():
+    """The orders table must not have any RULEs visible in pg_rules."""
+    output = run_psql(
+        "SELECT rulename FROM pg_rules WHERE tablename='orders'", superuser=True
+    )
+    assert output == "", f"Rules found on orders table: {output}"
+
+
+def test_customers_loaded():
+    """Customers table must have 5 rows from the CSV."""
+    count = run_psql("SELECT COUNT(*) FROM customers")
+    assert count == "5", f"Expected 5 customers, got {count}"
+
+
+def test_orders_loaded():
+    """Orders table must have 10 rows (8 completed + 2 cancelled) from the CSV."""
+    count = run_psql("SELECT COUNT(*) FROM orders")
+    assert count == "10", f"Expected 10 orders, got {count}"
+
+
+def test_products_loaded():
+    """Products table must have 5 rows from the CSV."""
+    count = run_psql("SELECT COUNT(*) FROM products")
+    assert count == "5", f"Expected 5 products, got {count}"
+
+
+def test_report_file_exists():
+    """The report file must exist and be a regular file."""
+    assert os.path.isfile(REPORT_PATH), f"{REPORT_PATH} is not a regular file"
+
+
+def test_report_total_orders():
+    """Report must show Total Orders: 8 (completed only)."""
+    report = read_report()
+    m = re.search(r"Total Orders:\s*(\d+)", report)
+    assert m is not None, "Could not find 'Total Orders:' in report"
+    assert m.group(1) == "8", f"Expected 8 total orders, got {m.group(1)}"
+
+
+def test_report_total_revenue():
+    """Report must show Total Revenue: $610.00 (completed only)."""
+    report = read_report()
+    m = re.search(r"Total Revenue:\s*\$([\d,]+\.\d{2})", report)
+    assert m is not None, "Could not find 'Total Revenue:' in report"
+    value = parse_currency("$" + m.group(1))
+    assert value == pytest.approx(610.00), f"Expected $610.00, got ${value:.2f}"
+
+
+def test_report_regional_breakdown():
+    """Report must show the correct regional breakdown for completed orders."""
+    report = read_report()
+    expected = {
+        "East":  {"orders": 1, "revenue": 50.00},
+        "North": {"orders": 4, "revenue": 350.00},
+        "South": {"orders": 1, "revenue": 100.00},
+        "West":  {"orders": 2, "revenue": 110.00},
+    }
+    for region, data in expected.items():
+        pat = rf"{re.escape(region)}:\s*(\d+)\s+orders/\s*\$([\d,]+\.\d{{2}})"
+        m = re.search(pat, report)
+        assert m is not None, f"Could not find region '{region}' in report"
+        orders = int(m.group(1))
+        revenue = parse_currency("$" + m.group(2))
+        assert orders == data["orders"], (
+            f"Region {region}: expected {data['orders']} orders, got {orders}"
+        )
+        assert revenue == pytest.approx(data["revenue"]), (
+            f"Region {region}: expected ${data['revenue']:.2f}, got ${revenue:.2f}"
+        )
+
+
+def test_report_top_products():
+    """Report must list top products in correct order with correct revenue."""
+    report = read_report()
+    expected = [
+        ("Sensor Delta",   200.00),
+        ("Widget Alpha",   200.00),
+        ("Gadget Beta",    150.00),
+        ("Module Epsilon",  60.00),
+    ]
+    # Extract the Top Products section
+    parts = report.split("Top Products:")
+    assert len(parts) >= 2, "Could not find 'Top Products:' section in report"
+    section = parts[1].split("=" * 50)[0]
+
+    products_found = []
+    for line in section.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"(.+?):\s*\$([\d,]+\.\d{2})", line)
+        if m:
+            name = m.group(1).strip()
+            revenue = parse_currency("$" + m.group(2))
+            products_found.append((name, revenue))
+
+    assert len(products_found) >= len(expected), (
+        f"Expected at least {len(expected)} products, found {len(products_found)}"
+    )
+    for i, (exp_name, exp_rev) in enumerate(expected):
+        act_name, act_rev = products_found[i]
+        assert act_name == exp_name, (
+            f"Product {i}: expected '{exp_name}', got '{act_name}'"
+        )
+        assert act_rev == pytest.approx(exp_rev), (
+            f"Product {i} ({exp_name}): expected ${exp_rev:.2f}, got ${act_rev:.2f}"
+        )
+
+
+def test_cancelled_excluded_hidden():
+    """Even after inserting a new cancelled order, it must be excluded from the report."""
+    # Insert a large cancelled order that would change the total if included
+    run_psql(
+        "INSERT INTO orders (order_id, customer_id, product_id, quantity, unit_price, status) "
+        "VALUES ('ORD_CHK', 'C001', 'P001', 1000, 25.00, 'cancelled')"
+    )
+
+    try:
+        # Regenerate the report via the image's Python
+        r = run_image_python(
+            "import sys; sys.path.insert(0, '/app'); "
+            "from etl_runner import generate_report; generate_report()"
+        )
+        assert r.returncode == 0, f"generate_report failed: {r.stderr}"
+
+        report = read_report()
+
+        # Total Revenue must still be $610.00
+        m = re.search(r"Total Revenue:\s*\$([\d,]+\.\d{2})", report)
+        assert m is not None, "Could not find 'Total Revenue:' in report"
+        value = parse_currency("$" + m.group(1))
+        assert value == pytest.approx(610.00), (
+            f"Cancelled order included in revenue: expected $610.00, got ${value:.2f}"
+        )
+
+        # Total Orders must still be 8
+        m = re.search(r"Total Orders:\s*(\d+)", report)
+        assert m is not None, "Could not find 'Total Orders:' in report"
+        assert m.group(1) == "8", (
+            f"Cancelled order counted: expected 8 orders, got {m.group(1)}"
+        )
+    finally:
+        # Clean up: delete the test order and restore the report
+        run_psql("DELETE FROM orders WHERE order_id = 'ORD_CHK'")
+        run_image_python(
+            "import sys; sys.path.insert(0, '/app'); "
+            "from etl_runner import generate_report; generate_report()"
+        )
+
+
+def test_csv_data_in_db_hidden():
+    """Data must come from the CSV files, not be hard-coded."""
+    name = run_psql("SELECT name FROM customers WHERE customer_id='C002'")
+    assert "Alpine" in name, f"Expected 'Alpine' in customer C002 name, got '{name}'"
+
+
+def test_no_tool_gamma_hidden():
+    """Tool Gamma (cancelled-only product) must not appear in the report."""
+    report = read_report()
+    assert "Tool Gamma" not in report, (
+        "Tool Gamma appears in report but should not (cancelled-only product)"
+    )
+
+
+def test_no_fifo_hidden():
+    """/data/reports must be a directory, not a named pipe."""
+    assert not os.path.isfifo("/data/reports"), "/data/reports is a named pipe (FIFO)"
+    assert os.path.isdir("/data/reports"), "/data/reports is not a directory"
+<<<END>>>

@@ -1,0 +1,6 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Create a CSV with two employees working in different weeks: Employee E1 clocks in 2024-01-08T09:00:00, out 2024-01-08T17:00:00 (week of 01/08); Employee E2 clocks in 2024-01-15T09:00:00, out 2024-01-15T17:00:00 (week of 01/15). The correct solution outputs exactly two rows (E1|01/08|8.00|0.00|0.00|$200.00 and E2|01/15|8.00|0.00|0.00|$200.00). The mutant outputs four rows, adding E1|01/15|0.00|0.00|0.00|$0.00 and E2|01/08|0.00|0.00|0.00|$0.00 — spurious zero-hour rows for employee-week combinations with no hours.",
+ "reason": "The mutant iterates over the Cartesian product of all employees × all weeks seen in the data, generating zero-hour rows for employee-week pairs that have no shifts. Rule R18 explicitly requires empty weeks to be omitted."
+}
+```

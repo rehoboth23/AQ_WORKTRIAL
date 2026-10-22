@@ -1,0 +1,3 @@
+{"time": "2026-10-22T04:23:11", "pid": 24308, "event": "batch_start", "batch": "auto-payroll4-042311", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T04:23:11", "pid": 24308, "event": "stage", "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout", "key": "6c18ad97a3", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T06:05:59", "pid": 24308, "event": "killed", "signal": "SIGTERM", "children": []}

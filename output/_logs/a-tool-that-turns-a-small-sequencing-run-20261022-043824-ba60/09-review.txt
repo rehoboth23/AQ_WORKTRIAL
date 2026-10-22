@@ -1,0 +1,30 @@
+VERDICT: leaks
+- "the coverage counts are wrong at insertion and soft-clip positions" -> reveals fault categories and symptoms (rules 2, 3)
+- "deletion and intron-skip positions are missing from coverage" -> reveals fault categories, symptoms, and diagnosis (rules 1, 2, 3)
+- "some mismatches are missed or misidentified" -> reveals fault category (rule 3)
+- "reverse-strand reads produce incorrect read bases" -> reveals fault category, symptom, and diagnosis (rules 1, 2, 3)
+- "contains multiple errors" -> reveals number of problems (rule 3)
+
+<<<FILE instruction.md>>>
+The genomics lab has a Python script somewhere under `/app` that processes SAM alignment files to produce per-base reference coverage depth and a substitution-mismatch report. The script produces output that does not conform to the SAM Format Specification v1.6 (https://samtools.github.io/hts-specs/SAMv1.pdf). Find the script, identify the bugs, and fix it so it conforms to the specification.
+
+**Invocation (once fixed):**
+```
+python3 <script_path> <sam_file> <coverage_file> <mismatch_file>
+```
+
+**Output format:**
+
+1. **Coverage file** — tab-separated columns: `reference_name`, `position`, `depth`
+   - Positions are 1-based.
+   - Only positions with depth > 0 are written.
+   - Sorted by reference_name then position.
+
+2. **Mismatch file** — tab-separated columns: `reference_name`, `position`, `reference_base`, `read_base`, `count`
+   - Positions are 1-based.
+   - A substitution mismatch is a reference position where a read base aligned to it differs from the reference base. Only substitution mismatches are included.
+   - `count` is the number of reads showing that exact substitution (same ref base and read base) at that position.
+   - Sorted by reference_name then position.
+
+There is test SAM data somewhere under `/app/data/`. The script must produce correct output for any valid SAM file, not only the test data.
+<<<END>>>

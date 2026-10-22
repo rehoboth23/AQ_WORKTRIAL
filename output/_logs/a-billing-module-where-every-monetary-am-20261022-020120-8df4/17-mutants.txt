@@ -1,0 +1,707 @@
+<<<FILE mutants/0.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+import re
+import os
+
+# Apply all rounding fixes (same as correct solution)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+# Wrong fix for fault 0: drop calculate_subtotal non-boundary calculation
+# Insert return Decimal('0') at start of calculate_subtotal
+def break_function(func_name, line_content):
+    for root, dirs, files in os.walk('/app/billing'):
+        for filename in files:
+            if filename.endswith('.py'):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    content = f.read()
+                if f'def {func_name}(' in content:
+                    # Try single-line definition
+                    pattern = r"(def " + re.escape(func_name) + r"\([^)]*\):\n)"
+                    new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1)
+                    if new_content == content:
+                        # Try multi-line definition
+                        pattern = r"(def " + re.escape(func_name) + r"\(.*?\):\n)"
+                        new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1, flags=re.DOTALL)
+                    with open(filepath, 'w') as f:
+                        f.write(new_content)
+                    return new_content != content
+    return False
+
+assert break_function('calculate_subtotal', "return Decimal('0')"), "calculate_subtotal not found"
+
+print("All rounding fixes applied. calculate_subtotal broken.")
+EOF
+<<<END>>>
+
+<<<FILE mutants/1.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+import re
+import os
+
+# Apply all rounding fixes (same as correct solution)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+# Wrong fix for fault 1: drop calculate_loyalty_discount behaviour
+def break_function(func_name, line_content):
+    for root, dirs, files in os.walk('/app/billing'):
+        for filename in files:
+            if filename.endswith('.py'):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    content = f.read()
+                if f'def {func_name}(' in content:
+                    pattern = r"(def " + re.escape(func_name) + r"\([^)]*\):\n)"
+                    new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1)
+                    if new_content == content:
+                        pattern = r"(def " + re.escape(func_name) + r"\(.*?\):\n)"
+                        new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1, flags=re.DOTALL)
+                    with open(filepath, 'w') as f:
+                        f.write(new_content)
+                    return new_content != content
+    return False
+
+assert break_function('calculate_loyalty_discount', "return Decimal('0')"), "calculate_loyalty_discount not found"
+
+print("All rounding fixes applied. calculate_loyalty_discount broken.")
+EOF
+<<<END>>>
+
+<<<FILE mutants/2.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+import re
+import os
+
+# Apply all rounding fixes (same as correct solution)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+# Wrong fix for fault 2: drop calculate_processing_fee minimum floor behaviour
+def break_function(func_name, line_content):
+    for root, dirs, files in os.walk('/app/billing'):
+        for filename in files:
+            if filename.endswith('.py'):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    content = f.read()
+                if f'def {func_name}(' in content:
+                    pattern = r"(def " + re.escape(func_name) + r"\([^)]*\):\n)"
+                    new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1)
+                    if new_content == content:
+                        pattern = r"(def " + re.escape(func_name) + r"\(.*?\):\n)"
+                        new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1, flags=re.DOTALL)
+                    with open(filepath, 'w') as f:
+                        f.write(new_content)
+                    return new_content != content
+    return False
+
+assert break_function('calculate_processing_fee', "return Decimal('0')"), "calculate_processing_fee not found"
+
+print("All rounding fixes applied. calculate_processing_fee broken.")
+EOF
+<<<END>>>
+
+<<<FILE mutants/3.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+import re
+import os
+
+# Apply all rounding fixes (same as correct solution)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+# Wrong fix for fault 3: drop tax_exempt behaviour by overriding it to False
+def break_function(func_name, line_content):
+    for root, dirs, files in os.walk('/app/billing'):
+        for filename in files:
+            if filename.endswith('.py'):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    content = f.read()
+                if f'def {func_name}(' in content:
+                    pattern = r"(def " + re.escape(func_name) + r"\([^)]*\):\n)"
+                    new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1)
+                    if new_content == content:
+                        pattern = r"(def " + re.escape(func_name) + r"\(.*?\):\n)"
+                        new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1, flags=re.DOTALL)
+                    with open(filepath, 'w') as f:
+                        f.write(new_content)
+                    return new_content != content
+    return False
+
+assert break_function('calculate_tax', "tax_exempt = False"), "calculate_tax not found"
+
+print("All rounding fixes applied. calculate_tax tax_exempt broken.")
+EOF
+<<<END>>>
+
+<<<FILE mutants/4.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+import re
+import os
+
+# Apply all rounding fixes (same as correct solution)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+# Wrong fix for fault 4: drop calculate_total non-boundary calculation
+def break_function(func_name, line_content):
+    for root, dirs, files in os.walk('/app/billing'):
+        for filename in files:
+            if filename.endswith('.py'):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    content = f.read()
+                if f'def {func_name}(' in content:
+                    pattern = r"(def " + re.escape(func_name) + r"\([^)]*\):\n)"
+                    new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1)
+                    if new_content == content:
+                        pattern = r"(def " + re.escape(func_name) + r"\(.*?\):\n)"
+                        new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1, flags=re.DOTALL)
+                    with open(filepath, 'w') as f:
+                        f.write(new_content)
+                    return new_content != content
+    return False
+
+assert break_function('calculate_total', "return Decimal('0')"), "calculate_total not found"
+
+print("All rounding fixes applied. calculate_total broken.")
+EOF
+<<<END>>>
+
+<<<FILE mutants/5.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+import re
+import os
+
+# Apply all rounding fixes (same as correct solution)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+# Wrong fix for fault 5: drop calculate_compound_tax behaviour
+def break_function(func_name, line_content):
+    for root, dirs, files in os.walk('/app/billing'):
+        for filename in files:
+            if filename.endswith('.py'):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    content = f.read()
+                if f'def {func_name}(' in content:
+                    pattern = r"(def " + re.escape(func_name) + r"\([^)]*\):\n)"
+                    new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1)
+                    if new_content == content:
+                        pattern = r"(def " + re.escape(func_name) + r"\(.*?\):\n)"
+                        new_content = re.sub(pattern, r"\1    " + line_content + "\n", content, count=1, flags=re.DOTALL)
+                    with open(filepath, 'w') as f:
+                        f.write(new_content)
+                    return new_content != content
+    return False
+
+assert break_function('calculate_compound_tax', "return Decimal('0')"), "calculate_compound_tax not found"
+
+print("All rounding fixes applied. calculate_compound_tax broken.")
+EOF
+<<<END>>>
+
+<<<FILE mutants/6.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+# Apply rounding fixes for sites 1-4 only (skip site 0: core.py calculate_line_tax)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+print("Rounding fixes applied (site 0 skipped: core.py left unfixed).")
+EOF
+<<<END>>>
+
+<<<FILE mutants/7.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+# Apply rounding fixes for sites 0, 2-4 only (skip site 1: discounts.py calculate_volume_discount)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+print("Rounding fixes applied (site 1 skipped: discounts.py left unfixed).")
+EOF
+<<<END>>>
+
+<<<FILE mutants/8.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+# Apply rounding fixes for sites 0-1, 3-4 only (skip site 2: fees.py calculate_service_fee)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+print("Rounding fixes applied (site 2 skipped: fees.py left unfixed).")
+EOF
+<<<END>>>
+
+<<<FILE mutants/9.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+# Apply rounding fixes for sites 0-2, 4 only (skip site 3: bulk.py calculate_surcharge)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 5: tax.py - calculate_additional_tax
+with open('/app/billing/tax.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Convert to cents, floor, convert back\n    cents = (tax * 100).to_integral_value(rounding=ROUND_FLOOR)\n    return cents / 100',
+    '    return round_money(tax)'
+)
+with open('/app/billing/tax.py', 'w') as f:
+    f.write(c)
+
+print("Rounding fixes applied (site 3 skipped: bulk.py left unfixed).")
+EOF
+<<<END>>>
+
+<<<FILE mutants/10.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 << 'EOF'
+# Apply rounding fixes for sites 0-3 only (skip site 4: tax.py calculate_additional_tax)
+
+# Site 1: core.py - calculate_line_tax
+with open('/app/billing/core.py') as f:
+    c = f.read()
+c = c.replace('return round(tax, 2)', 'return round_money(tax)')
+with open('/app/billing/core.py', 'w') as f:
+    f.write(c)
+
+# Site 2: discounts.py - calculate_volume_discount
+with open('/app/billing/discounts.py') as f:
+    c = f.read()
+c = c.replace(
+    "return discount.quantize(Decimal('0.01'), rounding=ROUND_DOWN)",
+    "return round_money(discount)"
+)
+with open('/app/billing/discounts.py', 'w') as f:
+    f.write(c)
+
+# Site 3: fees.py - calculate_service_fee
+with open('/app/billing/fees.py') as f:
+    c = f.read()
+c = c.replace('return Decimal(f"{fee:.2f}")', 'return round_money(fee)')
+with open('/app/billing/fees.py', 'w') as f:
+    f.write(c)
+
+# Site 4: bulk.py - calculate_surcharge
+with open('/app/billing/bulk.py') as f:
+    c = f.read()
+c = c.replace(
+    '    # Cents conversion for precise rounding\n    cents = int(surcharge * 100)\n    return Decimal(cents) / 100',
+    '    return round_money(surcharge)'
+)
+with open('/app/billing/bulk.py', 'w') as f:
+    f.write(c)
+
+print("Rounding fixes applied (site 4 skipped: tax.py left unfixed).")
+EOF
+<<<END>>>

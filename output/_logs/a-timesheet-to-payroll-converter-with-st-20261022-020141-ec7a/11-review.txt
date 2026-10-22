@@ -1,0 +1,20 @@
+Looking at this systematically, I need to verify each requirement R1–R20 is stated in instruction.md, check for leaked answers, oracle pointers, and unstated formats, and confirm the interface is specified.
+
+**Interface check:** Command `python3 /app/payroll.py <csv_path>`, CSV columns listed, output to stdout (implied by rule 20's "no stdout output"), exit codes in rule 20. ✓
+
+**Requirement-by-requirement check:**
+
+- R1–R12: All faithfully stated. ✓
+- R13: The instruction's total line format is `  TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}` (label before value, space before `h`). The requirement R13 says `  TOTAL  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot  ${pay:>9.2f}` (value before label). I verified against `parse_output()`: the parser expects `tokens[2]` for reg, `tokens[5]` for dot, `tokens[8]` for wot, `tokens[10]` for pay. The instruction's format produces tokens at exactly those positions (11 tokens: TOTAL, reg, value, h, dot, value, h, wot, value, h, $pay). The requirement's format would produce `tokens[2]='reg'` → `float('reg')` → crash. The instruction is correct for the tests; the requirement's format string is inconsistent with its own parser.
+- R14–R20: All faithfully stated. ✓
+- R16: Grand total uses "same field structure as rule 13" — verified this produces tokens at positions 3, 6, 9, 11 matching the grand total parser. ✓
+
+**Leaked answers:** No expected outputs pasted. Only trivial examples (single-digit ID → three zeros, "9 before 10"). The timesheet.csv description is generic (mentions data types, not values). ✓
+
+**Oracle:** No verification commands, no reference implementation pointers. ✓
+
+**Unstated formats:** All formats explicitly stated in rules 11–17. The parser uses `split()` which is tolerant, but the instruction specifies exact formats regardless. ✓
+
+**R20 specifics:** LF-only, exactly one trailing newline, exit 2 produces no stdout, header not column-checked, 6+ columns valid — all stated. ✓
+
+VERDICT: clean

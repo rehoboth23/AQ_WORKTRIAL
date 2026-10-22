@@ -1,0 +1,33 @@
+VERDICT: leaks
+- "A correct helper, `round_money()`, already exists in `billing/utils.py` and implements this rule. Every function that produces a monetary amount should use it (or an equivalent round-half-up mechanism)." -> fault 4 (pointer to where the answer lives) and fault 9 (the fix technique itself)
+- "Invoice INV-1042 shows a tax of $2.44 on a $39.12 subtotal at 6.25%. The correct calculation is $39.12 × 6.25% = $2.445, which should round to $2.45 with round-half-up." -> fault 8 (exact expected output) and fault 1 (diagnosis: WHERE the bug is — the specific tax calculation)
+- "the reported symptom is just one manifestation" -> fault 3 (implies multiple problems exist)
+- "Do not change the `round_money()` helper itself — it is correct." -> fault 4 (pointer to where the answer lives); already covered by constraint 1
+- Module layout listing `round_money()` by name -> fault 4 (pointer to where the answer lives)
+
+<<<FILE instruction.md>>>
+You maintain a Python billing module at `/app/billing/` that calculates invoices — subtotals, taxes, discounts, fees, and surcharges.
+
+**Business rule that must hold everywhere in this module:** Every monetary amount must be rounded using round-half-up to 2 decimal places (standard business rounding: when a value is exactly halfway between two possibilities, it rounds away from zero).
+
+**Reported bug:** Some invoices show incorrect amounts due to inconsistent rounding. Not all monetary calculations in the module apply the round-half-up rule correctly.
+
+**Your task:** Find and fix every place in the billing module where a monetary amount is rounded inconsistently with the round-half-up rule.
+
+**Constraints:**
+1. All existing calculations that are already correct must remain correct.
+2. Do not remove or rename any public function or change its parameter signatures.
+
+**Running invoices:**
+```
+python /app/run_invoice.py <invoice_id>
+```
+
+**Module files:**
+- `billing/utils.py`
+- `billing/core.py`
+- `billing/discounts.py`
+- `billing/fees.py`
+- `billing/bulk.py`
+- `billing/tax.py`
+<<<END>>>

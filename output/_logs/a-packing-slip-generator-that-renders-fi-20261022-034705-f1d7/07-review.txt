@@ -1,0 +1,144 @@
+Looking at the instruction.md against the requirements and tests, I find two issues:
+
+1. **R12 - Missing exact error messages**: The test checks for `'ERROR: invalid CSV' in err` and `'ERROR: no orders' in err`, but the instruction only says "a descriptive error message on stderr" that "must begin with `ERROR:`". Two reasonable implementations could produce `"ERROR: missing headers"` vs `"ERROR: invalid CSV"` — only the latter passes.
+
+2. **R15 - Missing exact invalid date placeholder**: The requirement specifies the exact text `INVALID DATE`, but the instruction says only "a fixed all-uppercase placeholder indicating the date is invalid" — vague enough that `"INVALID"` or `"BAD_DATE"` would also satisfy the instruction but fail the test.
+
+VERDICT: leaks
+- R12 error messages not specified precisely → test requires exact strings `ERROR: invalid CSV` and `ERROR: no orders`
+- R15 invalid date placeholder not specified precisely → test requires exact string `INVALID DATE`
+<<<FILE instruction.md>>>
+# Packing Slip Generator Compliance
+
+You inherit a working packing-slip generator CLI tool (`slipgen`) at `/app/slipgen.py`.
+It reads orders from a CSV file and produces text packing slips. The tool works, but its
+formatting, rounding, grouping, pagination, and error handling follow convenient defaults
+that differ from the warehouse's specification.
+
+Your job: bring the tool into compliance with the 19 rules below. **Everything the tool
+does today must keep working** — the `stats` subcommand, `--dry-run`, `--company`,
+`--verbose`, and `--output` flags must all continue to function as before. Read the
+existing code carefully before making changes; a rewrite that drops features will fail.
+
+## Interface
+
+- Tool: `/app/slipgen.py`
+- The tool reads from a default CSV path when `--input` is not specified
+- Run: `python3 /app/slipgen.py generate --input <csv_path>`
+- Subcommands: `generate` (produce slips), `stats` (summary statistics)
+- Flags for `generate`: `--input`, `--output`, `--company`, `--dry-run`, `--verbose`
+- No third-party Python packages are available; use only the standard library.
+
+## Specification
+
+### 1. Line Width
+Every output line is exactly 72 visual columns wide, right-padded with spaces, terminated
+by a single LF (`\n`). The final line also ends with LF. Lines containing East Asian Wide
+or Fullwidth characters have fewer codepoints but still 72 visual columns.
+
+### 2. Slip Separator
+Between consecutive slips: 10 U+2550 (═) characters left-aligned, followed by spaces to
+72 visual columns.
+
+### 3. Item Sort
+Within each slip, items are sorted by SKU ascending lexicographic (Python string) order.
+
+### 4. Multi-Address Splitting
+Rows with the same order_id but different ship addresses (street+city+region+postal+country)
+produce separate slips — one per unique address, in the order their address first appears
+in the CSV. Items going to the same address for the same order_id are combined on one slip.
+
+### 5. Round-Half-Up
+All weight rounding uses round-half-up (away from zero) implemented via the Decimal module,
+not Python's built-in `round()`. Each item line displays the item's total weight
+(quantity × unit_weight) rounded to exactly 3 decimal places (format `W.WWW`). The totals
+line displays the slip's total weight rounded to exactly 1 decimal place (format `Y.Y`).
+
+### 6. Pagination
+Slips with more than 8 items are paginated at 8 items per page. Between pages: (1) a blank
+line (72 spaces), (2) `--- PAGE N ---` right-justified in 72 visual columns, (3) a blank
+line (72 spaces). N starts at 2. Items on each page follow the SKU-sorted order from rule 3.
+
+### 7. Address Block
+Exactly 6 lines: (1) ship_name, (2) ship_street, (3) ship_city, (4) ship_region + `' '` +
+ship_postal, (5) ship_country in UPPERCASE, (6) blank (72 spaces). Missing or empty fields
+(after stripping per rule 18) show `N/A`. Line 4 is always region + `' '` + postal with each
+missing field individually replaced by `N/A` (e.g., both missing → `N/A N/A`).
+
+### 8. Visual-Width Padding
+ALL field padding — name, address, SKU, description, order_id, slip numbering, page markers,
+totals, and every other padded or justified field — must use visual width, not character
+count. Use `unicodedata.east_asian_width()`: characters with `W` (Wide) or `F` (Fullwidth)
+count as 2 visual columns; all others (including `A` Ambiguous) count as 1. Pad with spaces
+so that visual width of content plus padding equals the target width.
+
+### 9. Slip Numbering
+First line of each slip: `Slip N of M` right-justified in 72 visual columns. N is the 1-based
+slip index, M is the total slip count.
+
+### 10. Order Line
+`Order: ` followed by order_id right-justified in a 10-character field (space-padded on the
+left to reach 10 characters). The remainder of the line is padded with spaces to 72 visual
+columns.
+
+### 11. Totals Line
+`TOTAL: X items, Y.Y kg` left-aligned, padded to 72 visual columns. X is the integer sum of
+quantities (negatives treated as 0 per rule 13) for all items on the slip. Y.Y is the slip's
+total weight per rule 17, rounded to 1 decimal place.
+
+### 12. Exit Codes
+Exit 0 = success. Exit 2 with the exact message `ERROR: invalid CSV` on stderr if the CSV
+lacks any required header (order_id, sku, quantity, unit_weight, ship_name, ship_street,
+ship_city, ship_region, ship_postal, ship_country). Exit 4 with the exact message
+`ERROR: no orders` on stderr if all required headers are present but the CSV has zero data
+rows. ship_date is NOT a required header.
+
+### 13. Negative Quantities
+Negative quantities are treated as 0. A warning `WARNING: negative quantity on row N` is
+printed to stderr for each negative quantity. N is the 1-based row number in the CSV file,
+counting the header row as row 1 (first data row = row 2). The item still appears in the slip
+with quantity 0 and contributes 0 to the total weight.
+
+### 14. Item Limit
+Slips with more than 20 items (after SKU sort per rule 3) display only the first 20 items,
+followed by an overflow line. The overflow line is a full 72-visual-column line: columns 1-32
+are spaces, columns 33-72 contain `... and N more items` (three ASCII periods, one space,
+`and`, one space, the integer N, one space, `more`, one space, `items`), left-aligned and
+padded with spaces to fill columns 33-72. This overflow line does NOT count toward the 8-item
+per-page limit (rule 6).
+
+### 15. Ship Date
+If a ship_date column exists in the CSV, each slip includes a date line `Ship date: ` followed
+by the reformatted date, appearing immediately after the order line (rule 10) and before the
+address block (rule 7). Dates that are valid calendar dates in YYYY-MM-DD format are
+reformatted to DD-Mon-YYYY where Mon is the three-letter month abbreviation in title-case
+(Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec). Values that do not represent a
+valid calendar date (including wrong format, impossible month >12, impossible day for the
+month, or empty string) display the exact text `INVALID DATE`. If the ship_date column is
+absent from the CSV, no date line appears on any slip.
+
+### 16. Item Line Columns
+Item lines: columns 1-15 SKU left-aligned (padded to 15 visual columns per rule 8); column 16
+is a space; columns 17-20 quantity right-aligned as a non-negative integer (space-padded on
+the left to 4 characters); column 21 is a space; columns 22-31 weight right-aligned as
+`W.WWW kg` (item total weight per rule 5, 10 visual columns total including ` kg`); column 32
+is a space; columns 33-72 description left-aligned (40 visual columns; if description visual
+width exceeds 40, keep first 37 visual columns and append `...` for a total of 40; otherwise
+pad with spaces to 40 visual columns).
+
+### 17. Total Weight
+The slip's total weight is the sum of UNROUNDED item total weights (each quantity ×
+unit_weight, with negative quantities treated as 0 per rule 13) across all items on the slip,
+rounded ONCE to 1 decimal place using round-half-up (rule 5). Do NOT sum pre-rounded item
+weights — this produces a different result at rounding boundaries.
+
+### 18. Whitespace Stripping
+All CSV field values are stripped of leading and trailing whitespace (spaces and tabs) before
+processing. A field containing only whitespace after stripping is treated as an empty string
+(which triggers the N/A rule in rule 7 for address fields).
+
+### 19. Slip Ordering
+Slips are ordered by order_id ascending (lexicographic string comparison). Within the same
+order_id, slips are ordered by the first appearance of each unique address in the CSV
+(per rule 4).
+<<<END>>>

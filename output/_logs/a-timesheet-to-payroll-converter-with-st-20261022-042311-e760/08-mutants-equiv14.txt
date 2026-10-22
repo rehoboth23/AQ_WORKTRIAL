@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Create a CSV with two employees working in different weeks: Employee 'B20' clocks in 2025-01-06T08:00:00 and out 2025-01-06T16:00:00 (week of 01/06), and Employee 'A100' clocks in 2025-01-13T08:00:00 and out 2025-01-13T16:00:00 (week of 01/13). Correct solution sorts by Employee ID first: A100|01/13 row then B20|01/06 row. Mutant sorts by week first: B20|01/06 row then A100|01/13 row.",
+ "reason": "The mutant sorts by (week_start, employee_id) while the spec and correct solution sort by (employee_id, week_start). With employees whose string-order IDs differ from their week ordering, the output row sequence diverges."}
+```

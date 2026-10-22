@@ -1,0 +1,645 @@
+<<<MANIFEST>>>
+environment/generate_data.py
+environment/normalise.py
+environment/data/README.md
+environment/tests_public/run_tests.sh
+<<<END>>>
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""
+Generate address before/after TSV pairs from the retired normalisation engine.
+
+Usage: python3 generate_data.py SEED COUNT MODE OUTPUT
+  SEED:   random seed (42 for training data)
+  COUNT:  number of address pairs to generate
+  MODE:   'training' for diverse pairs, 'public' for simple single-rule pairs
+  OUTPUT: path to write TSV file (one before<TAB>after pair per line)
+"""
+import random
+import re
+import sys
+
+
+# ---------------------------------------------------------------------------
+# Engine: exact reproduction of the retired normalisation engine
+# ---------------------------------------------------------------------------
+def engine_normalize(addr):
+    """
+    Apply the retired engine's ~25 ordered regex rewrite rules.
+    Rule order matters when rules overlap.
+    """
+    # --- Cleanup phase (rules 1-5) ---
+    # 1. Uppercase
+    addr = addr.upper()
+    # 2. Remove all periods
+    addr = addr.replace('.', '')
+    # 3. Remove all commas
+    addr = addr.replace(',', '')
+    # 4. Collapse whitespace to single space
+    addr = re.sub(r'\s+', ' ', addr)
+    # 5. Strip leading/trailing whitespace
+    addr = addr.strip()
+
+    # --- PO BOX normalization (rules 6-8b) ---
+    # 6. P O BOX (with spaces) → PO BOX
+    addr = re.sub(r'\bP\s+O\s+BOX\b', 'PO BOX', addr)
+    # 7. PO BOX # NNN → PO BOX NNN  (remove # immediately after PO BOX)
+    addr = re.sub(r'PO BOX # (\d)', r'PO BOX \1', addr)
+    # 8. PO BOX <digits> APT → PO BOX <digits> #
+    addr = re.sub(r'\bPO BOX (\d+) APT\b', r'PO BOX \1 #', addr)
+    # 8b. PO BOX <digits> UNIT → PO BOX <digits> #
+    addr = re.sub(r'\bPO BOX (\d+) UNIT\b', r'PO BOX \1 #', addr)
+
+    # --- Direction expansion (rules 9-16) ---
+    # Compound directions first (must precede single-letter rules)
+    addr = re.sub(r'\bNE\b', 'NORTHEAST', addr)
+    addr = re.sub(r'\bNW\b', 'NORTHWEST', addr)
+    addr = re.sub(r'\bSE\b', 'SOUTHEAST', addr)
+    addr = re.sub(r'\bSW\b', 'SOUTHWEST', addr)
+    # Single-letter directions
+    addr = re.sub(r'\bN\b', 'NORTH', addr)
+    addr = re.sub(r'\bS\b', 'SOUTH', addr)
+    addr = re.sub(r'\bE\b', 'EAST', addr)
+    addr = re.sub(r'\bW\b', 'WEST', addr)
+
+    # --- Unit designator normalization (rules 17-23) ---
+    # SUITE→STE→# chain (order matters: 17 then 18)
+    addr = re.sub(r'\bSUITE\b', 'STE', addr)
+    addr = re.sub(r'\bSTE\b', '#', addr)
+    addr = re.sub(r'\bAPT\b', '#', addr)
+    addr = re.sub(r'\bUNIT\b', '#', addr)
+    addr = re.sub(r'\bRM\b', 'ROOM', addr)
+    addr = re.sub(r'\bBLDG\b', 'BUILDING', addr)
+    addr = re.sub(r'\bFL\b', 'FLOOR', addr)
+
+    # --- Street type expansion with position-dependent lookahead (rules 24-31) ---
+    # Only expand when followed by end-of-string or a normalised unit designator
+    _lookahead = r'(?=\s*$|\s+#|\s+ROOM|\s+BUILDING|\s+FLOOR)'
+    for abbr, full in [('ST', 'STREET'), ('AVE', 'AVENUE'), ('RD', 'ROAD'),
+                       ('DR', 'DRIVE'), ('LN', 'LANE'), ('BLVD', 'BOULEVARD'),
+                       ('PL', 'PLACE'), ('CT', 'COURT')]:
+        addr = re.sub(rf'\b{abbr}{_lookahead}', full, addr)
+
+    # --- Final whitespace cleanup ---
+    addr = re.sub(r'\s+', ' ', addr)
+    addr = addr.strip()
+    return addr
+
+
+# ---------------------------------------------------------------------------
+# Street-address components
+# ---------------------------------------------------------------------------
+STREET_NAMES = [
+    'MAIN', 'OAK', 'PINE', 'ELM', 'CEDAR', 'MAPLE', 'BIRCH', 'WILLOW',
+    'LAKE', 'HILL', 'PARK', 'RIVER', 'FOREST', 'VALLEY', 'CHURCH',
+    'SPRING', 'MEADOW', 'CREEK', 'STONE', 'HARVEST', 'SUNSET', 'VIEW',
+    'PIONEER', 'WALNUT', 'CHERRY', 'JUNIPER', 'HAWTHORN', 'BEECH',
+    'HICKORY', 'SYCAMORE', 'ASPEN', 'MAGNOLIA', 'DOGWOOD', 'ASH',
+    'CYPRESS', 'OLIVE', 'PALM', 'SPRUCE', 'POPLAR', 'SAND', 'ROCK',
+    'SUMMIT', 'CREST', 'RIDGE', 'BROOK', 'GROVE', 'DALE', 'HARPER',
+    'FLETCHER', 'WARREN', 'GRAHAM', 'COLBY', 'TANNER', 'BLAKE',
+]
+SAINT_NAMES = [
+    'ANDREWS', 'MARK', 'JOHN', 'PAUL', 'LUKE', 'JAMES', 'MARY',
+    'PETER', 'GEORGE', 'DAVID', 'STEPHEN', 'MICHAEL', 'FRANCIS',
+    'ANNE', 'CATHERINE', 'ELIZABETH', 'PATRICK', 'JOSEPH',
+]
+DR_NAMES = ['MARTIN LUTHER KING', 'KING JR', 'SEUSS', 'PEPPER', 'WELLS']
+NUMBERED_STREETS = [
+    '1ST', '2ND', '3RD', '4TH', '5TH', '6TH', '7TH', '8TH', '9TH', '10TH',
+    '11TH', '12TH', '21ST', '22ND', '23RD', '42ND', '45TH', '100TH',
+]
+STREET_TYPES = ['ST', 'AVE', 'RD', 'DR', 'LN', 'BLVD', 'PL', 'CT']
+DIR_SINGLE = ['N', 'S', 'E', 'W']
+DIR_COMPOUND = ['NE', 'NW', 'SE', 'SW']
+DIR_WORDS = ['NORTH', 'SOUTH', 'EAST', 'WEST']
+UNIT_DESIGS = ['SUITE', 'APT', 'UNIT', 'RM', 'BLDG', 'FL']
+
+
+# ---------------------------------------------------------------------------
+# Tiny helpers
+# ---------------------------------------------------------------------------
+def _ri(max_val=9999):
+    return random.randint(1, max_val)
+
+def _rc(seq):
+    return random.choice(seq)
+
+def _runit():
+    if random.random() < 0.6:
+        return str(_ri(199))
+    return f'{_ri(49)}{_rc("ABCD")}'
+
+
+# ---------------------------------------------------------------------------
+# Noise / realism helpers
+# ---------------------------------------------------------------------------
+def _lower_all(s):
+    return s.lower()
+
+def _title_words(s):
+    return ' '.join(w.capitalize() for w in s.split())
+
+def _mixed_case(s):
+    return ' '.join(w.lower() if random.random() < 0.5 else w for w in s.split())
+
+def apply_case_noise(s):
+    r = random.random()
+    if r < 0.45:
+        return s                    # all upper
+    elif r < 0.65:
+        return _lower_all(s)
+    elif r < 0.80:
+        return _title_words(s)
+    else:
+        return _mixed_case(s)
+
+
+def add_comma_before_unit(s):
+    """Insert a comma before the first unit designator found."""
+    for ud in ['SUITE', 'STE', 'APT', 'UNIT', 'RM', 'BLDG', 'FL']:
+        token = f' {ud} '
+        idx = s.find(token)
+        if idx > 0 and ',' not in s[:idx]:
+            if random.random() < 0.5:
+                return s[:idx] + ',' + s[idx:]
+            break
+    return s
+
+
+def add_periods_to_abbrevs(s):
+    """Sprinkle periods after abbreviations for realism."""
+    mid = {
+        ' ST ': ' ST. ', ' AVE ': ' AVE. ', ' RD ': ' RD. ',
+        ' DR ': ' DR. ', ' LN ': ' LN. ', ' BLVD ': ' BLVD. ',
+        ' PL ': ' PL. ', ' CT ': ' CT. ',
+        ' N ': ' N. ', ' S ': ' S. ', ' E ': ' E. ', ' W ': ' W. ',
+        ' NE ': ' N.E. ', ' NW ': ' N.W. ', ' SE ': ' S.E. ', ' SW ': ' S.W. ',
+        ' APT ': ' APT. ', ' STE ': ' STE. ', ' SUITE ': ' SUITE. ',
+        ' RM ': ' RM. ', ' BLDG ': ' BLDG. ', ' FL ': ' FL. ',
+    }
+    for orig, repl in mid.items():
+        if orig in s and random.random() < 0.30:
+            s = s.replace(orig, repl, 1)
+    # end-of-string abbreviation
+    for abbr in STREET_TYPES + DIR_SINGLE:
+        if s.endswith(f' {abbr}') and random.random() < 0.25:
+            s += '.'
+    return s
+
+
+def add_extra_whitespace(s):
+    """Occasionally double a space."""
+    if random.random() < 0.12:
+        parts = s.split(' ')
+        if len(parts) > 2:
+            idx = random.randint(1, len(parts) - 1)
+            parts.insert(idx, '')
+            s = ' '.join(parts)
+    return s
+
+
+def apply_noise(addr):
+    """Apply realistic noise (casing, punctuation, spacing) to an address."""
+    # Comma before unit (while still uppercase so we can find it)
+    if random.random() < 0.40:
+        addr = add_comma_before_unit(addr)
+    # Periods
+    if random.random() < 0.25:
+        addr = add_periods_to_abbrevs(addr)
+    # Case
+    addr = apply_case_noise(addr)
+    # Extra whitespace
+    if random.random() < 0.10:
+        addr = add_extra_whitespace(addr)
+    return addr
+
+
+# ---------------------------------------------------------------------------
+# Training-address generators
+# ---------------------------------------------------------------------------
+def gen_simple():
+    return f'{_ri()} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}'
+
+def gen_dir_single():
+    return f'{_ri()} {_rc(DIR_SINGLE)} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}'
+
+def gen_dir_compound():
+    return f'{_ri()} {_rc(DIR_COMPOUND)} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}'
+
+def gen_numbered_street():
+    return f'{_ri()} {_rc(DIR_SINGLE)} {_rc(NUMBERED_STREETS)} {_rc(STREET_TYPES)}'
+
+def gen_with_unit(ud=None):
+    if ud is None:
+        ud = _rc(UNIT_DESIGS)
+    return f'{_ri()} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}, {ud} {_runit()}'
+
+def gen_with_ste():
+    return f'{_ri()} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}, STE {_runit()}'
+
+def gen_compound_dir_unit():
+    return (f'{_ri()} {_rc(DIR_COMPOUND)} {_rc(STREET_NAMES)} '
+            f'{_rc(STREET_TYPES)}, {_rc(UNIT_DESIGS)} {_runit()}')
+
+def gen_dir_unit_combo():
+    d = _rc(DIR_SINGLE + DIR_COMPOUND)
+    return (f'{_ri()} {d} {_rc(STREET_NAMES)} '
+            f'{_rc(STREET_TYPES)}, {_rc(UNIT_DESIGS)} {_runit()}')
+
+def gen_period_dir_unit():
+    """3-rule chain: period direction + unit + street type."""
+    d = _rc(DIR_COMPOUND)
+    pd = '.'.join(d) + '.'
+    return (f'{_ri()} {pd} {_rc(STREET_NAMES)} '
+            f'{_rc(STREET_TYPES)}., {_rc(UNIT_DESIGS)} {_runit()}')
+
+def gen_period_dir_simple():
+    d = _rc(DIR_COMPOUND)
+    pd = '.'.join(d) + '.'
+    return f'{_ri()} {pd} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}.'
+
+def gen_single_dir_period():
+    return f'{_ri()} {_rc(DIR_SINGLE)}. {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}.'
+
+def gen_po_box():
+    return f'PO BOX {_ri(9999)}'
+
+def gen_po_box_spaces():
+    return f'P O BOX {_ri(9999)}'
+
+def gen_po_box_period():
+    return f'P.O. BOX {_ri(9999)}'
+
+def gen_po_box_apt():
+    return f'PO BOX {_ri(9999)} APT {_runit()}'
+
+def gen_po_box_unit():
+    return f'PO BOX {_ri(9999)} UNIT {_runit()}'
+
+def gen_po_box_hash():
+    return f'PO BOX # {_ri(9999)}'
+
+def gen_pobox_nospace():
+    return f'POBOX {_ri(9999)}'
+
+def gen_dir_word_street():
+    return f'{_ri()} {_rc(DIR_WORDS)} {_rc(STREET_TYPES)}'
+
+def gen_saint_name():
+    return f'{_ri()} ST {_rc(SAINT_NAMES)} {_rc(STREET_TYPES)}'
+
+def gen_dr_name():
+    return f'{_ri()} DR {_rc(DR_NAMES)} {_rc(STREET_TYPES + ["BLVD"])}'
+
+def gen_rm_bldg_fl():
+    return f'{_ri()} {_rc(STREET_NAMES)} {_rc(STREET_TYPES)}, {_rc(["RM","BLDG","FL"])} {_runit()}'
+
+def gen_complex():
+    d = _rc(DIR_SINGLE + DIR_COMPOUND + [''])
+    name = _rc(STREET_NAMES)
+    st = _rc(STREET_TYPES)
+    ud = _rc(UNIT_DESIGS + ['STE'])
+    un = _runit()
+    if d:
+        return f'{_ri()} {d} {name} {st}, {ud} {un}'
+    return f'{_ri()} {name} {st}, {ud} {un}'
+
+
+# ---------------------------------------------------------------------------
+# Plan: (generator, count) pairs
+# ---------------------------------------------------------------------------
+TRAINING_PLAN = [
+    (gen_simple,             100),
+    (gen_dir_single,          80),
+    (gen_dir_compound,        40),
+    (gen_numbered_street,     18),
+    (gen_with_unit,           80),
+    (gen_with_ste,            30),
+    (gen_compound_dir_unit,   50),
+    (gen_dir_unit_combo,      50),
+    (gen_period_dir_unit,     30),
+    (gen_period_dir_simple,   25),
+    (gen_single_dir_period,   15),
+    (gen_po_box,              55),
+    (gen_po_box_spaces,       20),
+    (gen_po_box_period,        5),
+    (gen_po_box_apt,           3),
+    (gen_po_box_unit,          2),
+    (gen_po_box_hash,          3),
+    (gen_pobox_nospace,        8),
+    (gen_dir_word_street,     55),
+    (gen_saint_name,          25),
+    (gen_dr_name,              5),
+    (gen_rm_bldg_fl,         45),
+    (gen_complex,             65),
+]
+
+PUBLIC_PLAN = [
+    (gen_simple,             15),
+    (gen_dir_single,         10),
+    (gen_with_unit,          10),
+    (gen_with_ste,            3),
+    (gen_po_box,              8),
+    (gen_po_box_spaces,       5),
+    (gen_rm_bldg_fl,          4),
+    (gen_numbered_street,     3),
+]
+
+
+# ---------------------------------------------------------------------------
+# Top-level generation
+# ---------------------------------------------------------------------------
+def generate_addresses(seed, count, plan):
+    random.seed(seed)
+    all_funcs = [p[0] for p in plan]
+
+    addresses = []
+    for func, cnt in plan:
+        for _ in range(cnt):
+            addresses.append(apply_noise(func()))
+
+    # pad to count
+    while len(addresses) < count:
+        addresses.append(apply_noise(_rc(all_funcs)()))
+
+    return addresses[:count]
+
+
+def generate_public(seed, count):
+    """Generate simple single-rule addresses for the public test set."""
+    random.seed(seed)
+    addresses = []
+    for func, cnt in PUBLIC_PLAN:
+        for _ in range(cnt):
+            addr = func()
+            # Limited noise for public tests (no near-misses or ordering traps)
+            addr = apply_case_noise(addr)
+            if random.random() < 0.30:
+                addr = add_periods_to_abbrevs(addr)
+            addresses.append(addr)
+    while len(addresses) < count:
+        addr = gen_simple()
+        addr = apply_case_noise(addr)
+        addresses.append(addr)
+    return addresses[:count]
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+if __name__ == '__main__':
+    seed   = int(sys.argv[1])
+    count  = int(sys.argv[2])
+    mode   = sys.argv[3] if len(sys.argv) > 3 else 'training'
+    output = sys.argv[4] if len(sys.argv) > 4 else None
+
+    if mode == 'training':
+        addrs = generate_addresses(seed, count, TRAINING_PLAN)
+    elif mode == 'public':
+        addrs = generate_public(seed, count)
+    else:
+        raise ValueError(f'Unknown mode: {mode!r}')
+
+    lines = []
+    for addr in addrs:
+        norm = engine_normalize(addr)
+        lines.append(f'{addr}\t{norm}')
+
+    content = '\n'.join(lines) + '\n'
+
+    if output:
+        with open(output, 'w') as f:
+            f.write(content)
+    else:
+        sys.stdout.write(content)
+<<<END>>>
+<<<FILE environment/normalise.py>>>
+#!/usr/bin/env python3
+"""
+Address normaliser — currently a pass-through stub.
+
+Your task: replace the normalise() function so it reproduces the
+retired municipal normalisation engine on unseen addresses.
+
+The engine applied about 25 ordered regex rewrite rules.
+Study the training pairs in data/addresses.tsv and the postal
+style guide in data/README.md.
+"""
+import argparse
+import sys
+
+
+def normalise(addr):
+    """Normalise a single address.  Stub: returns input unchanged."""
+    return addr
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Normalise postal addresses')
+    parser.add_argument('--input',  help='Input file (one address per line)')
+    parser.add_argument('--output', help='Output file (one normalised address per line)')
+    args = parser.parse_args()
+
+    if args.input:
+        with open(args.input, 'r') as f:
+            lines = f.read().splitlines()
+    else:
+        lines = sys.stdin.read().splitlines()
+
+    results = [normalise(line) for line in lines]
+
+    output_text = '\n'.join(results)
+    if output_text:
+        output_text += '\n'
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(output_text)
+    else:
+        sys.stdout.write(output_text)
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE environment/data/README.md>>>
+# Address Normalisation Style Guide
+
+This document describes the conventions followed by the retired
+municipal address-normalisation engine.  The ~900 before/after pairs
+in `addresses.tsv` were produced by the same engine process that will
+be used to evaluate new addresses.
+
+## General Cleanup
+
+- All output is **UPPERCASE**.
+- Periods (`.`) are removed.
+- Commas (`,`) are removed.
+- Multiple whitespace characters are collapsed to a single space.
+- Leading and trailing whitespace is stripped.
+
+## Directional Prefixes
+
+Directional abbreviations are **expanded** to their full words:
+
+| Abbreviation | Full word   |
+|-------------|-------------|
+| N           | NORTH       |
+| S           | SOUTH       |
+| E           | EAST        |
+| W           | WEST        |
+| NE          | NORTHEAST   |
+| NW          | NORTHWEST   |
+| SE          | SOUTHEAST   |
+| SW          | SOUTHWEST   |
+
+Full direction words that already appear in the address (e.g. NORTH
+as a street name) are **not** modified — the engine only expands
+abbreviations, never contracts full words.
+
+## Street Type Abbreviations
+
+Street type abbreviations are expanded when they appear as the **last
+element** of the street part — that is, at the end of the address or
+immediately before a normalised unit designator (`#`, `ROOM`,
+`BUILDING`, or `FLOOR`):
+
+| Abbreviation | Full word  |
+|-------------|------------|
+| ST          | STREET     |
+| AVE         | AVENUE     |
+| RD          | ROAD       |
+| DR          | DRIVE      |
+| LN          | LANE       |
+| BLVD        | BOULEVARD  |
+| PL          | PLACE      |
+| CT          | COURT      |
+
+Street type abbreviations in other positions are **not** expanded.
+For example, "ST" meaning "Saint" in a name like "ST ANDREWS" stays
+unchanged.
+
+## Unit Designators
+
+| Input    | Output   |
+|----------|----------|
+| SUITE    | #        |
+| STE      | #        |
+| APT      | #        |
+| UNIT     | #        |
+| RM       | ROOM     |
+| BLDG     | BUILDING |
+| FL       | FLOOR    |
+
+## PO Box Addresses
+
+PO BOX normalisation applies to the **standard format with spaces**:
+
+- `P O BOX` (with spaces between P, O, and BOX) is normalised to
+  `PO BOX`.
+
+The format `POBOX` (no space between PO and BOX) is **not**
+normalised and remains unchanged.
+
+## Rule Ordering
+
+The engine applies rules in a specific order.  The same rules applied
+in a different order may produce different results when rules overlap.
+Key ordering dependencies:
+
+- Period removal must occur **before** direction expansion so that
+  period-containing abbreviations like `N.W.` are correctly recognised.
+- Compound direction expansion (`NE` → `NORTHEAST`) must occur
+  **before** single-letter expansion (`N` → `NORTH`).
+- Unit designator normalisation (which produces `#`, `ROOM`,
+  `BUILDING`, `FLOOR`) must occur **before** street type expansion so
+  that the position-dependent lookahead can see the normalised unit
+  designators.
+
+## Rare Rules
+
+Some rules fire only rarely (2–3 times in the training data).  These
+include special handling of unit designators within PO Box addresses
+and other uncommon patterns.
+
+## Near-Miss Patterns
+
+Some patterns that **look** normalisable are left unchanged by the
+engine:
+
+- Full direction words used as street names (e.g. "NORTH AVE" →
+  "NORTH AVENUE", **not** "N AVENUE").
+- Street type abbreviations in non-final positions (e.g. "ST
+  ANDREWS" stays as "ST ANDREWS").
+- "POBOX" without a space is not converted to "PO BOX".
+
+## About the Training Data
+
+The training pairs in `addresses.tsv` were produced by the same
+process that will be used to generate test pairs.  The ~900 pairs
+cover common patterns as well as rare rules and near-miss cases.
+<<<END>>>
+<<<FILE environment/tests_public/run_tests.sh>>>
+#!/bin/bash
+# Run public tests for the address normaliser
+set -euo pipefail
+
+NORMALISE="/app/normalise.py"
+PAIRS="$(dirname "$0")/pairs.tsv"
+
+if [ ! -f "$NORMALISE" ]; then
+    echo "ERROR: normalise.py not found at $NORMALISE" >&2
+    exit 1
+fi
+
+if [ ! -f "$PAIRS" ]; then
+    echo "ERROR: pairs.tsv not found at $PAIRS" >&2
+    exit 1
+fi
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+# Extract the "before" column (field 1) and the "after" column (field 2)
+cut -f1 "$PAIRS" > "$TMPDIR/input.txt"
+cut -f2 "$PAIRS" > "$TMPDIR/expected.txt"
+
+# Run normalise.py via stdin
+python3 "$NORMALISE" < "$TMPDIR/input.txt" > "$TMPDIR/actual.txt"
+
+# Also verify --input/--output flags work
+python3 "$NORMALISE" --input "$TMPDIR/input.txt" --output "$TMPDIR/actual_cli.txt"
+if ! diff -q "$TMPDIR/actual.txt" "$TMPDIR/actual_cli.txt" > /dev/null 2>&1; then
+    echo "WARNING: stdin and --input/--output produced different results"
+fi
+
+# Compare line by line
+PASS=0
+FAIL=0
+TOTAL=0
+
+exec 3< "$TMPDIR/actual.txt"
+exec 4< "$TMPDIR/expected.txt"
+
+while IFS= read -r actual <&3 && IFS= read -r expected <&4; do
+    TOTAL=$((TOTAL + 1))
+    if [ "$actual" = "$expected" ]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        echo "FAIL [$TOTAL]: expected='$expected' got='$actual'"
+    fi
+done
+
+exec 3<&-
+exec 4<&-
+
+echo ""
+echo "Results: $PASS/$TOTAL passed, $FAIL failed"
+
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+echo "All public tests passed!"
+<<<END>>>

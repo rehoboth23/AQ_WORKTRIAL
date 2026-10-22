@@ -1,0 +1,316 @@
+<<<FILE environment/src/sched.c>>>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define MAX_DATES 1000
+#define MAX_HOLIDAYS 200
+#define MAX_LINE 8192
+
+static int is_leap(int y) {
+    return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+}
+
+static int days_in_month(int y, int m) {
+    static const int dim[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (m == 2 && is_leap(y)) return 29;
+    return dim[m-1];
+}
+
+static int days_from_civil(int y, int m, int d) {
+    y -= (m <= 2);
+    int era = (y >= 0 ? y : y-399) / 400;
+    int yoe = y - era * 400;
+    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static void civil_from_days(int days, int *y, int *m, int *d) {
+    days += 719468;
+    int era = (days >= 0 ? days : days - 146096) / 146097;
+    int doe = days - era * 146097;
+    int yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+    int yr = yoe + era * 400;
+    int doy = doe - (365*yoe + yoe/4 - yoe/100);
+    int mp = (5*doy + 2) / 153;
+    int dd = doy - (153*mp+2)/5 + 1;
+    int mm = mp < 10 ? mp + 3 : mp - 9;
+    if (mm <= 2) yr++;
+    *y = yr;
+    *m = mm;
+    *d = dd;
+}
+
+static int calc_dow(int days) {
+    return ((days % 7) + 4 + 7) % 7;
+}
+
+static void add_months(int y, int m, int d, int n, int *ry, int *rm, int *rd) {
+    int total = y * 12 + (m - 1) + n;
+    *ry = total / 12;
+    *rm = total % 12;
+    if (*rm < 0) { *rm += 12; (*ry)--; }
+    *rm += 1;
+    int maxd = days_in_month(*ry, *rm);
+    *rd = (d > maxd) ? maxd : d;
+}
+
+static int parse_date(const char *s, int *y, int *m, int *d) {
+    if (strlen(s) != 10 || s[4] != '-' || s[7] != '-') return 0;
+    char buf[5];
+    strncpy(buf, s, 4); buf[4] = 0; *y = atoi(buf);
+    strncpy(buf, s+5, 2); buf[2] = 0; *m = atoi(buf);
+    strncpy(buf, s+8, 2); buf[2] = 0; *d = atoi(buf);
+    if (*y < 1 || *y > 9999) return 0;
+    if (*m < 1 || *m > 12) return 0;
+    if (*d < 1 || *d > days_in_month(*y, *m)) return 0;
+    return 1;
+}
+
+static int hol_count = 0;
+static int hol_days[MAX_HOLIDAYS];
+
+static int is_bd(int days) {
+    int w = calc_dow(days);
+    if (w == 0 || w == 6) return 0;
+    for (int i = 0; i < hol_count; i++) {
+        if (days == hol_days[i]) return 0;
+        int hw = calc_dow(hol_days[i]);
+        if (hw == 6 && days == hol_days[i] - 1) return 0;
+        if (hw == 0 && days == hol_days[i] + 1) return 0;
+    }
+    return 1;
+}
+
+static int adjust_date(int days, int bdc) {
+    if (bdc == 0) return days;
+    if (bdc == 1 || bdc == 3) {
+        while (!is_bd(days)) days++;
+    } else {
+        while (!is_bd(days)) days--;
+    }
+    return days;
+}
+
+static double day_count_30u360(int y1, int m1, int d1, int y2, int m2, int d2) {
+    if (d1 == 31) d1 = 30;
+    if (m1 == 2 && d1 == days_in_month(y1, 2)) d1 = 30;
+    if (d2 == 31) d2 = 30;
+    int days = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1);
+    return (double)days / 360.0;
+}
+
+static double day_count_30e360(int y1, int m1, int d1, int y2, int m2, int d2) {
+    if (d1 == 31) d1 = 30;
+    if (d2 == 31) d2 = 30;
+    if (m1 == 2 && d1 == days_in_month(y1, 2)) d1 = 30;
+    int days = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1);
+    return (double)days / 360.0;
+}
+
+static double day_count_act365(int y1, int m1, int d1, int y2, int m2, int d2) {
+    int start = days_from_civil(y1, m1, d1);
+    int end = days_from_civil(y2, m2, d2);
+    int actual = end - start;
+    double denom = 365.0;
+    for (int y = y1; y <= y2; y++) {
+        if (is_leap(y)) {
+            int feb29 = days_from_civil(y, 2, 29);
+            if (feb29 > start && feb29 <= end) {
+                denom = 365.25;
+                break;
+            }
+        }
+    }
+    return (double)actual / denom;
+}
+
+static double day_count_actact(int y1, int m1, int d1, int y2, int m2, int d2) {
+    int start = days_from_civil(y1, m1, d1);
+    int end = days_from_civil(y2, m2, d2);
+    int actual = end - start;
+    double denom = is_leap(y2) ? 366.0 : 365.0;
+    return (double)actual / denom;
+}
+
+int main(void) {
+    char line[MAX_LINE];
+    if (fgets(line, sizeof(line), stdin) == NULL) {
+        return 1;
+    }
+    line[strcspn(line, "\n\r")] = 0;
+    if (strlen(line) == 0) {
+        return 1;
+    }
+
+    int sy=0, sm=0, sd=0, my=0, mm=0, md=0, freq=0;
+    char dc[16] = {0}, bdc_str[16] = {0}, hol[4096] = {0};
+    int have_settle=0, have_mat=0, have_freq=0, have_dc=0, have_bdc=0;
+
+    char *tok = strtok(line, " ");
+    while (tok) {
+        char *eq = strchr(tok, '=');
+        if (!eq) {
+            fprintf(stderr, "ERROR: invalid token\n");
+            return 2;
+        }
+        *eq = 0;
+        char *key = tok;
+        char *val = eq + 1;
+
+        if (!strcmp(key, "settle")) {
+            if (!parse_date(val, &sy, &sm, &sd)) { fprintf(stderr, "ERROR: invalid settle\n"); return 2; }
+            have_settle = 1;
+        } else if (!strcmp(key, "maturity")) {
+            if (!parse_date(val, &my, &mm, &md)) { fprintf(stderr, "ERROR: invalid maturity\n"); return 2; }
+            have_mat = 1;
+        } else if (!strcmp(key, "freq")) {
+            freq = atoi(val);
+            if (freq != 1 && freq != 2 && freq != 4) { fprintf(stderr, "ERROR: invalid freq\n"); return 2; }
+            have_freq = 1;
+        } else if (!strcmp(key, "daycount")) {
+            strncpy(dc, val, 15);
+            have_dc = 1;
+        } else if (!strcmp(key, "bdc")) {
+            strncpy(bdc_str, val, 15);
+            have_bdc = 1;
+        } else if (!strcmp(key, "holidays")) {
+            strncpy(hol, val, 4095);
+        } else {
+            fprintf(stderr, "ERROR: unknown key\n");
+            return 2;
+        }
+        tok = strtok(NULL, " ");
+    }
+
+    if (!have_settle || !have_mat || !have_freq || !have_dc || !have_bdc) {
+        fprintf(stderr, "ERROR: missing field\n");
+        return 2;
+    }
+
+    int settle_days = days_from_civil(sy, sm, sd);
+    int mat_days = days_from_civil(my, mm, md);
+    if (settle_days >= mat_days) {
+        fprintf(stderr, "ERROR: settle must be before maturity\n");
+        return 2;
+    }
+
+    hol_count = 0;
+    if (strlen(hol) > 0) {
+        char *htok = strtok(hol, ",");
+        while (htok && hol_count < MAX_HOLIDAYS) {
+            int hy, hm, hd;
+            if (!parse_date(htok, &hy, &hm, &hd)) { fprintf(stderr, "ERROR: invalid holiday\n"); return 2; }
+            hol_days[hol_count++] = days_from_civil(hy, hm, hd);
+            htok = strtok(NULL, ",");
+        }
+    }
+
+    int bdc_code;
+    if (!strcmp(bdc_str, "NONE")) bdc_code = 0;
+    else if (!strcmp(bdc_str, "FOLLOWING")) bdc_code = 1;
+    else if (!strcmp(bdc_str, "PRECEDING")) bdc_code = 2;
+    else if (!strcmp(bdc_str, "MODFOLLOW")) bdc_code = 3;
+    else if (!strcmp(bdc_str, "MODPRECED")) bdc_code = 4;
+    else { fprintf(stderr, "ERROR: invalid bdc\n"); return 2; }
+
+    int dc_code;
+    if (!strcmp(dc, "30U360")) dc_code = 0;
+    else if (!strcmp(dc, "30E360")) dc_code = 1;
+    else if (!strcmp(dc, "ACT365")) dc_code = 2;
+    else if (!strcmp(dc, "ACTACT")) dc_code = 3;
+    else { fprintf(stderr, "ERROR: invalid daycount\n"); return 2; }
+
+    int eom = (md >= 28);
+    int step = 12 / freq;
+
+    int cd[MAX_DATES];
+    int cy_arr[MAX_DATES], cm_arr[MAX_DATES], cdd_arr[MAX_DATES];
+    int n = 0;
+
+    for (int i = 0; i < MAX_DATES; i++) {
+        int ry, rm, rd;
+        if (i == 0) {
+            ry = my; rm = mm; rd = md;
+        } else {
+            add_months(my, mm, md, -i * step, &ry, &rm, &rd);
+            if (eom) rd = days_in_month(ry, rm);
+        }
+        int days = days_from_civil(ry, rm, rd);
+        if (days <= settle_days) break;
+        cd[n] = days;
+        cy_arr[n] = ry;
+        cm_arr[n] = rm;
+        cdd_arr[n] = rd;
+        n++;
+    }
+
+    for (int i = 0; i < n/2; i++) {
+        int t;
+        t = cd[i]; cd[i] = cd[n-1-i]; cd[n-1-i] = t;
+        t = cy_arr[i]; cy_arr[i] = cy_arr[n-1-i]; cy_arr[n-1-i] = t;
+        t = cm_arr[i]; cm_arr[i] = cm_arr[n-1-i]; cm_arr[n-1-i] = t;
+        t = cdd_arr[i]; cdd_arr[i] = cdd_arr[n-1-i]; cdd_arr[n-1-i] = t;
+    }
+
+    int pry, prm, prd;
+    add_months(my, mm, md, -n * step, &pry, &prm, &prd);
+    if (eom) prd = days_in_month(pry, prm);
+    int prev_days = days_from_civil(pry, prm, prd);
+    int on_coupon = (prev_days == settle_days);
+
+    int num_periods;
+    int sd_arr[MAX_DATES], ed_arr[MAX_DATES];
+    int sy_arr[MAX_DATES], sm_arr_a[MAX_DATES], sdd_arr[MAX_DATES];
+    int ey_arr[MAX_DATES], em_arr_a[MAX_DATES], edd_arr[MAX_DATES];
+
+    if (on_coupon) {
+        num_periods = n - 1;
+        for (int i = 0; i < num_periods; i++) {
+            sd_arr[i] = cd[i];
+            sy_arr[i] = cy_arr[i]; sm_arr_a[i] = cm_arr[i]; sdd_arr[i] = cdd_arr[i];
+            ed_arr[i] = cd[i+1];
+            ey_arr[i] = cy_arr[i+1]; em_arr_a[i] = cm_arr[i+1]; edd_arr[i] = cdd_arr[i+1];
+        }
+    } else {
+        num_periods = n;
+        sd_arr[0] = settle_days;
+        sy_arr[0] = sy; sm_arr_a[0] = sm; sdd_arr[0] = sd;
+        ed_arr[0] = cd[0];
+        ey_arr[0] = cy_arr[0]; em_arr_a[0] = cm_arr[0]; edd_arr[0] = cdd_arr[0];
+        for (int i = 1; i < num_periods; i++) {
+            sd_arr[i] = cd[i-1];
+            sy_arr[i] = cy_arr[i-1]; sm_arr_a[i] = cm_arr[i-1]; sdd_arr[i] = cdd_arr[i-1];
+            ed_arr[i] = cd[i];
+            ey_arr[i] = cy_arr[i]; em_arr_a[i] = cm_arr[i]; edd_arr[i] = cdd_arr[i];
+        }
+    }
+
+    for (int i = 0; i < num_periods; i++) {
+        int pay = adjust_date(ed_arr[i], bdc_code);
+        int py, pm, pd;
+        civil_from_days(pay, &py, &pm, &pd);
+
+        double frac = 0.0;
+        switch (dc_code) {
+            case 0: frac = day_count_30u360(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+            case 1: frac = day_count_30e360(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+            case 2: frac = day_count_act365(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+            case 3: frac = day_count_actact(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+        }
+
+        double tf = floor(frac * 1e6) / 1e6;
+
+        printf("%d %04d-%02d-%02d %04d-%02d-%02d %04d-%02d-%02d %.6f\n",
+               i + 1,
+               sy_arr[i], sm_arr_a[i], sdd_arr[i],
+               ey_arr[i], em_arr_a[i], edd_arr[i],
+               py, pm, pd,
+               tf);
+    }
+
+    return 0;
+}
+<<<END>>>

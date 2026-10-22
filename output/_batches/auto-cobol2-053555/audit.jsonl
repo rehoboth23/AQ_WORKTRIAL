@@ -1,0 +1,3 @@
+{"time": "2026-10-22T05:35:56", "pid": 68637, "event": "batch_start", "batch": "auto-cobol2-053555", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T05:35:56", "pid": 68637, "event": "stage", "topic": "[long_road] a GnuCOBOL nightly batch program that builds the branch interest report from a sequential customer file, which stopped compiling after a compiler upgrade and now also produces wrong totals", "key": "1e290d4157", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T05:35:57", "pid": 68637, "event": "killed", "signal": "SIGTERM", "children": []}

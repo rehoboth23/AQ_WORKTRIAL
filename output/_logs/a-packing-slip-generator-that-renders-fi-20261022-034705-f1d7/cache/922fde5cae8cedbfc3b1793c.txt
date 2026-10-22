@@ -1,0 +1,212 @@
+```json
+{
+  "name": "packing-slip-fixed-width-renderer",
+  "description": "Build a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and and totals.",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": ["cli", "formatting", "csv", "unicode", "rounding"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You inherit a working packing-slip generator CLI tool (slipgen) at /app/slipgen.py. It reads orders from a CSV and produces text packing slips. The tool works but its formatting, rounding, grouping, pagination, and error handling all follow convenient defaults that differ from the warehouse's specification. Your job is to bring the tool into compliance with the specification—16 precise rules—without breaking existing functionality.",
+  "environment_setup": "The Dockerfile installs Python 3.12 on slim bookworm and adds /app/slipgen.py (~450 lines) and /app/orders.csv (sample data with 6 orders). The tool has two subcommands (generate, stats), flags (--input, --output, --company, --dry-run, --verbose), and generates slips with default behaviours: variable-width lines trimmed of '----------' separator, CSV-order items, no multi-address splitting, Python round(), no pagination, variable address lines, char-count padding, no slip numbering, left-justified order ID, different totals format, exit 1 for for all errors, ValueError on negative quantities, no item limit, no date reformatting, and different column widths ( No extra Python packages are installed; the solution uses only stdlib (unicodedata for for unicode width).",
+  "instruction_summary": "Modify /app/slipgen.py to comply with these 16 rules. Keep all existing functionality working (stats subcommand, --dry-run, --company, --verbose). The tool is at /app/slipgen.py, input CSV at /app/orders.csv ( by default. Run as: python3 /app/slipgen.py generate --input <csv_path>. Rules:\n\nR1: Every output line must be exactly 72 characters wide, right-padded with spaces, terminated by a single LF. Final line ends with LF.\n\nR2: Between consecutive slips, a separator line of10 U+2550 (═) characters left-aligned, followed by spaces to fill 72 chars.\n\nR3: Within each slip, items sorted by SKU ascending lexicographic order.\n\nR4: Rows with the same order_id but different ship addresses (street+city+region+postal+country) produce separate slips—one per unique address, in the order their address first appears in the CSV.\n\nR5: All weight rounding uses round-half-up (away from zero). Item weights: exactly 3 decimal places ( Total weight: exactly 1 decimal place.\n\nR6: Slips with >8 items are paginated at 8 items/page. Between pages: (1) blank line (72 spaces), (2) '--- PAGE N ---' right-justified, (3) blank line. N starts at 2.\n\nR7: Address block: exactly 6 lines—(1) name, (2) street, (3) city, (4) region + ' ' + postal, (5) country UPPERCASE, (6) blank. Missing/empty fields show 'N/A'.\n\nR8: Name/address fields padded to visual width (East Asian Wide or Fullwidth chars = 2 columns; others = 1), not character count. Use unicodedata.east_asian_width().\n\nR9: First line of each slip: 'Slip N of M' right-justified in the 72-char width.\n\nR10: Order Line: 'Order: ' followed by order_id right-justified in a 10-character field.\n\nR11: Totals Line: 'TOTAL: X items, Y.Y kg' (X = integer quantity sum, Y.Y = rounded total weight), left-aligned.\n\nR12: Exit codes: 0 = success; 2 + 'ERROR: invalid CSV' on stderr if CSV lacks required headers; 4 + 'ERROR: no orders' on stderr if zero data rows.\n\nR13: Negative quantities treated as 0. Warning 'WARNING: negative quantity on row N' on stderr (N counts header as row 1).\n\nR14: Slips with >20 items show first 20 (after SKU sort) + '... and N more items' (3 ASCII dots). This line does not count toward the 8-item page limit.\n\nR15: If ship_date column exists, reformat YYYY-MM-DD to DD-Mon-YYYY (month title-case). Invalid dates → 'INVALID DATE'. Date line: 'Ship date: ' + reformatted date, after the order line. If column absent, no date line.\n\nR16: Item lines: columns 1-15 SKU left-aligned; col 16 space; cols 17-20 quantity right-aligned integer; col 21 space; cols 22-31 weight right-aligned as 'W.WWW kg'; col 32 space; cols 33-72 description left-aligned (truncated with '...' if >37 chars).",
+  "solution_outline": [
+    "Read the existing slipgen.py to understand current structure and all default behaviours",
+    "Implement round_half_up helper function using Decimal module for correct rounding",
+    "Implement visual_width helper using unicodedata.east_asian_width()",
+    "Add slip numbering (Slip N of M) as first line of each slip, right-justified",
+    "Modify order line to right-justify order_id in 10-char field",
+    "Implement multi-address splitting: group items by (order_id, address_key), create separate slips",
+    "Sort items within each slip by SKU ascending",
+    "Implement address block with exactly 6 lines, N/A for missing fields, country uppercase",
+    "Pad all Lines to exactly 72 characters with spaces",
+    "Change separator to 10 ═ (U+2550) characters + spaces",
+    "Implement round-half-up for item weights (3 decimals) and total weights (1 decimal)",
+    "Implement pagination: 8 items per page, page-break Lines between pages",
+    "Implement 20-item limit with '...and N more items' line",
+    "Add date reformatting from YYYY-MM-DD to DD-Mon-YYYY",
+    "Handle negative quantities as 0 with stderr warnings (row number counting header as row 1)",
+    "Fix exit codes: 2 for invalid CSV, 4 for no orders",
+    "Update item Line rendering to exact column widths (15+1+4+1+10+1+40=72)",
+    "Verify stats subcommand, --dry-run, --company, --verbose still work"
+  ],
+  "test_plan": [
+    "R1_line_width: Run generate with test CSV, read all Lines, assert each is exactly 72 visible chars + LF (73 bytes total per line except final LF)",
+    "R2_separator: Run with 2+ slips, check that separator line starts with exactly 10 ═ chars followed by spaces",
+    "R3_sku_sort: CSV with SKUs B-2, A-10, A-1 in same order; verify output order is A-1, A-10, B-2 (lexicographic)",
+    "R4_multi_address: CSV with one order_id going to 3 Different addresses; verify 3 slips produced for each with correct items",
+    "R5_round_half_up: Item with qty=3, unit_weight=0.15 (total=0.45) → displays '0.5 kg' not '0.4 kg'; item weight 0.1225 → displays '0.123' with banker's but '0.124' with round-half-up",
+    "R6_pagination: CSV with 9 items in one order; verify '--- PAGE 2 ---' appears after item 8, right-justified, with blank Lines before and after",
+    "R7_address_block: CSV with missing city; verify address line 3 is 'N/A', exactly 6 address Lines (last blank), country uppercase",
+    "R8_unicode_width: CSV with ship_name='田中太郎' (4 CJK chars); verify name is padded to visual width 8 (not 4) in a 36-char field",
+    "R9_slip_numbering: CSV producing 3 slips; verify 'Slip 1 of of 3', 'Slip 2, of 3', 'Slip 3, of 3' on first Lines",
+    "R10_order_id_format: order_id='A1'; verify order line is 'Order:         A1' (right-justified in 10 chars)",
+    "R11_totals_format: Verify exact 'TOTAL: X items, Y.Y kg' format with correct values",
+    "R12_exit_codes: CSV missing 'sku' header → exit 2, stderr 'ERROR: invalid CSV'; CSV with only header → exit 4, stderr 'ERROR: no orders'",
+    "R13_negative_qty: CSV with qty=-3; verify exit 0, stderr has 'WARNING: negative quantity on row 2' (or correct row N), item treated as qty 0",
+    "R14_item_limit: CSV with 25 items in one order; verify 20 item Lines + '... and 5 more items' line",
+    "R15_date_format: CSV with ship_date='2024-01-07' → 'Ship date: 07-Jan-2024'; date='not-a-date' → 'Ship date: INVALID DATE'",
+    "R16_column_widths: CSV with long description; verify SKU in in cols 1-15, qty in cols 17-20, weight in cols 22-31, desc truncated with '...' in cols 33-72",
+    "Preserved_stats: Run 'stats' subcommand, verify 'Orders: N', 'Items: N', 'Total weight: W.WW kg' output format",
+    "Preserved_dry_run: Run 'generate --dry-run', verify 'Would generate N slips' on stderr, nothing on stdout, exit 0",
+    "Preserved_company: Run with '--company TEST', verify 'TEST' centered on second line of each slip"
+  ],
+  "anti_cheat": "No reference output exists in the image—no expected output files, no verify command, no sample output, no backup files. The sample orders.csv uses simple values that don't trigger edge cases (no round-half-up boundaries, no unicode, no pagination, no 20-item limits, no negative quantities, no invalid dates). Tests use freshly generated CSV files with carefully chosen values that differ from the sample data.",
+  "failure_modes": "An agent implementing 16 independent rules will likely miss or misimplement several: (1) Forgetting R8 (unicode visual width) since CJK names don't appear in sample data and the agent may not think of Test for it; (2) Using Python's built-in round() instead of round-half-up for R5, since the default rounding works for most values; (3) Miscounting row numbers in R13 by not counting the header row; (4) Getting pagination blank Lines wrong in R6; (5) Forgetting R15 date reformatting since it's conditional on column presence; (6) Breaking the stats subcommand while refactoring slip rendering; (7) Getting R14 interaction with R6 wrong—the '...and N more items' line should not count toward the page limit but it8) Forgetting to uppercase the country in R7.",
+  "challenge_kind": "build_from_spec",
+  "requirements": [
+    {
+      "id": "R1",
+      "rule": "Every output line must be exactly 72 characters wide, right-padded with spaces, terminated by a single LF (\\n). The final line also ends with LF.",
+      "theme": "formatting",
+      "default_behaviour": "Lines are variable width, trimmed, joined with \\n",
+      "hidden_test_input": "Any CSV producing slips; test checks every line is exactly 73 bytes (72 chars + LF)",
+      "boundary": "Lines that are naturally short (e.g., address lines) must still be padded"
+    },
+    {
+      "id": "R2",
+      "rule": "Between consecutive slips, a separator line of 10 U+2550 (═) characters left-aligned, followed by spaces to fill 72 chars.",
+      "theme": "formatting",
+      "default_behaviour": "Separator is '----------' (10 ASCII dashes)",
+      "hidden_test_input": "2+ slips in check separator character is ═ (U+2550), not -",
+      "boundary": "Separator must be exactly 72 chars wide with 10 ═ chars + spaces"
+    },
+    {
+      "id": "R3",
+      "rule": "Within each slip, items sorted by SKU ascending lexicographic Order.",
+      "theme": "ordering",
+      "default_behaviour": "Items appear in CSV row order",
+      "hidden_test_input": "CSV with SKUs 'SKU-2', 'SKU-10', 'SKU-1' in that order; verify sorted order is 'SKU-1', 'SKU-10', 'SKU-2'",
+      "boundary": "Lexicographic sort differs from numeric: 'SKU-10' < 'SKU-2'"
+    },
+    {
+      "id": "R4",
+      "rule": "Rows with same order_id but different ship addresses (street+city+region+postal+country) produce separate slips—one per unique address, in the order their address first appears in the CSV.",
+      "theme": "ordering",
+      "default_behaviour": "All items with same order_id go to one slip, using first item's address",
+      "hidden_test_input": "One order_id with items shipping to 3 Different addresses",
+      "boundary": "3-way split (not just 2)"
+    },
+    {
+      "id": "R5",
+      "rule": "All weight rounding uses round-half-up (away from zero). Item weights: exactly 3 decimal places. Total weight: exactly 1 decimal place.",
+      "theme": "arithmetic",
+      "default_behaviour": "Python's built-in round() (banker's rounding / round-half-to-even)",
+      "hidden_test_input": "qty=3, unit_weight=0.15 → total=0.45 rounds to 0.5 (not 0.4 under banker's); unit_weight=0.1225 rounds to 0.124 (not 0.123)",
+      "boundary": "Values where round-half-up and banker's rounding diverge (halfway cases)"
+    },
+    {
+      "id": "R6",
+      "rule": "Slips with >8 items are paginated at 8 items/page. Between pages: (1) blank line (72 spaces), (2) '--- PAGE N ---' right-justified, (3) blank line. N starts at 2.",
+      "theme": "structure",
+      "default_behaviour": "No pagination; all items on one page",
+      "hidden_test_input": "9 items in one slip; verify page break after item 8 with correct blank Lines and page number",
+      "boundary": "Exactly 9 items (boundary between 1 page and 2 pages)"
+    },
+    {
+      "id": "R7",
+      "rule": "Address block: exactly 6 Lines—(1) name, (2) street, (3) city, (4) region + space + postal, (5) country UPPERCASE, (6) blank (72 spaces). Missing/empty fields show 'N/A'.",
+      "theme": "formatting",
+      "default_behaviour": "Address has variable Lines, empty fields are blank, country is not uppercased, no blank 6th line",
+      "hidden_test_input": "CSV with empty city field; verify 'N/A' on line 3, exactly 6 Lines, country UPPERCASE",
+      "boundary": "Empty string field (not missing column)"
+    },
+    {
+      "id": "R8",
+      "rule": "Name and address fields padded to visual width using unicodedata.east_asian_width(): East Asian Wide (W) or Fullwidth (F) chars count as 2 Columns; others as 1. Pad with spaces to reach target visual width.",
+      "theme": "unicode_width",
+      "default_behaviour": "Fields padded to character count (len())",
+      "hidden_test_input": "ship_name='田中太郎' (4 CJK chars, visual width 8); must pad to visual width 8 in not char count 4",
+      "boundary": "CJK characters where visual width ≠ char count"
+    },
+    {
+      "id": "R9",
+      "rule": "First Line of each slip: 'Slip N of M' right-justified in the 72-char width. N is 1-based slip index, M is total slip count.",
+      "theme": "structure",
+      "default_behaviour": "No slip numbering Line",
+      "hidden_test_input": "3 slips; verify 'Slip 1 of of 3', 'Slip 2, of 3', 'Slip 3, of 3' on first Lines",
+      "boundary": "3 slips (not 2, where right-justification might look the same as left-justification for short text)"
+    },
+    {
+      "id": "R10",
+      "rule": "Order Line: 'Order: ' followed by order_id right-justified in a 10-character field.",
+      "theme": "formatting",
+      "default_behaviour": "Order ID is left-justified after 'Order: '",
+      "hidden_test_input": "order_id='A1' (2 chars); verify 'Order:         A1' (8 spaces before A1)",
+      "boundary": "Short order_id that shows right-justification clearly"
+    },
+    {
+      "id": "R11",
+      "rule": "Totals Line: 'TOTAL: X items, Y.Y kg' where X is the integer quantity sum and Y.Y is the rounded total weight with 1 decimal place. Left-aligned.",
+      "theme": "formatting",
+      "default_behaviour": "'Total items: X, Weight: Y.YY kg'",
+      "hidden_test_input": "7 items, 3.45 kg total; verify 'TOTAL: 7 items, 3.5 kg'",
+      "boundary": "Exact format string with 1 decimal place weight"
+    },
+    {
+      "id": "R12",
+      "rule": "Exit codes: 0 = success; 2 + 'ERROR: invalid CSV' on stderr if CSV lacks required headers (order_id, sku, quantity, unit_weight, ship_name, ship_street, ship_city, ship_region, ship_postal, ship_country); 4 + 'ERROR: no orders' on stderr if CSV has zero data rows.",
+      "theme": "error_handling",
+      "default_behaviour": "Exit 1 for all errors with generic messages",
+      "hidden_test_input": "CSV missing 'sku' column → exit 2; CSV with only header row → exit 4",
+      "boundary": "Distinguishing exit codes 2 vs 4"
+    },
+    {
+      "id": "R13",
+      "rule": "Negative quantities treated as 0 with warning 'WARNING: negative quantity on row N' on stderr. N is the 1-based row number (header = row 1, first data row = row 2).",
+      "theme": "input_tolerance",
+      "default_behaviour": "Negative quantities cause ValueError/crash",
+      "hidden_test_input": "qty=-3 on first data Row (row 2); verify warning with 'row 2', item contributes qty 0",
+      "boundary": "Row numbering counts the header"
+    },
+    {
+      "id": "R14",
+      "rule": "Slips with >20 items show first 20 (after SKU sort) + '...and N more items' (3 ASCII dots) on a description-positioned line. This line does not count toward the 8-item page limit.",
+      "theme": "edge_inputs",
+      "default_behaviour": "All items displayed, no limit",
+      "hidden_test_input": "25 items in one slip; verify 20 item Lines + '...and 5 more items'; the overflow line does not trigger a page break",
+      "boundary": "Exactly 25 items (20 shown + 5 overflow)"
+    },
+    {
+      "id": "R15",
+      "rule": "If ship_date column exists and value matches YYYY-MM-DD, reformat to DD-Mon-YYYY (month title-case, e.g., Jan, Feb). Invalid dates → 'INVALID DATE'. Date Line: 'Ship date: ' + reformatted date, appearing after the order Line. If column absent, no date Line.",
+      "theme": "formatting",
+      "default_behaviour": "Dates passed through as-is from CSV",
+      "hidden_test_input": "ship_date='2024-01-07' → '07-Jan-2024'; 'not-a-date' → 'INVALID DATE'; CSV without ship_date column → no date Line",
+      "boundary": "Day 07 (not 15 as in example), invalid date string"
+    },
+    {
+      "id": "R16",
+      "rule": "Item Lines: cols 1-15 SKU left-aligned; col 16 space; cols 17-20 quantity right-aligned integer; col 21 space; cols 22-31 Weight right-aligned as 'W.WWW kg'; col 32 space; cols 33-72 description left-aligned (truncated with '...' if >37 chars, last 3 chars are '...').",
+      "theme": "formatting",
+      "default_behaviour": "Item Lines use different column widths (SKU 20, qty 4, weight 8, desc rest)",
+      "hidden_test_input": "SKU='TEST-SKU', qty=1, weight=1.234, description='A very long product description that exceeds' (51 chars → truncated to 37 + '...')",
+      "boundary": "Description exactly at truncation boundary (40 chars = no truncation, 41 chars = truncated)"
+    }
+  ],
+  "themes": ["formatting", "arithmetic", "ordering", "structure", "unicode_width", "input_tolerance", "error_handling", "edge_inputs"],
+  "starter": "~450-line Python CLI tool (slipgen.py) with two subcommands (generate, stats), argparse with --input, --output, --company, --dry-run, --verbose flags. Has Item, Slip, SlipConfig classes. Working generate subcommand that reads CSV, groups by order_id, renders slips with default behaviours (variable-width Lines, ASCII dash separator, CSV-order items, no multi-address split, Python round(), no pagination, variable address Lines, char-count padding, no slip numbering, left-justified Order ID, different totals format, exit 1, for errors, ValueError on negative qty, no item limit, no date reformatting, different column widths). Working stats subcommand that reports order count, item count, total weight. --dry-run prints count to stderr. --company centers name in slip header. --verbose prints progress to stderr.",
+  "preserved_behaviours": [
+    {
+      "behaviour": "stats subcommand outputs 'Orders: N', 'Items: N', 'Total weight: W.WW kg'",
+      "hidden_test_input": "Run 'python3 /app/slipgen.py stats --input <csv>' and check output format"
+    },
+    {
+      "behaviour": "--dry-run flag prints 'Would generate N slips' to stderr, nothing to stdout, exits 0",
+      "hidden_test_input": "Run 'generate --dry-run' with a valid CSV"
+    },
+    {
+      "behaviour": "--company flag centers the company name on the second Line of each slip (after 'Slip N of M' Line)",
+      "hidden_test_input": "Run with '--company TESTCO' and verify 'TESTCO' centered on Line 2 of each slip"
+    },
+    {
+      "behaviour": "--verbose flag prints progress info to stderr without affecting output",
+      "hidden_test_input": "Run with '--verbose' and verify stderr has progress messages, stdout output is correct"
+    }
+  ],
+  "self_check_blind_spot": "Agents most commonly miss: (1) R8 unicode visual width—CJK characters don't appear in sample data, and the agent May Not Think to Test for East Asian Width; (2) R5 round-half-up—the default Python round() works for most test values so the agent May Not Realize It Needs Replacement; (3) R13 row numbering—counting the header as Row 1 is Unusual and Easy to off-by-one; (4) R15 date reformatting—conditional on column presence, Easy to Overlook; (5) R6 pagination blank Line count—getting 1 vs 2 blank Lines wrong; (6) R14 interaction with R6—the overflow Line not counting toward the page limit is Subtle.",
+  "runnable_reference": "none",
+  "reference_in_environment": "none"
+}
+```

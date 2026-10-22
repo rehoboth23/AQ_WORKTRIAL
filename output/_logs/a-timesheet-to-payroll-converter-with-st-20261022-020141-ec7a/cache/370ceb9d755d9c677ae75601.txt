@@ -1,0 +1,837 @@
+Looking at the error, I need to remove specific test values leaked in instruction.md (R3's 8.125/8.25, R11's 42/1001, R13's $1806.25/$3987.50, R14's 99/100, R18's $228.125) and replace them with different examples that still illustrate the rule. I also need to fix the solution's TOTAL and GRAND TOTAL line format to match instruction.md's format (label before value, space before 'h').
+
+<<<FILE instruction.md>>>
+Your colleague wrote a quick prototype timesheet-to-payroll converter at `/app/payroll.py` that works for basic cases but ignores the company's detailed payroll policies. You need to rewrite it so that when run as `python3 /app/payroll.py <csv_path>` it produces a payroll report obeying all the rules below precisely.
+
+The CSV has these columns: employee_id, name, date, clock_in, clock_out, timezone
+
+**Processing rules:**
+
+1. Convert all clock_in/clock_out from their local timezone to UTC before computing duration. Use the date column as the local date. If clock_out local time is earlier than or equal to clock_in local time, clock_out is on the next local day (midnight crossing).
+
+2. A work week runs Sunday 00:00:00 UTC through Saturday 23:59:59 UTC. A shift belongs to the week containing its UTC clock_in datetime. Weekly overtime is computed per employee per week based on UTC dates.
+
+3. Each shift's duration in hours is rounded to the nearest 0.25 (quarter-hour). Exact midpoints round UP. Use floor(value*4+0.5)/4. For example, 7.125 rounds to 7.25; 7.875 rounds to 8.0.
+
+4. If a shift's rounded-and-capped hours exceed 8.0, the first 8.0 hours are regular and the rest is daily overtime. If hours are exactly 8.0 or less, all hours are regular with zero daily overtime.
+
+5. After daily OT separation, if an employee's total regular hours in a week exceed 40.0, the excess is weekly overtime. Weekly OT is allocated to shifts in reverse chronological order (last shift first by UTC clock_in), converting regular hours to weekly OT on each shift until the excess is consumed. Partial conversion is allowed: a shift with 5h regular can contribute up to 5h to weekly OT. The 8.0 regular hours from a missing clock-out (rule 6) participate in this reallocation like any other regular hours.
+
+6. If clock_out is blank, assume the shift is 8.0 hours of regular time (zero daily overtime). Flag as "missing clock-out". These 8.0 regular hours are subject to weekly OT reallocation per rule 5.
+
+7. If clock_in is blank, skip the entry entirely (0 hours counted, no duration computed). Flag as "missing clock-in". Clock_out is ignored even if present. If both clock_in and clock_out are blank, treat as missing clock-in.
+
+8. Pay rates: regular $25.00/hr, daily overtime $37.50/hr (1.5x), weekly overtime $50.00/hr (2x). An employee's total pay = round_cent_up(regular_hours × 25.00 + daily_ot_hours × 37.50 + weekly_ot_hours × 50.00).
+
+9. No shift may exceed 16.0 hours after rounding. If it does, cap the rounded hours at 16.0 and flag as "exceeds cap". The excess hours above 16.0 are discarded. The cap is applied BEFORE the daily OT split: a 16.0h capped shift produces 8.0h regular + 8.0h daily OT.
+
+10. Clock_in and clock_out may be in HH:MM or HH:MM:SS format. Both must be accepted. Seconds are included in the raw duration calculation before quarter-hour rounding.
+
+**Output format rules:**
+
+11. Employee header line: `EMPLOYEE: {id} ({name})` where id is zero-padded to exactly 4 digits (e.g., 7 becomes 0007, 1234 stays 1234). No leading spaces.
+
+12. Shift line: `  {date}  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot` where date is the UTC clock_in date in YYYY-MM-DD format (not the CSV date column). Two leading spaces before the date. Each value is right-aligned in a 6-character field with 'h' directly appended (no space between the number and 'h'). The label follows after a space.
+
+13. Employee total line: `  TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}`. Two leading spaces. Each field is: label (reg/dot/wot), then the value right-aligned in a 6-character field with 2 decimal places, then a space and 'h' as a separate unit token. Pay is a dollar sign immediately followed by the amount with 2 decimal places (no space between $ and the number, e.g., `$567.89`, `$10000.00`).
+
+14. Employees sorted by employee_id as integers ascending (9 before 10). Shifts within an employee sorted by UTC clock_in datetime ascending. Flagged entries sorted by (employee_id numerically ascending, then date string ascending).
+
+15. Flagged entries section: after all employees and a blank line, print `FLAGGED ENTRIES:` then each flag as `  {id} {date}: {reason}` with id zero-padded to 4 digits, date from the original CSV date column (not the UTC date). Reasons: "missing clock-out", "missing clock-in", "exceeds cap". If there are no flagged entries, omit the `FLAGGED ENTRIES:` header entirely (do not print it).
+
+16. Grand total line: `GRAND TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}` after a blank line. Same field structure as the employee total line (rule 13). Grand total reg/dot/wot are the sums of all employees' reg/dot/wot hours respectively. Grand total pay = round_cent_up(grand_total_reg × 25.00 + grand_total_dot × 37.50 + grand_total_wot × 50.00), NOT the sum of individually-rounded employee pays.
+
+17. Blank lines: one blank line after each employee's TOTAL line (including the last employee), one blank line between the last employee's blank line and `FLAGGED ENTRIES:` (if any flagged entries exist; if no flagged entries, this blank line is still present between the last employee and `GRAND TOTAL`), one blank line between the flagged entries (or the blank line after the last employee if no flags) and `GRAND TOTAL`. An employee with zero counted hours still produces a header, TOTAL line, and the blank line after.
+
+18. Each employee's total pay and the grand total pay are rounded to the nearest cent with exact half-cents rounding UP (not banker's rounding). Use floor(value*100+0.5)/100. For example, $15.125 rounds to $15.13 (not $15.12).
+
+19. The date shown on each shift line (rule 12) is the UTC date of the clock_in time, which may differ from the CSV date column after timezone conversion. The date used in flagged entries (rule 15) is always the original CSV date column value.
+
+20. Exit 0 on success. Exit 1 if the input file cannot be opened (does not exist or no read permission). Exit 2 if any data row (rows after the header) has fewer than 6 comma-separated columns; on exit 2 produce no stdout output at all. The header row is not checked for column count. Rows with 6 or more columns are valid (extra columns are ignored). Output must use LF line endings only (no CR characters). The output must end with exactly one trailing newline (the GRAND TOTAL line followed by one `\n`).
+
+The shipped timesheet.csv at `/app/timesheet.csv` contains multi-employee, multi-week data in America/New_York, America/Chicago, and America/Los_Angeles timezones, including a midnight-crossing shift, a missing clock-out, and a missing clock-in. Note that hidden test inputs will use completely different CSVs with edge cases not present in the shipped data.
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat << 'PYEOF' > /app/payroll.py
+import csv
+import sys
+import math
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+
+REGULAR_RATE = 25.00
+DAILY_OT_RATE = 37.50
+WEEKLY_OT_RATE = 50.00
+DAILY_OT_THRESHOLD = 8.0
+MAX_SHIFT_HOURS = 16.0
+
+
+def round_quarter_up(value):
+    return math.floor(value * 4 + 0.5) / 4
+
+
+def round_cent_up(value):
+    return math.floor(value * 100 + 0.5) / 100
+
+
+def parse_time(time_str):
+    parts = time_str.split(':')
+    h = int(parts[0])
+    m = int(parts[1])
+    s = int(parts[2]) if len(parts) > 2 else 0
+    return h, m, s
+
+
+def get_utc_datetime(date_str, time_str, tz_name):
+    tz = ZoneInfo(tz_name)
+    h, m, s = parse_time(time_str)
+    local_dt = datetime.strptime(date_str, '%Y-%m-%d').replace(
+        hour=h, minute=m, second=s, tzinfo=tz
+    )
+    return local_dt.astimezone(timezone.utc)
+
+
+def get_week_key(utc_dt):
+    wd = utc_dt.weekday()
+    days_since_sunday = (wd + 1) % 7
+    sunday = (utc_dt - timedelta(days=days_since_sunday)).date()
+    return sunday
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: payroll.py <csv_path>", file=sys.stderr)
+        sys.exit(1)
+
+    csv_path = sys.argv[1]
+
+    try:
+        f = open(csv_path, 'r')
+    except OSError:
+        sys.exit(1)
+
+    try:
+        reader = csv.reader(f)
+        header = next(reader)
+        rows = list(reader)
+    except StopIteration:
+        rows = []
+    finally:
+        f.close()
+
+    for row in rows:
+        if len(row) < 6:
+            sys.exit(2)
+
+    employees = {}
+    flagged = []
+
+    for row in rows:
+        emp_id = row[0].strip()
+        name = row[1].strip()
+        csv_date = row[2].strip()
+        clock_in = row[3].strip()
+        clock_out = row[4].strip()
+        tz_name = row[5].strip()
+
+        if emp_id not in employees:
+            employees[emp_id] = {'name': name, 'shifts': []}
+
+        if not clock_in:
+            flagged.append((emp_id, csv_date, 'missing clock-in'))
+            continue
+
+        if not clock_out:
+            flagged.append((emp_id, csv_date, 'missing clock-out'))
+            utc_clock_in = get_utc_datetime(csv_date, clock_in, tz_name)
+            shift = {
+                'utc_date': utc_clock_in.strftime('%Y-%m-%d'),
+                'csv_date': csv_date,
+                'reg': 8.0,
+                'dot': 0.0,
+                'wot': 0.0,
+                'utc_clock_in': utc_clock_in,
+                'week_key': get_week_key(utc_clock_in),
+            }
+            employees[emp_id]['shifts'].append(shift)
+            continue
+
+        clock_in_utc = get_utc_datetime(csv_date, clock_in, tz_name)
+
+        in_h, in_m, in_s = parse_time(clock_in)
+        out_h, out_m, out_s = parse_time(clock_out)
+        in_total_sec = in_h * 3600 + in_m * 60 + in_s
+        out_total_sec = out_h * 3600 + out_m * 60 + out_s
+
+        if out_total_sec <= in_total_sec:
+            next_day = (datetime.strptime(csv_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+            clock_out_utc = get_utc_datetime(next_day, clock_out, tz_name)
+        else:
+            clock_out_utc = get_utc_datetime(csv_date, clock_out, tz_name)
+
+        raw_hours = (clock_out_utc - clock_in_utc).total_seconds() / 3600.0
+        rounded_hours = round_quarter_up(raw_hours)
+
+        if rounded_hours > MAX_SHIFT_HOURS:
+            flagged.append((emp_id, csv_date, 'exceeds cap'))
+            rounded_hours = MAX_SHIFT_HOURS
+
+        if rounded_hours > DAILY_OT_THRESHOLD:
+            reg = DAILY_OT_THRESHOLD
+            dot = rounded_hours - DAILY_OT_THRESHOLD
+        else:
+            reg = rounded_hours
+            dot = 0.0
+
+        week_key = get_week_key(clock_in_utc)
+
+        shift = {
+            'utc_date': clock_in_utc.strftime('%Y-%m-%d'),
+            'csv_date': csv_date,
+            'reg': reg,
+            'dot': dot,
+            'wot': 0.0,
+            'utc_clock_in': clock_in_utc,
+            'week_key': week_key,
+        }
+        employees[emp_id]['shifts'].append(shift)
+
+    for emp_id, emp_data in employees.items():
+        shifts = emp_data['shifts']
+        weeks = {}
+        for shift in shifts:
+            wk = shift.get('week_key')
+            if wk is not None:
+                if wk not in weeks:
+                    weeks[wk] = []
+                weeks[wk].append(shift)
+
+        for wk, week_shifts in weeks.items():
+            total_reg = sum(s['reg'] for s in week_shifts)
+            if total_reg > 40.0:
+                excess = total_reg - 40.0
+                sorted_shifts = sorted(
+                    week_shifts,
+                    key=lambda s: s.get('utc_clock_in', datetime.min.replace(tzinfo=timezone.utc)),
+                    reverse=True
+                )
+                for shift in sorted_shifts:
+                    if excess <= 0:
+                        break
+                    convert = min(shift['reg'], excess)
+                    shift['reg'] -= convert
+                    shift['wot'] += convert
+                    excess -= convert
+
+    sorted_emp_ids = sorted(employees.keys(), key=lambda x: int(x))
+
+    lines = []
+    grand_reg = 0.0
+    grand_dot = 0.0
+    grand_wot = 0.0
+
+    for emp_id in sorted_emp_ids:
+        emp = employees[emp_id]
+        shifts = emp['shifts']
+        shifts.sort(key=lambda s: s.get('utc_clock_in', datetime.min.replace(tzinfo=timezone.utc)))
+
+        padded_id = emp_id.zfill(4)
+        lines.append(f"EMPLOYEE: {padded_id} ({emp['name']})")
+
+        total_reg = 0.0
+        total_dot = 0.0
+        total_wot = 0.0
+
+        for shift in shifts:
+            lines.append(
+                f"  {shift['utc_date']}  {shift['reg']:>6.2f}h reg  "
+                f"{shift['dot']:>6.2f}h dot  {shift['wot']:>6.2f}h wot"
+            )
+            total_reg += shift['reg']
+            total_dot += shift['dot']
+            total_wot += shift['wot']
+
+        pay = round_cent_up(total_reg * REGULAR_RATE + total_dot * DAILY_OT_RATE + total_wot * WEEKLY_OT_RATE)
+        lines.append(
+            f"  TOTAL  reg  {total_reg:>6.2f} h  dot  {total_dot:>6.2f} h  "
+            f"wot  {total_wot:>6.2f} h  ${pay:.2f}"
+        )
+
+        grand_reg += total_reg
+        grand_dot += total_dot
+        grand_wot += total_wot
+
+        lines.append("")
+
+    flagged.sort(key=lambda x: (int(x[0]), x[1]))
+
+    if flagged:
+        lines.append("")
+        lines.append("FLAGGED ENTRIES:")
+        for emp_id, csv_date, reason in flagged:
+            padded_id = emp_id.zfill(4)
+            lines.append(f"  {padded_id} {csv_date}: {reason}")
+
+    if employees or flagged:
+        lines.append("")
+
+    grand_pay = round_cent_up(grand_reg * REGULAR_RATE + grand_dot * DAILY_OT_RATE + grand_wot * WEEKLY_OT_RATE)
+    lines.append(
+        f"GRAND TOTAL  reg  {grand_reg:>6.2f} h  dot  {grand_dot:>6.2f} h  "
+        f"wot  {grand_wot:>6.2f} h  ${grand_pay:.2f}"
+    )
+
+    output = '\n'.join(lines) + '\n'
+    sys.stdout.write(output)
+
+
+if __name__ == '__main__':
+    main()
+PYEOF
+<<<END>>>
+<<<FILE tests/test_outputs.py>>>
+import subprocess
+import os
+import tempfile
+import pytest
+
+PAYROLL = '/app/payroll.py'
+TIMESHEET = '/app/timesheet.csv'
+PYTHON = '/usr/local/bin/python3'
+
+
+def run_payroll(csv_path, timeout=30):
+    result = subprocess.run(
+        [PYTHON, PAYROLL, csv_path],
+        capture_output=True, timeout=timeout
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def write_csv(content):
+    f = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='')
+    f.write(content)
+    f.close()
+    return f.name
+
+
+def parse_output(stdout_bytes):
+    output = stdout_bytes.decode('utf-8')
+    lines = output.split('\n')
+    employees = []
+    current_emp = None
+    flagged = []
+    grand_total = None
+    in_flagged = False
+
+    for line in lines:
+        if line.startswith('EMPLOYEE:'):
+            in_flagged = False
+            rest = line[len('EMPLOYEE:'):].strip()
+            paren_idx = rest.index('(')
+            emp_id = rest[:paren_idx].strip()
+            name = rest[paren_idx + 1:rest.index(')')]
+            current_emp = {'id': emp_id, 'name': name, 'shifts': [], 'total': None}
+            employees.append(current_emp)
+        elif line.startswith('  TOTAL') and current_emp is not None:
+            tokens = line.split()
+            current_emp['total'] = {
+                'reg': float(tokens[2].rstrip('h')),
+                'dot': float(tokens[5].rstrip('h')),
+                'wot': float(tokens[8].rstrip('h')),
+                'pay': float(tokens[10].lstrip('$')),
+            }
+        elif (line.startswith('  ') and current_emp is not None
+              and 'h reg' in line and 'TOTAL' not in line):
+            tokens = line.split()
+            current_emp['shifts'].append({
+                'date': tokens[0],
+                'reg': float(tokens[1].rstrip('h')),
+                'dot': float(tokens[3].rstrip('h')),
+                'wot': float(tokens[5].rstrip('h')),
+            })
+        elif line == 'FLAGGED ENTRIES:':
+            in_flagged = True
+            current_emp = None
+        elif in_flagged and line.startswith('  ') and ':' in line:
+            stripped = line.strip()
+            parts = stripped.split(' ', 1)
+            emp_id = parts[0]
+            rest = parts[1]
+            colon_idx = rest.index(':')
+            date = rest[:colon_idx].strip()
+            reason = rest[colon_idx + 1:].strip()
+            flagged.append({'id': emp_id, 'date': date, 'reason': reason})
+        elif line.startswith('GRAND TOTAL'):
+            in_flagged = False
+            tokens = line.split()
+            grand_total = {
+                'reg': float(tokens[3].rstrip('h')),
+                'dot': float(tokens[6].rstrip('h')),
+                'wot': float(tokens[9].rstrip('h')),
+                'pay': float(tokens[11].lstrip('$')),
+            }
+
+    return {'employees': employees, 'flagged': flagged, 'grand_total': grand_total}
+
+
+def find_employee(parsed, emp_id):
+    for emp in parsed['employees']:
+        if emp['id'] == emp_id:
+            return emp
+    return None
+
+
+# ---- Test cases ----
+
+def test_exit_code_success():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+
+
+def test_exit_code_file_not_found():
+    rc, stdout, stderr = run_payroll('/nonexistent/path.csv')
+    assert rc == 1
+
+
+def test_exit_code_bad_csv():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "1001,Alice,2024-01-08,08:00,17:30,America/New_York\n"
+        "1002,Bob,2024-01-09,08:00,17:30\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 2
+        assert stdout == b''
+    finally:
+        os.unlink(csv_path)
+
+
+def test_alice_total():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    alice = find_employee(parsed, '1001')
+    assert alice is not None
+    t = alice['total']
+    assert t['reg'] == pytest.approx(56.0)
+    assert t['dot'] == pytest.approx(5.5)
+    assert t['wot'] == pytest.approx(4.0)
+    assert t['pay'] == pytest.approx(1806.25)
+
+
+def test_bob_total():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    bob = find_employee(parsed, '1002')
+    assert bob is not None
+    t = bob['total']
+    assert t['reg'] == pytest.approx(36.0)
+    assert t['dot'] == pytest.approx(5.0)
+    assert t['wot'] == pytest.approx(0.0)
+    assert t['pay'] == pytest.approx(1087.50)
+
+
+def test_carol_total():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    carol = find_employee(parsed, '1003')
+    assert carol is not None
+    t = carol['total']
+    assert t['reg'] == pytest.approx(40.0)
+    assert t['dot'] == pytest.approx(2.5)
+    assert t['wot'] == pytest.approx(0.0)
+    assert t['pay'] == pytest.approx(1093.75)
+
+
+def test_carol_utc_date():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    carol = find_employee(parsed, '1003')
+    assert carol is not None
+    jan18_shifts = [s for s in carol['shifts'] if s['date'] == '2024-01-18']
+    assert len(jan18_shifts) == 2
+
+
+def test_carol_shift_count():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    carol = find_employee(parsed, '1003')
+    assert carol is not None
+    assert len(carol['shifts']) == 5
+
+
+def test_flagged_entries():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    assert len(parsed['flagged']) == 2
+    reasons = [(f['id'], f['date'], f['reason']) for f in parsed['flagged']]
+    assert ('1002', '2024-01-11', 'missing clock-out') in reasons
+    assert ('1003', '2024-01-15', 'missing clock-in') in reasons
+
+
+def test_grand_total():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    parsed = parse_output(stdout)
+    gt = parsed['grand_total']
+    assert gt['reg'] == pytest.approx(132.0)
+    assert gt['dot'] == pytest.approx(13.0)
+    assert gt['wot'] == pytest.approx(4.0)
+    assert gt['pay'] == pytest.approx(3987.50)
+
+
+def test_midpoint_rounding():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "2001,Mid Test,2024-01-08,09:00:00,17:07:30,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '2001')
+        assert emp is not None
+        assert len(emp['shifts']) == 1
+        s = emp['shifts'][0]
+        assert s['reg'] == pytest.approx(8.0)
+        assert s['dot'] == pytest.approx(0.25)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_shift_cap():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "3001,Cap Test,2024-01-08,06:00,23:30,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '3001')
+        assert emp is not None
+        s = emp['shifts'][0]
+        assert s['reg'] == pytest.approx(8.0)
+        assert s['dot'] == pytest.approx(8.0)
+        assert any(f['id'] == '3001' and f['reason'] == 'exceeds cap' for f in parsed['flagged'])
+    finally:
+        os.unlink(csv_path)
+
+
+def test_shift_cap_boundary():
+    csv_path_over = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "3101,Boundary Over,2024-01-08,06:00,22:15,America/New_York\n"
+    )
+    csv_path_exact = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "3102,Boundary Exact,2024-01-08,06:00,22:00,America/New_York\n"
+    )
+    try:
+        rc1, stdout1, _ = run_payroll(csv_path_over)
+        assert rc1 == 0
+        parsed1 = parse_output(stdout1)
+        emp1 = find_employee(parsed1, '3101')
+        assert emp1['shifts'][0]['reg'] == pytest.approx(8.0)
+        assert emp1['shifts'][0]['dot'] == pytest.approx(8.0)
+        assert any(f['reason'] == 'exceeds cap' for f in parsed1['flagged'])
+
+        rc2, stdout2, _ = run_payroll(csv_path_exact)
+        assert rc2 == 0
+        parsed2 = parse_output(stdout2)
+        emp2 = find_employee(parsed2, '3102')
+        assert emp2['shifts'][0]['reg'] == pytest.approx(8.0)
+        assert emp2['shifts'][0]['dot'] == pytest.approx(8.0)
+        assert not any(f['reason'] == 'exceeds cap' for f in parsed2['flagged'])
+    finally:
+        os.unlink(csv_path_over)
+        os.unlink(csv_path_exact)
+
+
+def test_pay_half_cent_rounds_up():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "4001,Half Cent,2024-01-08,08:00,16:45,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '4001')
+        assert emp['total']['pay'] == pytest.approx(228.13)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_zero_padded_short_id():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "42,Short ID,2024-01-08,08:00,16:00,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        output = stdout.decode('utf-8')
+        assert 'EMPLOYEE: 0042' in output
+    finally:
+        os.unlink(csv_path)
+
+
+def test_numeric_employee_sort():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "100,Emp A,2024-01-08,08:00,16:00,America/New_York\n"
+        "99,Emp B,2024-01-08,08:00,16:00,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        output = stdout.decode('utf-8')
+        pos_99 = output.index('EMPLOYEE: 0099')
+        pos_100 = output.index('EMPLOYEE: 0100')
+        assert pos_99 < pos_100
+    finally:
+        os.unlink(csv_path)
+
+
+def test_hhmmss_format():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "5001,Seconds,2024-01-08,09:00:15,17:00:45,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '5001')
+        assert emp is not None
+        assert emp['shifts'][0]['reg'] == pytest.approx(8.0)
+        assert emp['shifts'][0]['dot'] == pytest.approx(0.0)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_weekly_ot_reverse():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "6001,Nine Hr,2024-01-08,08:00,17:00,America/New_York\n"
+        "6001,Nine Hr,2024-01-09,08:00,17:00,America/New_York\n"
+        "6001,Nine Hr,2024-01-10,08:00,17:00,America/New_York\n"
+        "6001,Nine Hr,2024-01-11,08:00,17:00,America/New_York\n"
+        "6001,Nine Hr,2024-01-12,08:00,17:00,America/New_York\n"
+        "6001,Nine Hr,2024-01-13,08:00,17:00,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '6001')
+        assert emp['shifts'][-1]['wot'] == pytest.approx(8.0)
+        assert emp['shifts'][0]['wot'] == pytest.approx(0.0)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_weekly_ot_boundary():
+    csv_40 = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "7001,Boundary,2024-01-08,08:00,16:00,America/New_York\n"
+        "7001,Boundary,2024-01-09,08:00,16:00,America/New_York\n"
+        "7001,Boundary,2024-01-10,08:00,16:00,America/New_York\n"
+        "7001,Boundary,2024-01-11,08:00,16:00,America/New_York\n"
+        "7001,Boundary,2024-01-12,08:00,16:00,America/New_York\n"
+    )
+    csv_4025 = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "7002,Boundary2,2024-01-08,08:00,16:00,America/New_York\n"
+        "7002,Boundary2,2024-01-09,08:00,16:00,America/New_York\n"
+        "7002,Boundary2,2024-01-10,08:00,16:00,America/New_York\n"
+        "7002,Boundary2,2024-01-11,08:00,16:00,America/New_York\n"
+        "7002,Boundary2,2024-01-12,08:00,16:00,America/New_York\n"
+        "7002,Boundary2,2024-01-13,08:00,08:15,America/New_York\n"
+    )
+    try:
+        rc1, stdout1, _ = run_payroll(csv_40)
+        assert rc1 == 0
+        parsed1 = parse_output(stdout1)
+        emp1 = find_employee(parsed1, '7001')
+        assert emp1['total']['wot'] == pytest.approx(0.0)
+
+        rc2, stdout2, _ = run_payroll(csv_4025)
+        assert rc2 == 0
+        parsed2 = parse_output(stdout2)
+        emp2 = find_employee(parsed2, '7002')
+        assert emp2['total']['wot'] == pytest.approx(0.25)
+        assert emp2['shifts'][-1]['wot'] == pytest.approx(0.25)
+    finally:
+        os.unlink(csv_40)
+        os.unlink(csv_4025)
+
+
+def test_timezone_utc_date():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "8001,PST Evening,2024-01-15,20:00,23:00,America/Los_Angeles\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '8001')
+        assert emp is not None
+        assert emp['shifts'][0]['date'] == '2024-01-16'
+    finally:
+        os.unlink(csv_path)
+
+
+def test_output_blank_lines():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    output = stdout.decode('utf-8')
+    lines = output.split('\n')
+
+    # Find a TOTAL line (not GRAND TOTAL) and verify blank line after it
+    for i, line in enumerate(lines):
+        if line.startswith('  TOTAL') and 'GRAND' not in line:
+            assert lines[i + 1] == '', f"Expected blank line after TOTAL at line {i}"
+
+    # Verify blank line before FLAGGED ENTRIES
+    flagged_idx = None
+    for i, line in enumerate(lines):
+        if line == 'FLAGGED ENTRIES:':
+            flagged_idx = i
+            break
+    assert flagged_idx is not None
+    assert lines[flagged_idx - 1] == ''
+
+    # Verify blank line before GRAND TOTAL
+    gt_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith('GRAND TOTAL'):
+            gt_idx = i
+            break
+    assert gt_idx is not None
+    assert lines[gt_idx - 1] == ''
+
+
+def test_lf_line_endings():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    assert b'\r' not in stdout
+
+
+def test_no_flagged_section():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "9001,No Flags,2024-01-08,08:00,16:00,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        output = stdout.decode('utf-8')
+        assert 'FLAGGED ENTRIES:' not in output
+        # Blank line before GRAND TOTAL still present
+        lines = output.split('\n')
+        gt_idx = None
+        for i, line in enumerate(lines):
+            if line.startswith('GRAND TOTAL'):
+                gt_idx = i
+                break
+        assert gt_idx is not None
+        assert lines[gt_idx - 1] == ''
+    finally:
+        os.unlink(csv_path)
+
+
+def test_flagged_csv_date():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "11001,Cap TZ,2024-01-15,17:00,09:15,America/Los_Angeles\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '11001')
+        assert emp['shifts'][0]['date'] == '2024-01-16'
+        flag = parsed['flagged'][0]
+        assert flag['date'] == '2024-01-15'
+        assert flag['reason'] == 'exceeds cap'
+    finally:
+        os.unlink(csv_path)
+
+
+def test_missing_clockout_weekly_ot():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "15001,MCO WT,2024-01-08,08:00,16:00,America/New_York\n"
+        "15001,MCO WT,2024-01-09,08:00,16:00,America/New_York\n"
+        "15001,MCO WT,2024-01-10,08:00,16:00,America/New_York\n"
+        "15001,MCO WT,2024-01-11,08:00,16:00,America/New_York\n"
+        "15001,MCO WT,2024-01-12,08:00,16:00,America/New_York\n"
+        "15001,MCO WT,2024-01-13,08:00,,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '15001')
+        last_shift = emp['shifts'][-1]
+        assert last_shift['wot'] == pytest.approx(8.0)
+        assert last_shift['reg'] == pytest.approx(0.0)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_grand_total_from_hours():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "13001,Emp A,2024-01-08,08:00,16:45,America/New_York\n"
+        "13002,Emp B,2024-01-08,08:00,16:45,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        gt = parsed['grand_total']
+        assert gt['pay'] == pytest.approx(456.25)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_employee_zero_hours():
+    csv_path = write_csv(
+        "employee_id,name,date,clock_in,clock_out,timezone\n"
+        "12001,Zero Hrs,2024-01-15,,17:00,America/New_York\n"
+    )
+    try:
+        rc, stdout, stderr = run_payroll(csv_path)
+        assert rc == 0
+        parsed = parse_output(stdout)
+        emp = find_employee(parsed, '12001')
+        assert emp is not None
+        assert emp['total']['reg'] == pytest.approx(0.0)
+        assert emp['total']['dot'] == pytest.approx(0.0)
+        assert emp['total']['wot'] == pytest.approx(0.0)
+        assert emp['total']['pay'] == pytest.approx(0.0)
+    finally:
+        os.unlink(csv_path)
+
+
+def test_trailing_newline():
+    rc, stdout, stderr = run_payroll(TIMESHEET)
+    assert rc == 0
+    assert stdout.endswith(b'\n')
+    assert not stdout.endswith(b'\n\n')
+<<<END>>>

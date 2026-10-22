@@ -1,0 +1,736 @@
+Looking at the three failing tests:
+
+1. **test_r14_escaped_pipe_preserved** - Uses `split('|')` which doesn't handle `\|` in output, so it splits on the pipe inside `\|`
+2. **test_r17_cjk_truncation** - Uses `--max-width 2` but width 2 does NOT exceed 2, so no truncation occurs. Need `--max-width 1`
+3. **test_integration_tab_whitespace_escaped_pipe** - Same `split('|')` issue as #1
+
+I need to add a proper output parser and fix the tests.
+
+<<<FILE tests/test_outputs.py>>>
+import subprocess
+import pytest
+import os
+import tempfile
+
+
+def run_mdtbl(args=None, input_text=None):
+    """Run mdtbl and return (stdout, stderr, returncode)."""
+    cmd = ['/app/mdtbl']
+    if args:
+        cmd.extend(args)
+    result = subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=True,
+        text=True
+    )
+    return result.stdout, result.stderr, result.returncode
+
+
+def parse_output_cells(line):
+    """Parse a markdown table row from mdtbl output, respecting \\| as escaped pipe."""
+    stripped = line.strip()
+    if stripped.startswith('|'):
+        stripped = stripped[1:]
+    if stripped.endswith('|'):
+        stripped = stripped[:-1]
+    placeholder = '\x01'
+    stripped = stripped.replace('\\|', placeholder)
+    cells = [c.replace(placeholder, '\\|').strip() for c in stripped.split('|')]
+    return cells
+
+
+# ===== R1: Cell padding =====
+
+def test_r1_padding_default():
+    """Default padding is 1 space each side."""
+    inp = "| A |\n| --- |\n| x |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    data_line = lines[2]
+    # Col width 3 (min), padding 1, content 'x' left-aligned
+    # Cell: ' x   ' (space, x, 2 spaces, space) -> between pipes
+    parts = data_line.split('|')
+    # parts: ['', ' x   ', '']
+    cell = parts[1]
+    assert cell[0] == ' '  # 1 space padding on left
+    assert cell[-1] == ' '  # 1 space padding on right
+
+
+def test_r1_empty_cell():
+    """Empty cell has exactly 1 space padding on each side of content area."""
+    inp = "| A |\n| --- |\n|  |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    data_line = lines[2]
+    parts = data_line.split('|')
+    cell = parts[1]
+    # Empty cell in width-3 column: padding + 3 spaces + padding = 5 spaces
+    assert cell[0] == ' '
+    assert cell[-1] == ' '
+    assert cell.strip() == ''
+
+
+def test_r1_compact_no_padding():
+    """--compact removes all cell padding."""
+    inp = "| A |\n| --- |\n| x |\n"
+    out, _, rc = run_mdtbl(args=['--compact'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Delimiter: |---|
+    assert lines[1] == '|---|'
+    # Data: |x  | (no padding, left-aligned in width 3)
+    data = lines[2]
+    parts = data.split('|')
+    cell = parts[1]
+    assert cell[0] == 'x'  # No leading space
+
+
+# ===== R2: Display width =====
+
+def test_r2_cjk_korean():
+    """Korean characters (Hangul) count as width 2."""
+    inp = "| \uc774\ub984 | nm |\n| --- | --- |\n| Kim | ab |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    # \uc774\ub984 = 2 Hangul syllables, display width 4
+    # nm = width 2
+    # Col 1 width = max(4, 3) = 4 (Kim=3)
+    # Col 2 width = max(2, 2) = 2, min 3 -> 3
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    # Col 1 delimiter: 4 dashes
+    assert parts[1].strip() == '----'
+    # Col 2 delimiter: 3 dashes
+    assert parts[2].strip() == '---'
+
+
+def test_r2_katakana():
+    """Katakana characters count as width 2."""
+    # \u30a1 = Katakana small a, in U+3040-U+30FF range
+    inp = "| \u30a1 | a |\n| --- | --- |\n| x | y |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    # \u30a1 width 2, 'a' width 1
+    # Col 1 width = max(2, 1) = 2, min 3 -> 3
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    assert parts[1].strip() == '---'
+
+
+# ===== R3: Minimum column width =====
+
+def test_r3_min_width():
+    """Column content width is at least 3."""
+    inp = "| X | Y |\n| --- | --- |\n| a | b |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    # Both columns have min width 3
+    assert parts[1].strip() == '---'
+    assert parts[2].strip() == '---'
+
+
+def test_r3_all_empty_column():
+    """Column with all empty cells still has width 3."""
+    inp = "| A | |\n| --- | --- |\n| x | |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    # Col 2 has all empty cells, width should be 3
+    assert parts[2].strip() == '---'
+
+
+# ===== R4: Left-aligned delimiter =====
+
+def test_r4_left_delimiter():
+    """Left-aligned delimiter is all dashes matching column width."""
+    inp = "| Hello |\n| --- |\n| World |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Col width = max(5, 5) = 5
+    delim = lines[1]
+    parts = delim.split('|')
+    assert parts[1].strip() == '-----'
+
+
+def test_r4_left_width3():
+    """Left-aligned delimiter for width-3 column is 3 dashes."""
+    inp = "| A |\n| --- |\n| B |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    assert parts[1].strip() == '---'
+
+
+# ===== R5: Right-aligned delimiter =====
+
+def test_r5_right_delimiter():
+    """Right-aligned delimiter is dashes + colon."""
+    inp = "| Name | Score |\n| --- | --- |\n| Alice | 100 |\n"
+    out, _, rc = run_mdtbl(args=['--align', 'l,r'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    # Col 2 width = max(5, 3) = 5
+    assert col2_delim == '----:'
+
+
+def test_r5_right_width3():
+    """Right-aligned delimiter for width-3 column is '--:'."""
+    inp = "| A | B |\n| --- | --- |\n| x | y |\n"
+    out, _, rc = run_mdtbl(args=['--align', 'l,r'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    assert col2_delim == '--:'
+
+
+# ===== R6: Center-aligned delimiter =====
+
+def test_r6_center_delimiter():
+    """Center-aligned delimiter is colon + dashes + colon."""
+    inp = "| Name | Title |\n| --- | --- |\n| Alice | Engineer |\n"
+    out, _, rc = run_mdtbl(args=['--align', 'l,c'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    # Col 2 width = max(5, 8) = 8
+    assert col2_delim == ':------:'
+
+
+def test_r6_center_width3():
+    """Center-aligned delimiter for width-3 column is :-:."""
+    inp = "| A | B |\n| --- | --- |\n| x | y |\n"
+    out, _, rc = run_mdtbl(args=['--align', 'l,c'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    assert col2_delim == ':-:'
+
+
+# ===== R7: Numeric detection =====
+
+def test_r7_numeric_column():
+    """Column with all numeric data cells is detected as numeric."""
+    inp = "| Item | Val |\n| --- | --- |\n| A | -0.5 |\n| B | 99 |\n| C | +2.00 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Col 2 is numeric -> delimiter should be right-aligned style
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    assert col2_delim.endswith(':')
+
+
+def test_r7_non_numeric():
+    """Column with a non-numeric data cell is text."""
+    inp = "| Item | Val |\n| --- | --- |\n| A | 10 |\n| B | 3.5x |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Col 2 has '3.5x' -> text -> left-aligned delimiter
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    assert not col2_delim.endswith(':')
+
+
+def test_r7_scientific_notation():
+    """1e3 fails numeric detection."""
+    inp = "| Val |\n| --- |\n| 1e3 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    # '1e3' doesn't match the numeric regex -> text column
+    assert not parts[1].strip().endswith(':')
+
+
+# ===== R8: Numeric alignment =====
+
+def test_r8_numeric_alignment():
+    """Numeric column: data right-aligned, header center-aligned."""
+    inp = "| Name | Score |\n| --- | --- |\n| Alice | 95 |\n| Bob | 82 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Col 2 is numeric
+    # Data cells should be right-aligned
+    data1 = lines[2]
+    parts1 = data1.split('|')
+    score_cell = parts1[2]
+    # Right-aligned: spaces then digits
+    assert score_cell.rstrip().endswith('95')
+
+
+def test_r8_header_center():
+    """Numeric column header is center-aligned."""
+    inp = "| Price |\n| --- |\n| 12345 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    header = lines[0]
+    parts = header.split('|')
+    # Col width = max(5, 5) = 5
+    # 'Price' centered in width 5: space=0, so just 'Price'
+    # With padding: ' Price '
+    assert parts[1].strip() == 'Price'
+
+
+def test_r8_center_odd_padding():
+    """Header center-alignment with non-zero space."""
+    inp = "| Val |\n| --- |\n| 123456 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    header = lines[0]
+    parts = header.split('|')
+    # Col width = max(3, 6) = 6
+    # Header 'Val' centered: space = 3, lp = 1, rp = 2
+    cell = parts[1]
+    # cell should have 1 space + 1 space + Val + 2 spaces + 1 space
+    # = '  Val   ' (2+3+2 = 7... wait)
+    # ' '*1 (pad) + ' '*1 (lp) + 'Val' + ' '*2 (rp) + ' '*1 (pad)
+    # = ' ' + ' ' + 'Val' + '  ' + ' ' = 8 chars
+    # Strip gives 'Val'
+    assert cell.strip() == 'Val'
+    # Check that there's more whitespace on the right than left of 'Val'
+    left_of_val = cell[:cell.index('V')]
+    right_of_val = cell[cell.index('l') + 1:]
+    # left = 2 spaces (pad+lp), right = 3 spaces (rp+pad)
+    assert len(right_of_val) > len(left_of_val)
+
+
+# ===== R9: Number normalization =====
+
+def test_r9_normalization():
+    """Numbers in numeric columns are normalized."""
+    inp = "| Val |\n| --- |\n| +0.10 |\n| 2.0 |\n| +99 |\n| -0.25 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # After normalization: +0.10->0.1, 2.0->2, +99->99, -0.25->-0.25
+    data_values = []
+    for line in lines[2:]:
+        cell = line.split('|')[1].strip()
+        data_values.append(cell)
+    assert '0.1' in data_values
+    assert '2' in data_values
+    assert '99' in data_values
+    assert '-0.25' in data_values
+    # Ensure old forms are gone
+    assert '+0.10' not in out
+    assert '2.0' not in out
+    assert '+99' not in out
+
+
+def test_r9_edge_zero():
+    """0.0 -> 0, +0 -> 0."""
+    inp = "| Val |\n| --- |\n| 0.0 |\n| +0 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    for line in lines[2:]:
+        cell = line.split('|')[1].strip()
+        assert cell == '0'
+
+
+# ===== R10: Sort =====
+
+def test_r10_case_insensitive_sort():
+    """Text columns sort case-insensitively."""
+    inp = "| Name |\n| --- |\n| Delta |\n| alpha |\n| Gamma |\n| beta |\n"
+    out, _, rc = run_mdtbl(args=['--sort', '1'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    data = [lines[i].split('|')[1].strip() for i in range(2, len(lines))]
+    assert data == ['alpha', 'beta', 'Delta', 'Gamma']
+
+
+def test_r10_numeric_sort():
+    """Numeric columns sort by value, not lexicographic."""
+    inp = "| Val |\n| --- |\n| 2.5 |\n| 10 |\n| 0.3 |\n"
+    out, _, rc = run_mdtbl(args=['--sort', '1'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    data = [lines[i].split('|')[1].strip() for i in range(2, len(lines))]
+    assert data == ['0.3', '2.5', '10']
+
+
+# ===== R11: Sort descending =====
+
+def test_r11_sort_desc():
+    """--sort-desc reverses sort order."""
+    inp = "| Name |\n| --- |\n| Delta |\n| alpha |\n| Gamma |\n| beta |\n"
+    out, _, rc = run_mdtbl(args=['--sort', '1', '--sort-desc'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    data = [lines[i].split('|')[1].strip() for i in range(2, len(lines))]
+    assert data == ['Gamma', 'Delta', 'beta', 'alpha']
+
+
+def test_r11_sort_desc_alone():
+    """--sort-desc without --sort has no effect."""
+    inp = "| Name |\n| --- |\n| Delta |\n| alpha |\n"
+    out, _, rc = run_mdtbl(args=['--sort-desc'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    data = [lines[i].split('|')[1].strip() for i in range(2, len(lines))]
+    assert data == ['Delta', 'alpha']
+
+
+# ===== R12: Tab expansion =====
+
+def test_r12_tab():
+    """Tab is replaced with 4 spaces, then whitespace normalized."""
+    inp = "| A |\n| --- |\n| foo\tbar |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    cell = lines[2].split('|')[1].strip()
+    assert cell == 'foo bar'
+
+
+def test_r12_multiple_tabs():
+    """Multiple consecutive tabs become 8 spaces then collapse to 1."""
+    inp = "| A |\n| --- |\n|\t\tb |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    cell = lines[2].split('|')[1].strip()
+    assert cell == 'b'
+
+
+# ===== R13: Whitespace normalization =====
+
+def test_r13_whitespace_collapse():
+    """Internal whitespace is collapsed to single space."""
+    inp = "| A |\n| --- |\n|   foo   bar   |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    cell = lines[2].split('|')[1].strip()
+    assert cell == 'foo bar'
+
+
+def test_r13_all_whitespace_cell():
+    """All-whitespace cell becomes empty."""
+    inp = "| A |\n| --- |\n|     |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    cell = lines[2].split('|')[1].strip()
+    assert cell == ''
+
+
+# ===== R14: Escaped pipe =====
+
+def test_r14_escaped_pipe_preserved():
+    r"""\| is preserved in output and not treated as cell separator."""
+    inp = "| p\\|q | r |\n| --- | --- |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    header = lines[0]
+    cells = parse_output_cells(header)
+    # Should have 2 cells
+    assert len(cells) == 2
+    assert '\\|' in cells[0]
+    assert cells[0] == 'p \\|q'
+    assert cells[1] == 'r'
+
+
+def test_r14_escaped_pipe_width():
+    r"""\| counts as display width 1."""
+    inp = "| x\\|y\\|z |\n| --- | --- |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    # x\|y\|z: display width 5 (x,pipe,y,pipe,z)
+    parts = delim.split('|')
+    assert parts[1].strip() == '-----'
+
+
+# ===== R15: Row consistency =====
+
+def test_r15_extra_cells_merged():
+    """Extra cells are merged into last column with space."""
+    inp = "| A | B | C |\n| --- | --- | --- |\n| x | y | z | w | v |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    parts = lines[2].split('|')
+    # 3 columns -> 5 pipe-separated parts
+    assert len(parts) == 5
+    # Last cell should contain 'z w v'
+    last_cell = parts[3].strip()
+    assert last_cell == 'z w v'
+
+
+def test_r15_short_row_padded():
+    """Short rows are padded with empty cells."""
+    inp = "| A | B | C | D |\n| --- | --- | --- | --- |\n| x |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    parts = lines[2].split('|')
+    # 4 columns -> 6 pipe-separated parts
+    assert len(parts) == 6
+    assert 'x' in parts[1]
+    for i in [2, 3, 4]:
+        assert parts[i].strip() == ''
+
+
+# ===== R16: Multiple tables =====
+
+def test_r16_multi_table():
+    """All tables are formatted and non-table lines preserved."""
+    inp = ("| A |\n| --- |\n| x |\n\nSome text\n\n"
+           "| B |\n| --- |\n| y |\n\nEnd\n")
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    assert 'Some text' in out
+    assert 'End' in out
+    assert 'x' in out
+    assert 'y' in out
+    # Check two delimiter rows (two tables)
+    lines = out.strip().split('\n')
+    delim_count = sum(1 for l in lines if l.strip().startswith('|') and '-' in l and set(l.replace('|', '').replace(' ', '').replace('-', '')) == set())
+    # Actually, just check both formatted tables are present
+    assert sum(1 for l in lines if '---' in l) >= 2
+
+
+def test_r16_table_at_start():
+    """Table at the very start of input."""
+    inp = "| A |\n| --- |\n| x |\nFooter text\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    assert 'Footer text' in out
+    assert 'x' in out
+
+
+def test_r16_table_at_end_no_newline():
+    """Table at the very end with no trailing newline in input."""
+    inp = "Header text\n| A |\n| --- |\n| x |"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    assert 'Header text' in out
+    assert 'x' in out
+
+
+# ===== R17: Truncation =====
+
+def test_r17_unicode_ellipsis():
+    """Truncation uses Unicode ellipsis, not ASCII dots."""
+    inp = "| Greetings |\n| --- |\n| Hello |\n"
+    out, _, rc = run_mdtbl(args=['--max-width', '7'], input_text=inp)
+    assert rc == 0
+    # 'Greetings' (width 9) -> truncated
+    assert '\u2026' in out
+    assert '...' not in out
+
+
+def test_r17_truncation_logic():
+    """Truncation shows N-1 chars then ellipsis."""
+    inp = "| ABCDEFGHI |\n| --- |\n| x |\n"
+    out, _, rc = run_mdtbl(args=['--max-width', '5'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    header = lines[0]
+    cell = header.split('|')[1].strip()
+    # 'ABCDEFGHI' (width 9) with max-width 5:
+    # avail = 4, take 4 chars 'ABCD', then ellipsis
+    assert cell == 'ABCD\u2026'
+
+
+def test_r17_cjk_truncation():
+    """CJK char that doesn't fit before ellipsis shows just ellipsis."""
+    # \u6f22 = CJK ideograph, width 2
+    # With --max-width 1, the cell (width 2) exceeds max-width 1
+    # avail = 1-1 = 0, first char width 2 > 0, show just ellipsis
+    inp = "| \u6f22 |\n| --- |\n| x |\n"
+    out, _, rc = run_mdtbl(args=['--max-width', '1'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    header = lines[0]
+    cell = header.split('|')[1].strip()
+    assert cell == '\u2026'
+
+
+# ===== R18: Trailing newline =====
+
+def test_r18_trailing_newline():
+    """Output ends with exactly one newline."""
+    inp = "| A |\n| --- |\n| x |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    assert out.endswith('\n')
+    assert not out.endswith('\n\n')
+
+
+def test_r18_no_trailing_newline():
+    """Missing trailing newline is added."""
+    inp = "| A |\n| --- |\n| x |"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    assert out.endswith('\n')
+    assert not out.endswith('\n\n')
+
+
+def test_r18_extra_newlines_removed():
+    """Extra trailing newlines are removed."""
+    # Input ending with \n\n after non-table content
+    inp = "Intro\n| A |\n| --- |\n| x |\n\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    assert out.endswith('\n')
+    assert not out.endswith('\n\n')
+
+
+def test_r18_empty_output():
+    """Empty input produces empty output (no newline added)."""
+    out, _, rc = run_mdtbl(input_text="")
+    assert rc == 0
+    assert out == ""
+
+
+# ===== Preserved: --compact =====
+
+def test_preserved_compact():
+    """--compact removes all padding."""
+    inp = "| A | B |\n| --- | --- |\n| x | y |\n"
+    out, _, rc = run_mdtbl(args=['--compact'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    assert lines[1] == '|---|---|'
+    data = lines[2]
+    assert data.startswith('|x')
+
+
+# ===== Preserved: --no-header =====
+
+def test_preserved_no_header():
+    """--no-header treats first row as data, header row is empty cells."""
+    inp = "| A | B |\n| --- | --- |\n| x | y |\n"
+    out, _, rc = run_mdtbl(args=['--no-header'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Header row should have empty cells
+    header = lines[0]
+    parts = header.split('|')
+    for p in parts[1:-1]:
+        assert p.strip() == ''
+    # Both original rows appear as data
+    assert len(lines) == 4  # header + delimiter + 2 data rows
+
+
+# ===== Preserved: --align =====
+
+def test_preserved_align_override():
+    """--align overrides auto-detected alignment."""
+    inp = "| Name | Score |\n| --- | --- |\n| Alice | 95 |\n"
+    out, _, rc = run_mdtbl(args=['--align', 'l,l'], input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    delim = lines[1]
+    parts = delim.split('|')
+    col2_delim = parts[2].strip()
+    # With --align l,l, col 2 should be left-aligned despite numeric data
+    assert not col2_delim.endswith(':')
+
+
+# ===== Preserved: --input =====
+
+def test_preserved_input_file(tmp_path):
+    """--input reads from the named file."""
+    f = tmp_path / "test.md"
+    f.write_text("| A |\n| --- |\n| x |\n")
+    out, _, rc = run_mdtbl(args=['--input', str(f)])
+    assert rc == 0
+    assert 'x' in out
+
+
+# ===== Preserved: --check =====
+
+def test_preserved_check():
+    """--check validates table structure without reformatting."""
+    inp = "| A | B |\n| --- | --- |\n| x |\n"
+    _, err, rc = run_mdtbl(args=['--check'], input_text=inp)
+    assert rc == 0
+    # Should report that row 3 has wrong cell count
+    assert err.strip() != ''
+
+
+# ===== Preserved: --version =====
+
+def test_preserved_version():
+    """--version prints version string."""
+    out, _, rc = run_mdtbl(args=['--version'])
+    assert rc == 0
+    assert '1.2.0' in out
+
+
+# ===== Preserved: exit code =====
+
+def test_preserved_exit_code_error():
+    """Exit code 1 on error (file not found)."""
+    _, _, rc = run_mdtbl(args=['--input', '/nonexistent'])
+    assert rc == 1
+
+
+# ===== Integration: combined rules =====
+
+def test_integration_numeric_with_normalization_and_alignment():
+    """Numeric column with values requiring normalization, right-aligned data, center header."""
+    inp = "| Item | Price |\n| --- | --- |\n| A | +0.10 |\n| B | 100.0 |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Col 2 is numeric
+    delim = lines[1]
+    parts = delim.split('|')
+    assert parts[2].strip().endswith(':')
+    # Check normalized values appear
+    data1_cell = lines[2].split('|')[2].strip()
+    data2_cell = lines[3].split('|')[2].strip()
+    assert data1_cell == '0.1'
+    assert data2_cell == '100'
+
+
+def test_integration_tab_whitespace_escaped_pipe():
+    r"""Tab expansion, whitespace normalization, and escaped pipes together."""
+    inp = "| a\t\\|b  c | d |\n| --- | --- |\n| \t x\\|y  z | w |\n"
+    out, _, rc = run_mdtbl(input_text=inp)
+    assert rc == 0
+    lines = out.strip().split('\n')
+    # Header col 1: 'a\t\|b  c' -> tab->4 spaces -> 'a    \|b  c'
+    # -> strip -> 'a    \|b  c' -> collapse whitespace -> 'a \|b c'
+    # Display width: a(1) + space(1) + \|(1) + b(1) + space(1) + c(1) = 6
+    header_cells = parse_output_cells(lines[0])
+    assert header_cells[0] == 'a \\|b c'
+    data_cells = parse_output_cells(lines[2])
+    assert data_cells[0] == 'x \\|y z'
+<<<END>>>

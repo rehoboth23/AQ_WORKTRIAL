@@ -1,0 +1,11 @@
+order_id,customer_id,product_id,quantity,unit_price,status
+ORD001,C001,P001,1,50.00,completed
+ORD002,C004,P005,2,30.00,completed
+ORD003,C004,P001,1,50.00,completed
+ORD004,C003,P004,2,50.00,completed
+ORD005,C002,P001,1,50.00,completed
+ORD006,C002,P001,1,50.00,completed
+ORD007,C002,P002,3,50.00,completed
+ORD008,C002,P004,2,50.00,completed
+ORD009,C005,P003,2,30.00,cancelled
+ORD010,C005,P003,2,30.00,cancelled

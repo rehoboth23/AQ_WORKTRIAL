@@ -1,0 +1,422 @@
+{
+  "name": "variable-star-lightcurve-reducer",
+  "description": "Reduce raw light curves into calibrated magnitudes and period estimates for variable stars following observatory conventions, including alias rejection and comparison-star vetting.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": [
+    "astronomy",
+    "photometry",
+    "period-analysis",
+    "conventions",
+    "alias-rejection"
+  ],
+  "expert_time_estimate_min": 90.0,
+  "junior_time_estimate_min": 240.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You are assisting a small observatory that has been monitoring variable stars. Their automated reduction pipeline broke and the original author left. You have the raw nightly observation CSVs, the field catalogue, and the observatory's reduction conventions document (v3.2). You must write a working reduce.py that processes the data following every stated convention and outputs calibrated magnitudes and period estimates for each variable star.",
+  "environment_setup": "The Dockerfile installs numpy and scipy on python:3.12-slim-bookworm. /app/data/ contains catalogue.csv (8 comparison stars, 12 target stars with RA/Dec) and night_001.csv through night_010.csv with columns star_id, jd, flux, flux_err, airmass. /app/docs/conventions.md contains the full reduction conventions (v3.2). /app/reduce.py is a minimal skeleton. /app/tests_public/ contains test runners for two clean, non-alias stars. The catalogue includes C007 (saturated, brightest at mag 10.5) and C006 (variable, mag 11.0) that must be rejected per conventions. The data generator script is NOT included in the image; it runs only in tests/.",
+  "instruction_summary": "Write python3 /app/reduce.py NIGHTS_DIR that reads the catalogue and nightly CSVs from NIGHTS_DIR, follows every rule in /app/docs/conventions.md, and writes /app/out/stars.csv with one row per target star: star_id, period_days (6 significant figures or NA), amplitude_mag (3 decimal places or NA), mean_mag (3 decimal places or NA). Sort by star_id. Stars with fewer than 3 nights of data get period_days=NA (amplitude and mean_mag still computed if a valid comparison star exists). Stars with no valid comparison star get all three values as NA. Exit status 0 always.",
+  "solution_outline": [
+    "Read /app/docs/conventions.md and /app/data/catalogue.csv",
+    "Load all night_*.csv files and group observations by star_id",
+    "Identify valid comparison stars: reject any with flux>50000 ADU in any observation (saturated) and any with instrumental-magnitude scatter >0.03 mag across nights (variable); select the brightest remaining by catalog_mag",
+    "For each target star with a valid comparison star: compute instrumental magnitudes m_inst=-2.5*log10(flux), differential magnitudes Delta_m = m_inst_target - m_inst_comp, apply airmass correction Delta_m_corr = Delta_m - 0.15*(X_target - X_comp), calibrated mag = Delta_m_corr + m_cat_comp",
+    "Convert all JD timestamps to HJD using the heliocentric correction formula from conventions \u00a71",
+    "For targets with >=3 nights: run Lomb-Scargle periodogram over [0.1, 50.0] days with >=10x oversampling; find the best peak",
+    "Apply alias rejection per conventions \u00a74: for the best period P_best, compute 1-day aliases P_alias = 1/|1/P_best +/- 1|; if any alias has periodogram power > 50% of the best peak, phase-fold at both periods, fit a 3-harmonic Fourier model, compute reduced chi-squared for each, and select the period with the lower value",
+    "Compute amplitude as half the peak-to-peak range of the 3-harmonic model evaluated at 100 evenly-spaced phases",
+    "Compute mean_mag as the mean of calibrated magnitudes",
+    "For targets with <3 nights: set period_days=NA (amplitude and mean_mag still computed if valid comp exists)",
+    "For targets with no valid comp: set period_days=NA, amplitude_mag=NA, mean_mag=NA",
+    "Write /app/out/stars.csv sorted by star_id with the stated column names and formatting"
+  ],
+  "test_plan": [
+    "test_catalogue_unchanged: diff catalogue.csv against a saved copy; must be byte-identical",
+    "test_output_format: parse stars.csv, verify header columns, that period is float or 'NA', amplitude and mean_mag are floats with <=3 decimals or 'NA'",
+    "test_all_stars_present: verify every target star_id in the catalogue appears exactly once in stars.csv",
+    "test_sorted_by_id: verify output rows are sorted by star_id",
+    "test_exit_code_zero: run reduce.py on a field with NA-only stars; assert exit code 0",
+    "test_period_na_sparse: for hidden stars with <3 nights, verify period_days is 'NA'",
+    "test_no_valid_comp_na: for a hidden star where all comps are saturated or variable, verify all three output values are 'NA'",
+    "test_period_clean: generate clean (non-alias) stars from seeds 100-101, verify period within 0.5% of true",
+    "test_period_near_alias: generate near-alias stars from seeds 102-105, verify period within 0.5% of true (catches alias rejection)",
+    "test_period_hjd_sensitive: generate long-baseline near-alias stars from seeds 106-107, verify period within 0.5% (HJD + alias interaction)",
+    "test_mean_mag_correct_comp: generate stars where brightest comp is valid, verify mean_mag within 0.02 of true",
+    "test_mean_mag_saturated_comp: generate stars where brightest comp is saturated, verify mean_mag within 0.02 of true",
+    "test_mean_mag_variable_comp: generate stars where brightest non-saturated comp is variable, verify mean_mag within 0.02 of true",
+    "test_mean_mag_airmass: generate stars observed at large airmass differences from comp, verify mean_mag within 0.02 of true",
+    "test_amplitude_accuracy: for stars with found periods, verify amplitude within max(0.05, 20% of true amplitude)",
+    "test_amplitude_from_model: verify amplitude is computed from the 3-harmonic model, not from raw data range",
+    "test_alias_rejection_specific: generate a star whose 1-day alias has >80% of the best peak's power; verify the TRUE period is selected",
+    "test_hjd_applied: generate a star with long baseline and short period near an alias; without HJD the alias would win; verify true period is returned",
+    "test_period_6_sig_figs: verify period values have at least 6 significant digits of precision when parsed as float",
+    "test_period_search_range: generate a star with period 35 days; verify it is found (checks 0.1-50 range is used)",
+    "test_oversampling: generate a star where 10x oversampling is needed to resolve the true period; verify period within 0.5%",
+    "test_determinism: same seed produces identical CSV files (byte-level)",
+    "test_seed_sensitivity: different seeds produce different star properties",
+    "test_practice_covers_hidden_cases: verify each hidden-case kind has >=3 examples in practice data"
+  ],
+  "anti_cheat": "The practice data (12 stars) is generated from seed 42. Hidden tests generate entirely new fields from seeds 43-54 with different star properties, periods, and observation patterns. Hard-coding practice-star answers fails immediately. The catalogue file is checked for byte-identical preservation; modifying it to change comparison star properties fails. The agent never sees the simulator code or the hidden seeds.",
+  "failure_modes": "The agent may (1) use the brightest comparison star without checking saturation/variability, getting plausible but wrong magnitudes; (2) skip the heliocentric JD correction, which adds phase scatter that tips near-alias stars toward the wrong alias; (3) take the highest Lomb-Scargle peak without checking 1-day aliases; (4) attempt period search on stars with <3 nights instead of reporting NA; (5) apply the airmass correction with the wrong sign; (6) format the period with too few significant figures; (7) compute amplitude from raw data range instead of the 3-harmonic model; (8) use a period search range that excludes long-period stars; (9) use insufficient oversampling causing the true period to fall between grid points.",
+  "shape": "scientific pipeline with conventions; graded on hidden nights and stars",
+  "hidden_evaluation": "The tests use a seeded simulator (in tests/simulator.py) to generate 12 new fields from sibling seeds 43-54. Each generated field has different comparison star configurations and target star properties. The simulator knows the true periods, amplitudes, and mean magnitudes. Tests run the agent's reduce.py on each generated field and compare output to ground truth. The simulator includes more near-alias cases than the practice set, and specific combinations (long baseline + near-alias + HJD sensitivity) that only fail if conventions are not followed precisely.",
+  "checks": [
+    {
+      "requirement": "Conventions \u00a72: 'Reject any comparison star whose flux exceeds 50,000 ADU in any single observation.'",
+      "assumed_instead": "Use the brightest comparison star from the catalogue without checking saturation.",
+      "hidden_test_input": "A field where the brightest comp (mag 10.5) has flux 55000 ADU; second-brightest is variable; third (mag 11.5) is the first valid comp.",
+      "why_missed": "The saturated comp gives plausible magnitudes that are systematically offset; no runtime error signals the problem.",
+      "caught_by_tests": [
+        "test_mean_mag_saturated_comp"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a72: 'Reject any comparison star with \u03c3(m_inst) > 0.03 mag across nights.'",
+      "assumed_instead": "Reject only saturated stars, assuming non-saturated comps are stable.",
+      "hidden_test_input": "A field where the brightest non-saturated comp (mag 11.0) has \u03c3(m_inst) = 0.05 mag due to intrinsic variability.",
+      "why_missed": "Using a variable comp imprints its variability into the target light curve, shifting mean_mag and distorting the periodogram.",
+      "caught_by_tests": [
+        "test_mean_mag_variable_comp"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a73: 'Apply airmass correction: \u0394m_corr = \u0394m - k\u00b7(X_target - X_comp), where k = 0.15 mag/airmass.'",
+      "assumed_instead": "Skip airmass correction because target and comp are in the same field, or apply with wrong sign (+k instead of -k).",
+      "hidden_test_input": "A target observed at airmass 1.8 while the comp is at 1.2, giving a correction of 0.09 mag.",
+      "why_missed": "The correction is small for most observations but large for high-airmass targets; mean_mag drifts beyond 0.02 mag tolerance.",
+      "caught_by_tests": [
+        "test_mean_mag_airmass"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a71: 'All timestamps must be converted from Julian Date (JD) to Heliocentric Julian Date (HJD) before period analysis, using HJD = JD + (X\u00b7cos(\u03b1)cos(\u03b4) + Y\u00b7sin(\u03b1)cos(\u03b4) + Z\u00b7sin(\u03b4))/173.144632 where X,Y,Z are the Sun's geocentric equatorial rectangular coordinates in AU.'",
+      "assumed_instead": "Use the raw JD timestamps directly; the correction seems small and negligible.",
+      "hidden_test_input": "A near-alias star (P=0.55d) observed over 150 days; without HJD the extra phase scatter weakens the true period's chi-squared advantage over the alias, causing the alias to be selected.",
+      "why_missed": "HJD correction adds no error and magnitudes look fine; the only symptom is a wrong period on a near-alias star, which the agent may not re-check.",
+      "caught_by_tests": [
+        "test_hjd_applied",
+        "test_period_hjd_sensitive"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a74: 'Compute the 1-day alias periods P_alias = 1/|1/P_best \u00b1 1|. If any alias has periodogram power within 50% of the best peak, phase-fold at both and select the period with the lower reduced chi-squared from a 3-harmonic fit.'",
+      "assumed_instead": "Take the highest periodogram peak directly without checking aliases.",
+      "hidden_test_input": "A star with true period 0.77d (alias at 3.34d); the alias peak has 85% of the best peak's power; phase-folding shows the true period has lower chi-squared.",
+      "why_missed": "The alias period produces a phase-folded curve that looks reasonable; only the chi-squared comparison reveals the correct period.",
+      "caught_by_tests": [
+        "test_alias_rejection_specific",
+        "test_period_near_alias"
+      ]
+    },
+    {
+      "requirement": "Contract: 'Stars with fewer than 3 nights of data get period_days=NA.'",
+      "assumed_instead": "Attempt period search on all stars regardless of coverage, or exit with error code when a star has insufficient data.",
+      "hidden_test_input": "A star observed on only 2 nights separated by 90 days; a periodogram finds a spurious peak at 0.5d.",
+      "why_missed": "The spurious period looks plausible and the agent may not realize 2 nights are insufficient for a reliable period.",
+      "caught_by_tests": [
+        "test_period_na_sparse",
+        "test_exit_code_zero"
+      ]
+    },
+    {
+      "requirement": "Contract: 'Stars with no valid comparison star get period_days=NA, amplitude_mag=NA, mean_mag=NA.'",
+      "assumed_instead": "Skip such stars entirely from the output, or use an invalid comp anyway.",
+      "hidden_test_input": "A field where all comparison stars are either saturated (flux>50000) or variable (\u03c3>0.03); no valid comp exists.",
+      "why_missed": "The star is absent from output or has plausible but wrong values; no runtime error signals the issue.",
+      "caught_by_tests": [
+        "test_no_valid_comp_na",
+        "test_all_stars_present"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a74: 'Search range: 0.1 to 50.0 days.'",
+      "assumed_instead": "Use a narrower default range like 0.5-10 days, missing long-period stars.",
+      "hidden_test_input": "A star with true period 35 days, well within the stated range but beyond a naive upper bound of 10-20 days.",
+      "why_missed": "The star's period is outside the agent's search range; no peak is found near the true period.",
+      "caught_by_tests": [
+        "test_period_search_range"
+      ]
+    },
+    {
+      "requirement": "Contract: 'period_days: 6 significant figures.'",
+      "assumed_instead": "Output the period with Python's default float formatting (e.g., 0.77 instead of 0.770000), losing significant figures.",
+      "hidden_test_input": "A star with true period 0.770000 days; the agent outputs 0.77 which has only 2 significant figures.",
+      "why_missed": "The value is numerically correct but the format is wrong; the agent may not check the formatting specification carefully.",
+      "caught_by_tests": [
+        "test_period_6_sig_figs"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a75: 'amplitude_mag: half the peak-to-peak range of the best-fit 3-harmonic Fourier model evaluated at 100 evenly-spaced phases.'",
+      "assumed_instead": "Compute amplitude as half the peak-to-peak of the raw phase-folded data, or as half the range of the observed magnitudes.",
+      "hidden_test_input": "A star with true amplitude 0.30 mag; the raw data range is 0.55 mag due to outliers and phase gaps; the 3-harmonic fit gives 0.31 mag.",
+      "why_missed": "The raw range overestimates amplitude; only the smooth fit gives the correct value. The agent may not read the amplitude definition carefully.",
+      "caught_by_tests": [
+        "test_amplitude_accuracy",
+        "test_amplitude_from_model"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a72: 'Among remaining valid comparison stars, use the one with the lowest catalog_mag (brightest).'",
+      "assumed_instead": "Use the first valid comparison star encountered in the CSV regardless of brightness, or average all valid comps.",
+      "hidden_test_input": "A field where the dimmest valid comp (mag 14.0) is listed first in the catalogue; the brightest valid comp (mag 11.5) is listed third.",
+      "why_missed": "Using a dim comp increases photometric noise on the differential magnitudes, potentially pushing mean_mag beyond the 0.02 tolerance on noisy data.",
+      "caught_by_tests": [
+        "test_mean_mag_correct_comp"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a73: 'Calibrated magnitude: m_cal = \u0394m_corr + m_cat_comp' using differential photometry, not absolute.",
+      "assumed_instead": "Use absolute photometry: m_cal = m_inst_target - k\u00b7X_target + ZP_inst instead of differential photometry.",
+      "hidden_test_input": "A night with poor transparency where the absolute zero-point is off by 0.3 mag; differential photometry cancels this but absolute does not.",
+      "why_missed": "The magnitudes from absolute photometry are systematically offset on bad nights, pushing mean_mag beyond tolerance.",
+      "caught_by_tests": [
+        "test_mean_mag_correct_comp"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a74: 'Lomb-Scargle periodogram with at least 10x oversampling relative to the natural frequency resolution.'",
+      "assumed_instead": "Use default frequency grid or minimal oversampling, causing the true period to fall between grid points.",
+      "hidden_test_input": "A star with period 4.733 days observed over 50 days; with 1x oversampling the grid step is 0.02/day and the true frequency 0.2113/day falls between grid points, shifting the best period by >0.5%.",
+      "why_missed": "The period is approximately right but slightly off; with insufficient oversampling the alias peaks may also be poorly resolved.",
+      "caught_by_tests": [
+        "test_oversampling"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a76: 'The field catalogue is read-only and authoritative. Do not modify it.'",
+      "assumed_instead": "Write corrected comparison star flags or rejection notes back into the catalogue for convenience.",
+      "hidden_test_input": "The test compares the catalogue after reduce.py runs against a pristine copy.",
+      "why_missed": "The agent modifies the catalogue as a side effect; no runtime error occurs.",
+      "caught_by_tests": [
+        "test_catalogue_unchanged"
+      ]
+    },
+    {
+      "requirement": "Conventions \u00a74: 'If fewer than 3 nights of observations are available for a target star, do not attempt period search. Report period_days as NA; amplitude_mag and mean_mag are still reported if a valid comparison star exists.'",
+      "assumed_instead": "Report period as NA but also set amplitude and mean_mag to NA, or omit the star entirely from the output.",
+      "hidden_test_input": "A star with 2 nights of data and a valid comparison star; the agent outputs NA for all three values or omits the row.",
+      "why_missed": "The NA rule applies only to the period; amplitude and mean_mag must still be reported for stars with valid comparison stars.",
+      "caught_by_tests": [
+        "test_all_stars_present",
+        "test_period_na_sparse"
+      ]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Clean stars with well-separated, non-alias periods must still produce correct periods and magnitudes after all convention changes are applied.",
+      "hidden_test_input": "A star with P=3.5d, A=0.4 mag, 6 nights, no alias issues, stable valid comp \u2014 must still get period within 0.5% and mean_mag within 0.02 mag."
+    }
+  ],
+  "ground_truth": "A seeded simulator in tests/simulator.py generates all star properties (periods, amplitudes, mean magnitudes, RA, Dec, phase offsets), comparison star configurations (which are saturated, variable, stable), observation nights (JDs, airmasses, transparencies), and raw flux measurements with realistic noise. The simulator also computes the true HJD-corrected differential magnitudes and the true period, amplitude, and mean magnitude for each target using the same conventions stated in conventions.md. Tests import the simulator, generate data from a given seed, write CSVs to a temp directory, run the agent's reduce.py on that data, and compare the output to the simulator's known truth. The simulator is verified to be deterministic (same seed = same bytes) and seed-sensitive (different seed = different properties).",
+  "verifier_packages": [
+    "numpy==2.1.3",
+    "scipy==1.14.1"
+  ],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "quirk_evidence": [
+    {
+      "quirk": "period_vs_alias: near",
+      "evidence": "Practice stars V001 (P=0.77d, alias at 3.34d), V002 (P=0.55d, alias at 1.22d), V003 (P=0.91d, alias at 10.1d) in night CSVs; the conventions document \u00a74 describes the alias rejection procedure."
+    },
+    {
+      "quirk": "period_vs_alias: almost_exactly_1_day",
+      "evidence": "Practice stars V004 (P=1.06d, alias at 17.7d), V005 (P=1.10d, alias at 11.0d), V006 (P=0.99d, alias at 99.0d) where the true period is very close to 1 day; conventions \u00a74 alias check."
+    },
+    {
+      "quirk": "observing_nights: few_with_gaps",
+      "evidence": "Practice stars V010 (2 nights, 30-day gap), V011 (2 nights, 60-day gap), V012 (2 nights, 90-day gap) \u2014 all have <3 nights and show spurious periodogram peaks that must not be reported; conventions \u00a74 NA rule."
+    },
+    {
+      "quirk": "observing_nights: many",
+      "evidence": "Practice stars V001-V009 each have 5-8 nights of observations across the 10-night dataset."
+    },
+    {
+      "quirk": "comparison_stars: one_variable",
+      "evidence": "Practice comparison star C006 has \u03c3(m_inst) \u2248 0.05 mag across nights, exceeding the 0.03 mag threshold stated in conventions \u00a72; its observations appear in all night CSVs."
+    },
+    {
+      "quirk": "comparison_stars: one_saturated",
+      "evidence": "Practice comparison star C007 has flux >50000 ADU in multiple observations across nights, exceeding the threshold stated in conventions \u00a72; its observations appear in all night CSVs."
+    }
+  ],
+  "answer_source": "inferred",
+  "inferred_rules": [
+    {
+      "rule": "When observations are taken primarily at ~1-day intervals, spectral window effects create 1-day alias peaks in the periodogram that can have power comparable to the true period's peak; the true period is identified by lower reduced chi-squared of a 3-harmonic Fourier fit to the phase-folded data.",
+      "shown_by": "Practice stars V001 (P=0.77d, alias at 3.34d, alias power ~85% of true), V002 (P=0.55d, alias at 1.22d), V003 (P=0.91d) in night CSVs; V004-V006 show almost-exactly-1-day cases. In each case the periodogram shows two comparable peaks and the chi-squared comparison selects the correct one."
+    },
+    {
+      "rule": "A comparison star that appears bright and non-saturated can have flux exceeding 50,000 ADU in some observations, indicating detector saturation and non-linear response; its instrumental magnitudes are systematically wrong.",
+      "shown_by": "Practice comparison star C007 has peak flux ~55000 ADU visible in night_002.csv, night_005.csv, night_008.csv; its instrumental magnitudes deviate from the catalogue value by >0.1 mag. The data shows the saturation directly."
+    },
+    {
+      "rule": "A comparison star that is non-saturated can still be intrinsically variable, with instrumental magnitude scatter >0.03 mag across nights; using it imprints spurious variability into the target's light curve.",
+      "shown_by": "Practice comparison star C006 has \u03c3(m_inst) = 0.05 mag across the 10 nights, computed from its observations in all night CSVs; any target using C006 shows correlated variability not present in other stars using stable comps."
+    }
+  ],
+  "stated_facts": [
+    {
+      "fact": "The extinction coefficient k = 0.15 mag/airmass and the calibration zero point convention (m_cal = \u0394m_corr + m_cat_comp).",
+      "why": "These are observatory-specific calibration values; the light curves cannot reveal them because they are conventions, not properties of the data."
+    },
+    {
+      "fact": "The period search range is 0.1 to 50.0 days with at least 10x oversampling.",
+      "why": "The search range and oversampling factor are conventions; the data contains stars with periods within this range but cannot define the range or sampling itself."
+    },
+    {
+      "fact": "Times must be converted from geocentric JD to HJD using: HJD = JD + (X\u00b7cos(\u03b1)cos(\u03b4) + Y\u00b7sin(\u03b1)cos(\u03b4) + Z\u00b7sin(\u03b4)) / 173.144632, where X,Y,Z are the Sun's geocentric equatorial rectangular coordinates in AU, computed from: n = JD - 2451545.0; g = radians(357.529 + 0.98560028\u00b7n); L = radians(280.459 + 0.98564736\u00b7n); \u03bb = L + radians(1.915)\u00b7sin(g); \u03b5 = radians(23.439 - 0.00000036\u00b7n); R = 1.00014 - 0.01672\u00b7cos(g); X = R\u00b7cos(\u03bb); Y = R\u00b7cos(\u03b5)\u00b7sin(\u03bb); Z = R\u00b7sin(\u03b5)\u00b7sin(\u03bb). \u03b1 and \u03b4 are the star's RA and Dec from the catalogue in radians.",
+      "why": "The raw JD timestamps and star positions do not indicate which time system should be used or which formula; this is an observatory convention that must be stated."
+    },
+    {
+      "fact": "The saturation threshold is 50,000 ADU and the variability threshold is \u03c3(m_inst) > 0.03 mag.",
+      "why": "These thresholds are observatory conventions based on detector characteristics and photometric precision requirements; the data alone cannot determine them."
+    },
+    {
+      "fact": "If no valid comparison star remains after vetting, report period_days=NA, amplitude_mag=NA, mean_mag=NA for that target.",
+      "why": "The data cannot show what to do when no valid comp exists; this is a pipeline convention that must be stated."
+    }
+  ],
+  "reference_binary": "",
+  "sample_file": "",
+  "spec_document": "",
+  "knobs": [
+    {
+      "knob": "convention trap",
+      "where": "The conventions document /app/docs/conventions.md states the time system (HJD), magnitude zero point, extinction coefficient, saturation/variability thresholds, and alias rejection procedure. The practice data includes stars that require each convention to be followed.",
+      "fairness": "Every rule is stated unambiguously in the conventions document; the agent can read it and implement each rule. The trap is that violating a rule produces plausible output with no error, not that the rule is hidden."
+    },
+    {
+      "knob": "varied hidden draws",
+      "where": "The hidden tests generate 12 fields from 12 different seeds using the same simulator that produced the practice data. The hidden draws include more near-alias cases and more combinations of quirks than the practice set.",
+      "fairness": "The practice data demonstrates every type of hidden case (near-alias, almost-exactly-1-day, sparse, bad comp) at least 3 times. The hidden cases use the same physics and conventions; they differ only in specific parameter values and quirk combinations. The simulator is the same; only the seed changes."
+    }
+  ],
+  "dial": "Period tolerance and the share of hidden stars that must be within it. Fair range 80-100% within 0.5%. Chosen value: all 12 hidden stars must have period within 0.5% of truth (or NA where applicable), meaning 100% at 0.5% tolerance. This is at the strict end of the fair range because the conventions fully specify the procedure; the challenge is implementing it correctly, not approximating.",
+  "quirk_matrix": "{\"dimensions\": {\"period_vs_alias\": [\"far\", \"near\", \"almost_exactly_1_day\"], \"observing_nights\": [\"many\", \"few\", \"few_with_gaps\"], \"comparison_stars\": [\"stable\", \"one_variable\", \"one_saturated\"]}, \"mix\": \"about 30% easy cells (far alias + many nights + stable comp), the rest covering harder combinations; each hidden instance has one level per dimension, ensuring near-alias and bad-comp cases appear frequently\"}",
+  "public_tests": "Two clean stars with non-alias periods (seeds 200, 201), each with 5-6 nights and stable comparison stars. Tests verify period within 1% and mean_mag within 0.05 mag. Located in /app/tests_public/run_public_tests.py. These cover basic pipeline correctness (CSV parsing, differential photometry, Lomb-Scargle, output format) but NOT alias rejection, comparison star vetting, HJD correction, the NA rule, or amplitude from the 3-harmonic model.",
+  "anti_cheese": "Hidden stars are generated from fresh seeds unknown to the agent; hard-coding practice-star periods or magnitudes fails immediately. The catalogue file is checked for byte-identical preservation after reduce.py runs, preventing the agent from altering comparison star properties to avoid the selection logic. A hidden test also verifies that reduce.py does not import or read anything under /tests/ or /solution/. The sentence 'Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.' appears at the end of instruction.md.",
+  "graded_instances": "The 12 graded instances are generated by the same simulator used for practice data, but from sibling seeds 43-54. Each seed produces a field with 1-3 target stars and 5-8 comparison stars. The star properties (periods, amplitudes, positions), comparison star configurations, and observation patterns differ from the practice set. The simulator is verified to be deterministic (test_determinism: same seed produces byte-identical CSVs) and seed-sensitive (test_seed_sensitivity: different seeds produce different catalog_mag values and periods). The hidden instances include a higher proportion of near-alias periods (5 out of 12) and more combinations of quirks (e.g., near-alias + variable comp, near-alias + long baseline requiring HJD) than the practice set.",
+  "self_check_gap": "A pipeline that reproduces every practice star's magnitudes and periods can still fail on hidden near-alias stars where the 1-day alias has even more power relative to the true peak (e.g., because the hidden observations are more uniformly spaced at ~1-day intervals, strengthening the spectral window at 1 cycle/day). The practice set includes 6 near-alias stars where the alias rejection procedure succeeds, establishing that the agent has implemented it. The gap is that hidden near-alias stars can have alias/true power ratios closer to 1.0, requiring the chi-squared comparison to be computed precisely (correct HJD, correct 3-harmonic fit, correct reduced chi-squared formula using measurement errors). An agent that got the practice stars right by a comfortable margin but implemented the chi-squared comparison sloppily (e.g., wrong number of harmonics, not using HJD-corrected times, not weighting by flux_err) may fail on the harder hidden cases. Additionally, hidden fields may have different comparison star configurations (e.g., both C007-equivalent and C006-equivalent rejected, requiring use of a third-tier comp) that the practice field's single configuration only hints at.",
+  "contract": [
+    "Entry point: python3 /app/reduce.py NIGHTS_DIR writes /app/out/stars.csv",
+    "One row per target star: star_id, period_days, amplitude_mag, mean_mag",
+    "period_days: 6 significant figures (e.g., 0.770000, 1.23457, or 1.23457e+01) or the string NA",
+    "amplitude_mag: 3 decimal places (e.g., 0.300) or NA",
+    "mean_mag: 3 decimal places (e.g., 12.500) or NA",
+    "Periods within 0.5% of the true period for stars with >=3 nights and a valid comparison star",
+    "Mean magnitudes within 0.02 mag of the true mean for stars with a valid comparison star",
+    "Stars with fewer than 3 nights of data get period_days=NA; amplitude_mag and mean_mag are still computed if a valid comp exists",
+    "Stars with no valid comparison star get period_days=NA, amplitude_mag=NA, mean_mag=NA",
+    "Exit status 0 in all cases including when some stars have NA values",
+    "Rows sorted by star_id (lexicographic)",
+    "Header row included: star_id,period_days,amplitude_mag,mean_mag"
+  ],
+  "invisible_traps": [
+    {
+      "trap": "A 1-day alias period fits the data almost as well as the true period and produces a plausible-looking phase-folded light curve. Without the conventions' alias rejection procedure (chi-squared comparison), the highest periodogram peak may be the alias.",
+      "stated_in": "Conventions \u00a74 window-function alias check: 'Compute the 1-day alias periods... If any alias period has periodogram power within 50% of the best peak's power... select the period with the lower reduced chi-squared.'"
+    },
+    {
+      "trap": "Forgetting the heliocentric JD correction produces no error and magnitudes look correct, but the slight timing errors add phase scatter that can cause the alias rejection to fail on near-alias stars (the true period's chi-squared advantage is eroded).",
+      "stated_in": "Conventions \u00a71: 'All timestamps must be converted from Julian Date (JD) to Heliocentric Julian Date (HJD) before period analysis.'"
+    },
+    {
+      "trap": "Using the brightest comparison star (which is saturated) gives magnitudes that are systematically offset but look plausible. The flux is >50000 ADU so the non-linear detector response corrupts the instrumental magnitude.",
+      "stated_in": "Conventions \u00a72: 'Reject any comparison star whose flux exceeds 50,000 ADU in any single observation.'"
+    },
+    {
+      "trap": "Using the second-brightest comparison star (which is variable) introduces spurious variability into all target light curves, shifting mean magnitudes and distorting periodograms. The star looks like a valid comp at first glance.",
+      "stated_in": "Conventions \u00a72: 'Reject any comparison star with \u03c3(m_inst) > 0.03 mag across nights.'"
+    },
+    {
+      "trap": "Applying the airmass correction with the wrong sign (adding instead of subtracting k\u00b7\u0394X) produces magnitudes that are offset by up to 0.15 mag for high-airmass observations, exceeding the 0.02 mag tolerance.",
+      "stated_in": "Conventions \u00a73: '\u0394m_corr = \u0394m - k\u00b7(X_target - X_comp), where k = 0.15 mag/airmass.' The minus sign is explicit."
+    },
+    {
+      "trap": "Computing amplitude from the raw peak-to-peak range of observed magnitudes instead of the 3-harmonic model overestimates amplitude due to outliers and phase gaps. The output looks plausible but fails the amplitude tolerance.",
+      "stated_in": "Conventions \u00a75: 'amplitude_mag: half the peak-to-peak range of the best-fit 3-harmonic Fourier model evaluated at 100 evenly-spaced phases.'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "s1 (seed 43)",
+      "quirks": "period_vs_alias=near, observing_nights=many, comparison_stars=stable",
+      "purpose": "Alias rejection with good data: the alias has ~85% of the best peak's power; true period wins on chi-squared."
+    },
+    {
+      "instance": "s2 (seed 44)",
+      "quirks": "period_vs_alias=almost_exactly_1_day, observing_nights=many, comparison_stars=stable",
+      "purpose": "Hardest alias case: true period 1.06d, alias at ~17d; the long-period alias has significant power."
+    },
+    {
+      "instance": "s3 (seed 45)",
+      "quirks": "period_vs_alias=near, observing_nights=few_with_gaps, comparison_stars=stable",
+      "purpose": "Alias rejection with sparse data: only 3 nights with a 20-day gap; the alias and true period are close in chi-squared."
+    },
+    {
+      "instance": "s4 (seed 46)",
+      "quirks": "period_vs_alias=near, observing_nights=many, comparison_stars=one_saturated",
+      "purpose": "Combined alias + saturated comp: must reject brightest comp and implement alias rejection."
+    },
+    {
+      "instance": "s5 (seed 47)",
+      "quirks": "period_vs_alias=far, observing_nights=few, comparison_stars=stable",
+      "purpose": "NA rule: 2 nights only, period must be NA."
+    },
+    {
+      "instance": "s6 (seed 48)",
+      "quirks": "period_vs_alias=far, observing_nights=few_with_gaps, comparison_stars=stable",
+      "purpose": "NA rule with long baseline: 2 nights separated by 100 days; period must still be NA despite spurious peak."
+    },
+    {
+      "instance": "s7 (seed 49)",
+      "quirks": "period_vs_alias=far, observing_nights=few, comparison_stars=one_variable",
+      "purpose": "Sparse data + variable comp: must reject variable comp and report NA period."
+    },
+    {
+      "instance": "s8 (seed 50)",
+      "quirks": "period_vs_alias=far, observing_nights=few_with_gaps, comparison_stars=one_saturated",
+      "purpose": "Sparse data + saturated comp: must reject saturated comp and report NA period with correct mean_mag."
+    },
+    {
+      "instance": "s9 (seed 51)",
+      "quirks": "period_vs_alias=far, observing_nights=many, comparison_stars=one_saturated",
+      "purpose": "Saturated comp rejection: brightest comp has flux >50000 ADU; must use second-brightest valid comp for correct mean_mag."
+    },
+    {
+      "instance": "s10 (seed 52)",
+      "quirks": "period_vs_alias=far, observing_nights=many, comparison_stars=one_variable",
+      "purpose": "Variable comp rejection: brightest non-saturated comp has \u03c3>0.03 mag; must reject it for correct mean_mag and period."
+    },
+    {
+      "instance": "s11 (seed 53)",
+      "quirks": "period_vs_alias=near, observing_nights=many, comparison_stars=one_variable",
+      "purpose": "Combined alias + variable comp: must reject variable comp AND implement alias rejection; most complex case."
+    },
+    {
+      "instance": "s12 (seed 54)",
+      "quirks": "period_vs_alias=near, observing_nights=many, comparison_stars=stable",
+      "purpose": "HJD-sensitive alias: long baseline (180 days) + near-alias period; without HJD the alias wins on chi-squared."
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Increase proportion of near-alias hidden stars from 5/12 to 8/12",
+      "Tighten period tolerance from 0.5% to 0.2%",
+      "Tighten mean_mag tolerance from 0.02 to 0.01 mag",
+      "Add hidden stars where both saturated and variable comps exist and the third-brightest is the first valid one"
+    ],
+    "too_hard": [
+      "Loosen period tolerance from 0.5% to 1.0%",
+      "Add a third clean practice star with many nights so the agent can verify basic pipeline more thoroughly before tackling aliases",
+      "Reduce near-alias hidden stars from 5/12 to 3/12",
+      "Loosen mean_mag tolerance from 0.02 to 0.05 mag"
+    ]
+  },
+  "seed_card": "topic: Reduce raw light curves from a small telescope into calibrated magnitudes and a period estimate\n  for each variable star, following the observatory's reduction conventions.\nshape: scientific pipeline with conventions; graded on hidden nights and stars\nagent_cannot_verify: Period aliases (1-day aliasing) and comparison-star selection only show on stars\n  whose true period is near an alias; the visible stars are well behaved.\ncontract:\n- 'entry point: python3 /app/reduce.py NIGHTS_DIR writes /app/out/stars.csv'\n- 'one row per star: star_id, period_days (6 significant figures), amplitude_mag, mean_mag (3 decimals)'\n- periods within 0.5% of the true period; magnitudes within 0.02 mag\n- stars with fewer than 3 nights get period 'NA' and exit status stays 0\n- times are heliocentric Julian dates as the conventions document states\ninvisible_traps:\n- trap: a 1-day alias period fits the data almost as well and looks plausible\n  stated_in: the conventions' window-function alias check\n- trap: forgetting the heliocentric correction shifts periods slightly for long baselines\n  stated_in: the conventions' time-system section\ngraded_instances: the agent gets light curves for 6 practice stars; the hidden tests simulate 12 new stars\n  and nights from sibling seeds in tests/ (same simulator, more near-alias periods) and know their true\n  periods and magnitudes; they check the simulator is deterministic and seed-sensitive\ninstance_plan:\n- instance: s1-s4\n  quirks: 'period vs alias: near'\n  purpose: alias rejection\n- instance: s5-s8\n  quirks: few nights with gaps\n  purpose: sparse coverage and NA rule\n- instance: s9-s12\n  quirks: comparison star saturated or variable\n  purpose: comparison selection\ndial: period tolerance and the share of hidden stars that must be within it; fair range 80-100% within\n  0.5%.\nquirk_matrix:\n  period vs alias:\n  - far\n  - near\n  - almost exactly 1 day\n  observing nights:\n  - many\n  - few\n  - few with gaps\n  comparison stars:\n  - stable\n  - one variable\n  - one saturated\n  mix: about 30% easy cells\nself_check_gap: a pipeline matching every practice star's magnitudes and periods can still pick the one-day\n  alias on a star whose practice nights never cover a full cycle; the conventions document states the\n  period-search rule and the practice set holds one star where the alias and the true period both fit\n  two nights but only the true period fits all three\nhidden_case_evidence:\n- 'each star type: practice stars with 3 nights'\n- 'alias vs true period: one practice star where only the true period fits all nights'\n- 'comparison-star rule and zero point: the conventions document (data cannot show the convention)'\nanswer_source: inferred\nstated_facts:\n- fact: the observatory's reduction conventions (comparison stars, zero point, period search range)\n  why: conventions are chosen by the observatory; the light curves cannot show them\nreference_access: none\nquirk_evidence:\n- quirk: period vs alias\n  evidence: the observatory's reduction conventions document; a practice star with an alias\n- quirk: observing nights\n  evidence: practice nights with gaps\n- quirk: comparison stars\n  evidence: the conventions document's comparison-star rule; practice nights with a variable comparison\npublic_tests: 'about 30%: two visible stars with clean, non-alias periods'\nanti_cheese: hidden stars from fresh seeds within the period tolerance AND the catalogue unchanged\nground_truth: light curves come from a seeded simulator of the stars and nightly conditions in tests/;\n  true periods and magnitudes are known there.\nchecks:\n- differential photometry against the stated comparison stars\n- airmass correction using the documented extinction coefficient\n- alias rejection using the documented window function check\n- heliocentric time correction as the conventions state\n- 'output: one row per star with period, amplitude and mean magnitude'\nknobs:\n- knob: convention trap\n  fairness: the observatory's conventions document states time system and magnitude zero point\n- knob: varied hidden draws\n  fairness: hidden stars from the same simulator, including near-alias periods\nmust_keep:\n- the observatory's catalogue file is read-only\nenvironment: python:3.12-slim with numpy and scipy; CSV light curves; no network.\nout_of_bounds:\n- physics not described in the conventions\n- noise beyond the stated photometric error\nprecheck:\n- confirm a naive periodogram fails on near-alias stars and the oracle passes\nadjust_rules:\n  too_easy:\n  - more near-alias stars\n  - tighten the period tolerance toward 0.2%\n  too_hard:\n  - one near-alias practice star\n  - loosen the tolerance toward 1%\n",
+  "crux": "The pipeline must implement every step of the observatory's conventions exactly \u2014 especially the invisible steps (HJD correction, alias rejection chi-squared comparison, comparison star vetting) that produce no error when done wrong but silently corrupt results for specific star configurations.",
+  "expected_agent_steps": null
+}

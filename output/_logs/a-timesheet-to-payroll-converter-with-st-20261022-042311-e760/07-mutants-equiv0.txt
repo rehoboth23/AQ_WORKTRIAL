@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Create a CSV with a shift spanning Chicago's DST spring-forward: Employee ID,Clock In,Clock Out\\nE1,2024-03-10T01:00:00,2024-03-10T10:00:00. Correct code interprets these as Chicago time (01:00 CST to 10:00 CDT = 8 elapsed hours, since 2AM jumps to 3AM), yielding 8.00 reg hours and $200.00 gross. Mutant treats them as UTC (01:00 UTC to 10:00 UTC = 9 hours), yielding 8.00 reg + 1.00 daily OT and $237.50 gross.",
+ "reason": "The mutant uses UTC instead of America/Chicago, so DST transitions cause duration miscalculation. During Chicago's spring-forward (March 10, 2024), a shift from 01:00–10:00 loses an hour in Chicago but not in UTC, producing 8h vs 9h and different payroll output."}
+```

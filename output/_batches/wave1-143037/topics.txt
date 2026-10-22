@@ -1,0 +1,4 @@
+@seeds/microgrid-forecast.yaml
+@seeds/reaction-kinetics.yaml
+@seeds/variable-stars.yaml
+@seeds/excise-return.yaml

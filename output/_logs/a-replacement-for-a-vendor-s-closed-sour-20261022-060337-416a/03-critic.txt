@@ -1,0 +1,234 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads /app/sample.txt, finds ~25 orders covering all input kinds but WITHOUT boundary values (qty=15 not 10, subtotal=$900 not $500, etc.).",
+    "Agent runs each sample order through feecalc, collecting stdout/stderr/exit-code for all 25 cases. From these alone they learn: basic 12-field output format, error message format, that government shows TAXABLE=0.00, that tax_exempt shows TAXABLE=0.00, that OR has 0% tax, that food in TX is taxed, that clothing in NY is taxed, that medicine in MA is exempt, that ACH can produce negative surcharge, that FREESHIP sets SHIPPING=0.00 (but FUEL might be overlooked at zone 1 since it's small), that invalid coupon gives exit 0.",
+    "Agent begins implementing and tests against the binary. First gap: they don't know the full exemption table. They probe food in each state: CA→exempt, NY→exempt, MA→exempt, PA→exempt, others→taxed. They probe clothing in each state: only PA→exempt. They probe medicine in each state: most exempt, but WA→TAXED (surprise, DP6). A less thorough agent who only tests medicine in 2-3 states misses the WA exception.",
+    "Agent probes quantity boundaries: qty=9→no discount, qty=10→5% discount (inclusive, DP5). Probes bulk boundaries: subtotal $499→no bulk, $500→3% (inclusive, DP6). But must also discover bulk is on POST-qty-discount subtotal: an order with qty=50@$10 ($500 raw, $450 after qty disc) gets NO bulk discount, revealing DP6's interaction.",
+    "Agent tests rounding: CA $2.00 taxable→TAX=0.15 (not 0.14), discovering round-half-away-from-zero (DP1). Tests SAVE20 with subtotal=$105 after qty discount=$100.01→coupon applies, but $100.00 after qty discount→coupon denied (DP7, coupon min on post-discount).",
+    "Agent tests FREESHIP at zone 1: SHIPPING=0.00, FUEL=0.00. But fuel was only $0.50 anyway—did FREESHIP zero it or was it just 10% of $0? Agent must test FREESHIP at overnight zone 5 to see FUEL=0.00 instead of $6.00 (DP8). A careless agent might assume fuel is computed from original shipping.",
+    "Agent tests high-quantity orders: 17 items→HANDLING=10.00 (capped from 10.50), 16 items→HANDLING=10.00 (exactly $10, not capped). Discovers strict cap (DP9). Similarly overnight zone 5→FUEL=5.00 (capped from 6.00, DP9).",
+    "Agent tests small order: subtotal=$20→SMALL_ORDER_FEE=5.00. Tests with coupon: subtotal=$20 + SAVE10→fee still $5.00 (pre-discount trigger, DP10). Tests government with $20 order→SMALL_ORDER_FEE=0.00 (government waiver, DP10). A less thorough agent who doesn't test government+small misses the waiver.",
+    "Agent tests wholesale at various subtotals: $300→no bulk, $260→3% bulk discount! Discovers halved bulk thresholds for wholesale (DP12). An agent who only tests wholesale at $300+ misses this entirely.",
+    "Agent tests validation: input missing STATE and with unknown state→which error first? Discovers missing-field errors checked before semantic errors (DP14). An agent who doesn't create multi-error inputs never discovers the priority.",
+    "Agent likely misses 2-4 of the harder DPs: medicine-WA exception (must test all 10 states with medicine), wholesale halved thresholds (must test wholesale at $250-$499), government small-order waiver (must combine government type with small subtotal), and validation priority (must craft multi-error inputs). Each requires a different probing strategy."
+  ],
+  "too_easy_because": [
+    "Original sample includes boundary values explicitly (qty 9,10,49,50,100; subtotals ~$25,~$500,~$1000), making DP7 and DP8 directly observable from the sample without probing.",
+    "DP6 (medicine exempt everywhere) matches what a reasonable programmer would assume—no one gets this wrong, so it's not a real decision point.",
+    "Sample covers all 10 states with all 4 categories, making most state-category exemptions directly readable from sample output—food in CA/NY/MA/PA, clothing in PA are all visible without extra probing.",
+    "Several DPs (DP2 government TAXABLE=0, DP11 invalid coupon no error, DP15 ACH negative) are directly visible from single sample orders, requiring no probing at all.",
+    "No stateful or cross-order behavior means all rules are discoverable from independent single-order probes, reducing combinatorial complexity."
+  ],
+  "spec": {
+    "name": "vendor-fee-calculator-replacement",
+    "description": "Reverse-engineer a stripped binary's tax and fee calculation rules and reimplement them as a Python program producing identical quotes for any order.",
+    "difficulty": "hard",
+    "category": "software-engineering",
+    "tags": [
+      "reverse-engineering",
+      "tax-calculation",
+      "rounding",
+      "black-box",
+      "python",
+      "cli"
+    ],
+    "expert_time_estimate_min": 90.0,
+    "junior_time_estimate_min": 240.0,
+    "base_image": "ubuntu:24.04",
+    "scenario": "A vendor's closed-source tax-and-fee calculator binary (feecalc) is installed on the system. The company's procurement team has been told to replace it with an open Python implementation before the vendor contract expires. No source code, no documentation—only the binary and a folder of sample orders. An engineer must systematically probe the binary to discover every rule (tax rates, exemptions, discount tiers, coupon logic, fee caps, rounding mode, error messages), then build a Python program that produces byte-identical output for any order of the same kinds.",
+    "environment_setup": "A multi-stage Dockerfile builds a C reference program (environment/reference.c, ~320 lines, stdlib only) with gcc -O2, strips it, and installs the binary at /usr/local/bin/feecalc. The final image (ubuntu:24.04) has python3 and gcc installed. A sample file /app/sample.txt contains ~25 example orders separated by lines containing only ===, covering every input kind but with non-boundary values: all 10 states (CA, TX, NY, FL, WA, OR, MA, IL, PA, OH), all 3 customer types, tax_exempt flag, all 4 item categories (general, food, clothing, medicine), quantities well within tiers (5, 15, 60), subtotals well within tiers ($100, $300, $900), all 5 coupon codes plus invalid, all 3 shipping methods, all 5 zones, all 5 payment methods, and all 7 error cases. Food items appear only in TX (taxed) in the sample; clothing appears only in NY (taxed); medicine appears only in MA (exempt). Government orders use subtotals above $25. Wholesale orders use subtotals below $250. The sample does NOT contain exact boundary quantities, subtotals, or the specific state-category combinations that reveal all exemptions. The reference source is never in the final image. The binary uses integer cents internally with round-half-away-from-zero arithmetic, making rounding behavior deterministic and distinguishable from Python's default banker's rounding.",
+    "instruction_summary": "Create /app/quotelib.py that reads the same text-based order format as feecalc from stdin (key=value lines for STATE, TYPE, TAX_EXEMPT, PAYMENT, SHIP_METHOD, SHIP_ZONE, COUPON; 'ITEM <category> <quantity> <unit_price>' lines for items) and writes 12 key=value output lines (SUBTOTAL, QTY_DISCOUNT, BULK_DISCOUNT, COUPON_DISCOUNT, TAXABLE, TAX, SHIPPING, FUEL, HANDLING, SMALL_ORDER_FEE, PAYMENT_SURCHARGE, TOTAL) with amounts formatted to exactly 2 decimal places. On validation error, write 'ERROR: ...' to stderr and exit 1 with no stdout. On success exit 0. The program must produce exactly the same stdout, stderr, and exit status as /usr/local/bin/feecalc for any input of the kinds in /app/sample.txt. It must not call feecalc or any external program. The binary will be unavailable when checked. The program should also be importable as a module (from quotelib import calculate where calculate(text:str)->str raises ValueError on invalid input). The agent is told to probe the binary systematically and that /app/sample.txt contains multiple orders separated by === lines, each block fed individually to feecalc.",
+    "solution_outline": [
+      "Write /app/quotelib.py implementing the full calculation pipeline in Python using integer cents and a round-half-away-from-zero helper (matching C's round() for positive and negative values).",
+      "Parse input lines: STATE=, TYPE=, TAX_EXEMPT=, PAYMENT=, SHIP_METHOD=, SHIP_ZONE=, COUPON=, ITEM lines. Ignore blank and unknown lines.",
+      "Validate in strict priority order: missing STATE, missing TYPE, missing PAYMENT, missing SHIP_METHOD, missing SHIP_ZONE, no items, unknown state, unknown type, unknown payment, unknown shipping method, invalid zone (not 1-5), negative quantity (first offending item), negative price (first offending item). Each error writes exact message to stderr and exits 1. Only the first error in priority order is reported.",
+      "Compute per-item: ext_cents = quantity * price_cents. Quantity discount: >=50 → 10%, >=10 → 5%, else 0, rounded half-up per line. Boundaries are inclusive.",
+      "Subtotal = sum of ext_cents. Bulk discount: for retail/government, subtotal >= $1000 → 5%, >= $500 → 3%; for wholesale, subtotal >= $500 → 5%, >= $250 → 3%. Bulk discount is applied to the post-quantity-discount subtotal (not the original), rounded half-up. Boundaries are inclusive.",
+      "Coupon: look up code in internal table. SAVE10 (10% percent, no min), SAVE20 (20% percent, min $100 post-qty-and-bulk-discount subtotal), DOLLAR5 ($5 fixed, min $50 post-discount), DOLLAR25 ($25 fixed, min $200 post-discount), FREESHIP (zeroes shipping and fuel). Invalid code = no discount, not an error, exit 0. Minimum checked against subtotal after qty+bulk discounts.",
+      "Exempt amount: sum of (ext - qty_disc) for food items in CA/NY/MA/PA, clothing items in PA, medicine items in all states EXCEPT WA (medicine is taxed in WA). Uses post-qty-discount extension.",
+      "Taxable = discounted_subtotal - exempt_amount + shipping (only in TX/FL/OH). If government type or tax_exempt=true: TAX=0, TAXABLE=0. Otherwise tax = round_half_up(taxable * rate_bp / 10000).",
+      "State rates in basis points: CA 725, TX 625, NY 800, FL 600, WA 650, OR 0, MA 625, IL 625, PA 600, OH 575.",
+      "Shipping table: standard [5.00, 8.50, 12.00, 15.50, 20.00], express [10.00, 15.00, 20.00, 25.00, 32.00], overnight [20.00, 28.00, 38.00, 48.00, 60.00] by zone 1-5.",
+      "Fuel = 10% of shipping rounded half-up, capped at $5.00 (strictly greater than $5 is reduced to $5; exactly $5 is unchanged). Handling = $2.00 + $0.50 * total_quantity, capped at $10.00 (strictly greater than $10 is reduced to $10; exactly $10 is unchanged). Small order fee = $5.00 if pre-discount subtotal < $25.00, waived entirely for government customers.",
+      "Payment surcharge rates: credit_card 2.5%, debit 0%, ach -0.5%, cash 0%, gift_card 1%. Applied to (discounted_subtotal + tax + shipping + fuel + handling + small_order_fee), rounded half-up.",
+      "Total = total_before + payment_surcharge. Output all 12 fields with %.2f formatting. Also provide importable calculate(text)->str that raises ValueError with the error message on invalid input."
+    ],
+    "test_plan": [
+      "test_artifact_exists: Assert /app/quotelib.py exists and is a valid Python file.",
+      "test_module_importable: Run /usr/bin/python3 -c 'import sys; sys.path.insert(0,\"/app\"); import quotelib; assert hasattr(quotelib, \"calculate\")' to verify the module interface.",
+      "test_compiled_reference: Compile /tests/reference.c with gcc -O2 -std=c11 to /tmp/_reftest_bin, assert compilation succeeds.",
+      "test_binary_hidden: Rename /usr/local/bin/feecalc to /usr/local/bin/feecalc.hidden before running artifact; assert it is gone from original path. Restore after tests.",
+      "test_generated_cases: Import gen_cases.py (fixed seed 42, ~500 inputs covering all input kinds including boundary and tie values). For each input, run /tmp/_reftest_bin and /usr/bin/python3 /app/quotelib.py, compare stdout, stderr, and exit code. Fail on first mismatch with full diagnostic.",
+      "test_sample_inputs: Read /app/sample.txt, split on === lines, feed each non-empty block to both programs, compare stdout+stderr+exit code.",
+      "test_rounding_half_up: Specific inputs that produce exact ties: CA $2.00 taxable (tax=0.15 not 0.14), WA $1.00 (tax=0.07 not 0.06), TX $0.08 (tax=0.01 not 0.00), CA $10.00 (tax=0.73 not 0.72), OH $6.00 (tax=0.35 not 0.34). Compare reference vs artifact.",
+      "test_tax_exempt_taxable_zero: Government and tax_exempt=true customers must show TAXABLE=0.00 and TAX=0.00 even with large orders. Compare with OR (0% rate) which shows nonzero TAXABLE.",
+      "test_shipping_taxed: TX, FL, OH orders where TAXABLE includes shipping amount; compare with CA/NY/etc where it does not.",
+      "test_category_exemptions_all_states: Food items tested in all 10 states: exempt only in CA/NY/MA/PA. Clothing in all states: exempt only in PA. Medicine in all states: exempt everywhere EXCEPT WA (taxed at WA's 6.5% rate). This is the most thorough exemption test.",
+      "test_medicine_in_wa: WA state order with medicine items must show TAXABLE including medicine (not exempt). Compare with same order in any other state where medicine is exempt.",
+      "test_quantity_discount_boundaries: Quantities 9 (no discount), 10 (5%), 49 (5%), 50 (10%), 100 (10%). Verify QTY_DISCOUNT field.",
+      "test_bulk_discount_boundaries: Subtotals $499.99 (no bulk), $500.00 (3%), $999.99 (3%), $1000.00 (5%) for retail/government. Verify BULK_DISCOUNT and that it applies to post-qty-discount subtotal.",
+      "test_wholesale_bulk_thresholds: Wholesale orders at $249.99 (no bulk), $250.00 (3%), $499.99 (3%), $500.00 (5%). Compare with same subtotals for retail (which get no bulk / 3% respectively).",
+      "test_coupon_logic: SAVE10 (always applies), SAVE20 (min $100 post-discount), DOLLAR5 (min $50), DOLLAR25 (min $200), FREESHIP (zeroes shipping+fuel), invalid code (no discount, exit 0). Test minimum boundary with discounted subtotals just above and below thresholds.",
+      "test_freeship_fuel: FREESHIP with overnight zone 5 ($60 shipping): verify both SHIPPING=0.00 AND FUEL=0.00 (not 6.00).",
+      "test_fee_caps: Overnight zone 5 (shipping $60 → fuel capped at $5.00); 17 items (handling $10.50 → capped at $10.00); 16 items (handling $10.00, not capped). Verify strict > semantics.",
+      "test_small_order_fee: Subtotal $24.99 (fee=$5), $25.00 (fee=$0), small order with coupon (fee still $5, based on pre-discount subtotal). Government customer with subtotal $20.00 (fee=$0, waived).",
+      "test_payment_methods: All 5 methods including ACH (negative surcharge). Verify PAYMENT_SURCHARGE sign and rounding.",
+      "test_error_priority: Inputs with multiple validation errors (e.g., missing STATE + unknown payment + negative quantity) must report only the first error in priority order (missing fields before semantic errors before value errors).",
+      "test_error_cases: Unknown state, negative quantity, negative price, unknown payment, unknown shipping method, invalid zone (0 and 9), no items, missing STATE/TYPE/PAYMENT/SHIP_METHOD/SHIP_ZONE. Compare exact stderr and exit code."
+    ],
+    "anti_cheat": "The reference C source is only in the builder stage of the Dockerfile and in tests/reference.c; it is never in the final image the agent sees. The binary is stripped (no symbol table, no debug info). Tests rename /usr/local/bin/feecalc before running the artifact, so the artifact cannot shell out to it. The compiled reference binary used by tests is at a non-obvious temp path the artifact cannot discover. The generated test inputs use a fixed seed in gen_cases.py which is in tests/ (never visible to the agent), so the artifact cannot hard-code expected outputs. The 500 generated inputs include boundary values (qty 9/10/49/50, subtotals $499/$500/$999/$1000, wholesale $249/$250/$499/$500), rounding ties, medicine-in-WA cases, government small orders, and multi-error inputs that only a correct implementation handles. Any solution that outputs nothing, deletes files, or hard-codes the sample outputs fails on the generated cases. The agent must implement the full calculation pipeline to pass.",
+    "failure_modes": "A capable agent is likely to fail in these ways, all due to insufficient probing: (1) Using Python's built-in round() which uses banker's rounding (half-even) instead of half-up; fails on tie cases. (2) Assuming TAXABLE shows the taxable base even for exempt customers; fails because the binary outputs TAXABLE=0.00 for government/tax_exempt. (3) Not discovering that TX/FL/OH add shipping to the taxable amount; fails on those states. (4) Missing the WA medicine exception—assuming medicine is exempt everywhere; fails on WA+medicine test cases. (5) Not probing wholesale at $250-$499 subtotal range and missing the halved bulk thresholds; fails on wholesale bulk cases. (6) Not testing government customers with small orders and missing the small-order-fee waiver; fails on government+small-order cases. (7) Applying bulk discount on pre-quantity-discount subtotal; fails on orders with both discounts. (8) Checking coupon minimums against pre-discount subtotal; fails on boundary cases. (9) Missing that FREESHIP zeroes fuel as well as shipping; fails on FREESHIP+high-shipping cases. (10) Getting the strict cap semantics wrong (>= vs >) for handling or fuel; fails at exact-cap quantities. (11) Not probing validation error priority and reporting the wrong error for multi-error inputs; fails on error-priority tests. Each failure stems from not running enough probing inputs to discover a rule that is observable but not obvious.",
+    "faults": [],
+    "requirements": [],
+    "themes": [],
+    "starter": "",
+    "spec_document": "",
+    "property": "",
+    "reported_symptom": "",
+    "sites": [],
+    "partial_fix": "",
+    "preserved_behaviours": [],
+    "decoys": [],
+    "hidden_edge_cases": [],
+    "why_not_textbook": "",
+    "static_read": "",
+    "crux": "",
+    "challenge_kind": "executable_reference",
+    "sequence_invariant": "",
+    "nameable_fix": "",
+    "self_check_blind_spot": "",
+    "reference_in_environment": "",
+    "interaction": "",
+    "runnable_reference": "",
+    "failing_state": "",
+    "end_state": [],
+    "obstacles": [],
+    "shortcut_guards": [],
+    "offline": "",
+    "domain": "",
+    "standards": [],
+    "knowledge_points": [],
+    "verifier_packages": [],
+    "reference_check": "",
+    "black_box_kind": "calculator",
+    "artifact_kind": "cli",
+    "reference_language": "c",
+    "reference_binary": "/usr/local/bin/feecalc",
+    "interface": "Reads text lines from stdin: 'STATE=<2-letter code>', 'TYPE=<retail|wholesale|government>', 'TAX_EXEMPT=<true|false>' (optional), 'PAYMENT=<credit_card|debit|ach|cash|gift_card>', 'SHIP_METHOD=<standard|express|overnight>', 'SHIP_ZONE=<1-5>', 'COUPON=<code>' (optional), 'ITEM <category> <quantity> <unit_price>' (one or more). On success: writes 12 lines to stdout (SUBTOTAL, QTY_DISCOUNT, BULK_DISCOUNT, COUPON_DISCOUNT, TAXABLE, TAX, SHIPPING, FUEL, HANDLING, SMALL_ORDER_FEE, PAYMENT_SURCHARGE, TOTAL) each as KEY=<amount> with 2 decimal places, exits 0. On error: writes 'ERROR: <message>' to stderr, nothing to stdout, exits 1. The Python artifact at /app/quotelib.py is invoked as 'python3 /app/quotelib.py' with the same stdin/stdout/stderr/exit-code contract.",
+    "sample_file": "/app/sample.txt",
+    "input_kinds": [
+      "valid_order_general_item",
+      "valid_order_food_category",
+      "valid_order_clothing_category",
+      "valid_order_medicine_category",
+      "quantity_discounted_order",
+      "bulk_discounted_order",
+      "coupon_percent",
+      "coupon_fixed",
+      "coupon_freeship",
+      "coupon_invalid",
+      "no_coupon",
+      "government_customer",
+      "tax_exempt_customer",
+      "wholesale_customer",
+      "small_order",
+      "error_unknown_state",
+      "error_negative_quantity",
+      "error_negative_price",
+      "error_unknown_payment_method",
+      "error_unknown_shipping_method",
+      "error_invalid_zone",
+      "error_no_items",
+      "error_missing_required_field"
+    ],
+    "decision_points": [
+      {
+        "behaviour": "All monetary rounding uses round-half-away-from-zero (ROUND_HALF_UP), not Python's default banker's rounding (half-even). Ties like 0.145 round to 0.15, not 0.14.",
+        "assumed_instead": "Python's round() is used, producing half-even results that differ on exact ties.",
+        "input_kind": "valid_order_general_item",
+        "observe": "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 2.00 — TAX=0.15 (not 0.14)"
+      },
+      {
+        "behaviour": "TAXABLE=0.00 and TAX=0.00 when customer type is government or TAX_EXEMPT=true, even though the order has taxable items. The TAXABLE field itself is zeroed, not just TAX.",
+        "assumed_instead": "TAXABLE shows the would-be taxable base and only TAX is zeroed.",
+        "input_kind": "government_customer",
+        "observe": "STATE=CA\nTYPE=government\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00 — TAXABLE=0.00 (not 100.00)"
+      },
+      {
+        "behaviour": "In TX, FL, and OH, the shipping fee is added to the taxable amount before computing sales tax. In all other states shipping is not taxed.",
+        "assumed_instead": "Shipping is never taxed, or is taxed in all states.",
+        "input_kind": "valid_order_general_item",
+        "observe": "STATE=TX\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00 — TAXABLE=105.00 (includes $5.00 shipping); same in CA gives TAXABLE=100.00"
+      },
+      {
+        "behaviour": "Category exemptions vary by state: food is exempt only in CA, NY, MA, PA (taxed in TX, FL, WA, OR, IL, OH); clothing is exempt only in PA; medicine is exempt in all states EXCEPT WA where it is taxed at the full rate.",
+        "assumed_instead": "Food is exempt everywhere or in different states; clothing exempt in more states; medicine exempt everywhere (including WA).",
+        "input_kind": "valid_order_medicine_category",
+        "observe": "STATE=WA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM medicine 1 10.00 — TAXABLE=10.00 (medicine taxed in WA); same order in CA gives TAXABLE=0.00"
+      },
+      {
+        "behaviour": "Quantity discount tiers are >= 10 (5%) and >= 50 (10%), with inclusive boundaries. A qty of exactly 10 gets 5%, exactly 50 gets 10%.",
+        "assumed_instead": "Threshold is > 10 (exclusive at 10), so qty=10 gets no discount.",
+        "input_kind": "quantity_discounted_order",
+        "observe": "ITEM general 10 10.00 — QTY_DISCOUNT=5.00; ITEM general 9 10.00 — QTY_DISCOUNT=0.00"
+      },
+      {
+        "behaviour": "Bulk discount is computed on the subtotal AFTER quantity discounts (not the original subtotal), with inclusive boundaries >= $500 (3%) and >= $1000 (5%) for retail/government.",
+        "assumed_instead": "Bulk discount is on the original pre-qty-discount subtotal, or boundaries are exclusive.",
+        "input_kind": "bulk_discounted_order",
+        "observe": "50 items @ $10.00: subtotal=$500, qty_disc=$50, post-qty=$450 → BULK_DISCOUNT=0.00 (below $500 threshold on post-qty amount); 55 items @ $10.00: post-qty=$495, still no bulk; 60 items @ $10.00: post-qty=$540 → BULK_DISCOUNT=16.20"
+      },
+      {
+        "behaviour": "Coupon minimum is checked against the post-quantity-and-bulk-discount subtotal, not the original subtotal.",
+        "assumed_instead": "Minimum is on the original subtotal before any discounts.",
+        "input_kind": "coupon_percent",
+        "observe": "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=SAVE20\nITEM general 20 5.00 — subtotal=$100, after qty disc $95, below $100 min → COUPON_DISCOUNT=0.00"
+      },
+      {
+        "behaviour": "FREESHIP coupon zeroes both the shipping fee and the fuel surcharge (fuel = 10% of $0.00 shipping = $0.00).",
+        "assumed_instead": "FREESHIP only zeroes shipping; fuel is still computed from the original shipping amount.",
+        "input_kind": "coupon_freeship",
+        "observe": "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=overnight\nSHIP_ZONE=5\nCOUPON=FREESHIP\nITEM general 1 10.00 — SHIPPING=0.00 and FUEL=0.00 (not 6.00)"
+      },
+      {
+        "behaviour": "Handling fee ($2.00 + $0.50 × total quantity) is strictly capped: amounts > $10.00 are reduced to $10.00; exactly $10.00 is unchanged. Fuel surcharge (10% of shipping) is strictly capped: amounts > $5.00 are reduced to $5.00; exactly $5.00 is unchanged.",
+        "assumed_instead": "No caps exist, or caps use >= (so $10.00 handling is capped to $10.00 too), or caps are inclusive.",
+        "input_kind": "valid_order_general_item",
+        "observe": "16 items (handling = 2.00 + 8.00 = 10.00) → HANDLING=10.00; 17 items (10.50) → HANDLING=10.00 (capped). Overnight zone 4 ($48 shipping, fuel = $4.80) → FUEL=4.80; overnight zone 5 ($60, fuel = $6.00) → FUEL=5.00 (capped)."
+      },
+      {
+        "behaviour": "Small order fee ($5.00) triggers when the pre-discount subtotal < $25.00 (not the post-discount subtotal). The fee is entirely waived for government customers even when the pre-discount subtotal is below $25.",
+        "assumed_instead": "Fee is based on post-discount subtotal, or government customers still pay the fee, or fee is never waived.",
+        "input_kind": "small_order",
+        "observe": "STATE=CA\nTYPE=government\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 20.00 — SMALL_ORDER_FEE=0.00 (waived); same with TYPE=retail → SMALL_ORDER_FEE=5.00"
+      },
+      {
+        "behaviour": "ACH payment method produces a negative payment surcharge (-0.5% of pre-payment total), reducing the final total. Other methods: credit_card +2.5%, gift_card +1%, debit/cash 0%.",
+        "assumed_instead": "All payment surcharges are non-negative, or ACH is 0%.",
+        "input_kind": "valid_order_general_item",
+        "observe": "STATE=CA\nTYPE=retail\nPAYMENT=ach\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00 — PAYMENT_SURCHARGE=-0.55 and TOTAL is less than pre-payment total"
+      },
+      {
+        "behaviour": "Wholesale customers have halved bulk discount thresholds: >= $250 → 3%, >= $500 → 5% (instead of the retail/government thresholds of >= $500 / >= $1000).",
+        "assumed_instead": "Wholesale customers use the same bulk thresholds as retail/government, or get a flat wholesale discount instead.",
+        "input_kind": "wholesale_customer",
+        "observe": "STATE=CA\nTYPE=wholesale\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 30 10.00 — subtotal=$300, BULK_DISCOUNT=9.00 (3% of $300); same order TYPE=retail → BULK_DISCOUNT=0.00"
+      },
+      {
+        "behaviour": "An unrecognized coupon code produces no discount and no error (exit 0, COUPON_DISCOUNT=0.00). It is silently ignored.",
+        "assumed_instead": "Invalid coupon code triggers an error (exit 1).",
+        "input_kind": "coupon_invalid",
+        "observe": "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=BOGUS\nITEM general 1 10.00 — exit 0, COUPON_DISCOUNT=0.00"
+      },
+      {
+        "behaviour": "Validation errors are checked in a strict priority order and only the first error is reported: missing STATE, missing TYPE, missing PAYMENT, missing SHIP_METHOD, missing SHIP_ZONE, no items, unknown state, unknown type, unknown payment, unknown shipping, invalid zone, negative quantity (first offending item), negative price (first offending item). Missing-field errors take priority over semantic errors.",
+        "assumed_instead": "Errors are checked in input order, or all errors are reported, or semantic errors (unknown state) are checked before missing fields.",
+        "input_kind": "error_missing_required_field",
+        "observe": "Input with no STATE, unknown PAYMENT=bitcoin, and ITEM general -1 10.00 → reports 'ERROR: missing STATE' (not unknown payment or negative quantity)"
+      }
+    ],
+    "shortcut_guard": "Tests compile a fresh reference binary from tests/reference.c (pristine source never in the image), rename /usr/local/bin/feecalc to feecalc.hidden before running the artifact so it cannot be called, and place the compiled reference at a non-obvious temp path. The 500 generated inputs use a fixed seed in gen_cases.py (in tests/, invisible to the agent) and include boundary values (qty 9/10/49/50, subtotals $499/$500/$999/$1000, wholesale $249/$250/$499/$500), rounding ties, medicine-in-WA cases, government small-order cases, FREESHIP-with-high-shipping cases, and multi-error inputs that only a correct full implementation passes. The artifact cannot hard-code outputs because it does not know which inputs will be tested. An artifact that outputs nothing or deletes files fails immediately. An artifact that tries to call the original binary gets 'file not found'. An artifact that tries strings/decompilation on the binary gets nothing useful (binary is stripped and hidden) and cannot discover numeric tables (rates, thresholds, caps) from strings alone."
+  }
+}
+```

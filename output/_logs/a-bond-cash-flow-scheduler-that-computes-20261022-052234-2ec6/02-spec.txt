@@ -1,0 +1,94 @@
+```json
+{
+  "name": "bond-cashflow-isda-conventions",
+  "description": "Fix a bond cash-flow scheduler with incorrect ISDA 2006 day-count and business-day convention implementations that produce wrong accrual fractions and payment dates",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["fixed-income", "isda", "day-count", "business-day", "accrual"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A fixed-income trading desk relies on a Python cash-flow scheduler to produce payment schedules for bond trades. The desk noticed discrepancies between their scheduler's output and their prime broker's confirmations. After investigation, the errors trace to four incorrect implementations of ISDA 2006 day-count and business-day conventions in the scheduler. The desk needs the scheduler fixed before end-of-day reconciliation.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 environment with /app/cashflow_scheduler.py (main program with 4 buggy convention functions), /app/trades.json (4 bond trades exercising each bug), and /app/holidays.py (correct US Federal Reserve holiday calendar 2023-2029). The scheduler uses only the Python standard library. Bug 1: day_count_30_360_bond_basis() always sets D2=31 to 30 regardless of D1, implementing 30E/360 instead of 30/360 Bond Basis. Bug 2: day_count_act_act_isda() uses a single denominator (366 if end-year is leap, else 365) instead of splitting at year boundaries. Bug 3: adjust_modified_following() always rolls to next business day without checking if that crosses a month boundary. Bug 4: day_count_30e_plus_360_isda() sets D2=31 to 30 instead of rolling to the first of the next month (D2=1, M2+=1).",
+  "instruction_summary": "Fix the four buggy ISDA 2006 convention implementations in /app/cashflow_scheduler.py. The conventions are: (1) 30/360 Bond Basis per ISDA 2006 §4.16(f), (2) Actual/Actual ISDA per ISDA 2006 §4.16(b), (3) 30E+/360 ISDA per ISDA 2006 §4.16(h), and (4) Modified Following per ISDA 2006 §4.11. The holiday calendar in /app/holidays.py is correct—do not modify it. After fixing, run: python3 /app/cashflow_scheduler.py — it reads /app/trades.json and writes /app/schedule.json. Each schedule entry must contain: trade_id (string), payment_date (YYYY-MM-DD, adjusted per business-day convention), accrual_start_date (YYYY-MM-DD, unadjusted), accrual_end_date (YYYY-MM-DD, unadjusted), accrual_fraction (float), payment_amount (float = face_value × coupon_rate × accrual_fraction).",
+  "solution_outline": [
+    "Fix day_count_30_360_bond_basis(): change unconditional 'if d2==31: d2=30' to 'if d2==31 and d1==30: d2=30' (applied after the d1==31→30 adjustment)",
+    "Fix day_count_act_act_isda(): replace single-denominator logic with loop that splits the period at Jan-1 boundaries, computing days_in_year/365_or_366 for each sub-period",
+    "Fix adjust_modified_following(): after rolling forward to next_business_day, check if result.month != original.month; if so, roll backward to prev_business_day instead",
+    "Fix day_count_30e_plus_360_isda(): when d2==31, set d2=1 and m2+=1 (normalizing year if m2>12), instead of setting d2=30",
+    "Run python3 /app/cashflow_scheduler.py to produce the corrected schedule.json"
+  ],
+  "test_plan": [
+    "test_trade_a_first_period_fraction: Trade A first period (2024-01-15 to 2024-07-31) accrual_fraction must equal 196/360 exactly — catches Bug 1 (wrong: 195/360)",
+    "test_trade_b_act_act_isda_leap_split: Trade B period (2023-11-15 to 2024-11-15) accrual_fraction must equal 47/365 + 319/366 ≈ 1.000900 — catches Bug 2 (wrong: 366/366 = 1.0)",
+    "test_trade_b_act_act_isda_reverse_leap: Trade B period (2024-11-15 to 2025-11-15) accrual_fraction must equal 47/366 + 318/365 ≈ 0.999655 — catches Bug 2 variant (wrong: 365/365 = 1.0)",
+    "test_modified_following_month_boundary: Trade A Jan 31 2026 (Saturday) payment_date must be 2026-01-29 (Thursday), not 2026-02-02 — catches Bug 3",
+    "test_modified_following_trade_d: Trade D May 31 2025 (Saturday) payment_date must be 2025-05-29, not 2025-06-02 — catches Bug 3 on another trade",
+    "test_trade_d_30eplus360: Trade D period (2024-11-30 to 2025-05-31) accrual_fraction must equal 181/360 — catches Bug 4 (wrong: 180/360)",
+    "test_trade_c_baseline: Trade C (30E/360 + Following) periods must all have fraction 180/360 = 0.5 — confirms correct conventions still work",
+    "test_payment_amounts: Several specific payment_amount values computed as face × rate × fraction must match to the cent",
+    "test_fresh_trade: Append a new trade (annual, ACT/ACT ISDA, 2024-06-30 to 2029-06-30) to trades.json, re-run scheduler, verify the period 2024-06-30 to 2025-06-30 fraction = 184/366 + 181/365 and Modified Following adjustments are correct — ensures fix is general, not hard-coded"
+  ],
+  "anti_cheat": "The fresh-trade test appends a bond not present in the original trades.json and re-runs the scheduler. A solution that hard-codes output for the 4 original trades fails this test. Accrual fractions are checked with math.isclose(rel_tol=1e-9), so approximate or rounded values are caught. Payment dates are parsed and compared as date objects, not strings, preventing format-only matches. The test also checks Trade C (correctly-implemented conventions) to catch agents who might break working code.",
+  "failure_modes": [
+    "Agent confuses 30/360 Bond Basis with 30E/360: always adjusts D2=31 to 30, missing the D1>=30 condition — the Jan-15-to-Jul-31 period gives 195 instead of 196",
+    "Agent implements ACT/ACT ISDA with a single denominator based on the end year: periods spanning a leap year boundary get the wrong fraction (e.g., 1.0 instead of 1.0009)",
+    "Agent implements Modified Following as Following: dates like Jan 31 2026 (Saturday) roll to Feb 2 instead of back to Jan 29",
+    "Agent confuses 30E+/360 ISDA with 30E/360: D2=31 becomes 30 instead of rolling to 1st of next month, losing 1 day of accrual per semi-annual period",
+    "Agent fixes one bug but breaks another: e.g., 'fixes' 30E/360 by making it conditional like 30/360 Bond Basis, breaking Trade C's baseline correctness"
+  ],
+  "challenge_kind": "domain_knowledge",
+  "domain": "fixed-income finance / ISDA conventions",
+  "standards": [
+    "ISDA 2006 Definitions Section 4.16(f) — 30/360 (Bond Basis)",
+    "ISDA 2006 Definitions Section 4.16(b) — Actual/Actual (ISDA)",
+    "ISDA 2006 Definitions Section 4.16(h) — 30E+/360 (ISDA)",
+    "ISDA 2006 Definitions Section 4.11 — Modified Following"
+  ],
+  "knowledge_points": [
+    {
+      "detail": "In 30/360 Bond Basis (ISDA 2006 §4.16(f)), D2=31 is adjusted to 30 only if D1 (after its own 31→30 adjustment) equals 30 or 31. If D1<30, D2=31 stays 31.",
+      "standard_ref": "ISDA 2006 §4.16(f): Rule (a) if D1=31 set D1=30; Rule (b) if D2=31 and D1=30 or 31, set D2=30",
+      "common_mistake": "Always set D2=31 to 30 regardless of D1, effectively implementing 30E/360 instead of 30/360 Bond Basis",
+      "hidden_test_input": "Period 2024-01-15 to 2024-07-31 where D1=15 (<30) and D2=31; also a fresh-trade period 2025-03-15 to 2025-08-31 (D1=15, D2=31)",
+      "probe_question": "Under ISDA 2006 §4.16(f) 30/360 Bond Basis, what is the day count numerator for the period from January 15 to July 31 in the same year?",
+      "probe_answer": "196"
+    },
+    {
+      "detail": "Actual/Actual ISDA (ISDA 2006 §4.16(b)) splits the accrual period at calendar year boundaries. Days in each year portion are divided by 365 (non-leap) or 366 (leap), and the sub-fractions are summed.",
+      "standard_ref": "ISDA 2006 §4.16(b): the fraction equals the sum of (Actual Days in the period falling in a leap year)/366 plus (Actual Days in the period falling in a non-leap year)/365",
+      "common_mistake": "Use a single denominator for the entire period based on whether the end-date year (or start-date year) is leap, computing total_days / 365 or total_days / 366",
+      "hidden_test_input": "Period 2023-11-15 to 2024-11-15 (spans non-leap 2023 and leap 2024); fresh trade period 2024-06-30 to 2025-06-30 (spans leap 2024 and non-leap 2025)",
+      "probe_question": "Under ISDA 2006 §4.16(b) Actual/Actual ISDA, what is the accrual fraction for the period from November 15, 2023 to November 15, 2024? Express as a decimal rounded to 6 decimal places.",
+      "probe_answer": "1.000900"
+    },
+    {
+      "detail": "Modified Following (ISDA 2006 §4.11) rolls a non-business-day date forward to the next business day, BUT if that next business day falls in a different calendar month, the date is instead rolled backward to the previous business day.",
+      "standard_ref": "ISDA 2006 §4.11: Modified Following means the date is adjusted to the first following business day unless that day falls in a different month, in which case it is adjusted to the first preceding business day",
+      "common_mistake": "Always roll forward to the next business day (implementing Following), never checking whether the forward roll crosses a month boundary",
+      "hidden_test_input": "Date 2026-01-31 (Saturday) where next business day is 2026-02-02 (Monday, crosses month boundary); date 2025-05-31 (Saturday) where next business day is 2025-06-02 (Monday, crosses month boundary)",
+      "probe_question": "Under ISDA 2006 §4.11 Modified Following, if an unadjusted date of January 31, 2026 falls on a Saturday and the next business day is February 2, 2026, what is the adjusted date?",
+      "probe_answer": "2026-01-29"
+    },
+    {
+      "detail": "In 30E+/360 ISDA (ISDA 2006 §4.16(h)), when D2=31, D2 is set to 1 and M2 is incremented by 1 (effectively moving to the first day of the next month). If M2 exceeds 12, it rolls to January of the next year.",
+      "standard_ref": "ISDA 2006 §4.16(h): Rule (a) if D1=31 set D1=30; Rule (b) if D2=31 set M2=M2+1 and D2=1",
+      "common_mistake": "Set D2=31 to 30 (implementing 30E/360) instead of rolling to the first of the next month, losing 1 day of accrual",
+      "hidden_test_input": "Period 2024-11-30 to 2025-05-31 where D1=30 and D2=31; period 2024-06-30 to 2024-12-31 where D1=30 and D2=31 (December→January rollover)",
+      "probe_question": "Under ISDA 2006 §4.16(h) 30E+/360 ISDA, what is the day count numerator for the period from November 30, 2024 to May 31, 2025?",
+      "probe_answer": "181"
+    },
+    {
+      "detail": "Modified Following vs Following when the forward roll does NOT cross a month boundary: the date rolls forward as normal. The month-boundary rollback only applies when crossing months.",
+      "standard_ref": "ISDA 2006 §4.11: only when the following business day is in the next month does the rollback apply",
+      "common_mistake": "Rolling backward whenever the date is a non-business day, even if the next business day is in the same month (implementing a hybrid that always rolls backward)",
+      "hidden_test_input": "Date 2025-03-15 (Saturday) where next business day is 2025-03-17 (Monday, same month); Modified Following should give 2025-03-17 not 2025-03-14",
+      "probe_question": "Under ISDA 2006 §4.11 Modified Following, if March 15, 2025 falls on a Saturday and the next business day is March 17, 2025 (Monday), what is the adjusted date?",
+      "probe_answer": "2025-03-17"
+    }
+  ],
+  "verifier_packages": ["rateslib==1.1.0"],
+  "reference_check": "rateslib provides dcf() for day-count fractions (convention strings: '30360' for 30/360 Bond Basis, 'actact' for Actual/Actual ISDA, '30eplus360' for 30E+/360 ISDA) and roll_date() for business-day adjustments (convention 'mf' for Modified Following with calendar 'nyc'). Expected accrual fractions and adjusted dates are computed via rateslib and cross-checked against hand-derived values from the ISDA 2006 definitions. For the 30/360 Bond Basis period Jan 15–Jul 31: ISDA §4.16(f) gives numerator 196 (D1=15 stays, D2=31 stays since D1<30), rateslib '30360' confirms 196/360. For ACT/ACT ISDA Nov 15 2023–Nov 15 2024: ISDA §4.16(b) gives 47/365+319/366≈1.000900, rateslib 'actact' confirms. For 30E+/360 ISDA Nov 30 2024–May 31 2025: ISDA §4.16(h) gives 181 (D2=31→D2=1,M2=6), rateslib '30eplus360' confirms 181/360. For Modified Following Jan 31 2026: ISDA §4.11 gives 2026-01-29, rateslib roll_date confirms.",
+  "reference_in_environment": "None. The program uses only Python standard library (datetime, json, calendar). No ISDA convention library, no rateslib, no QuantLib, no financial package, no pre-computed schedule, no worked examples are present in the image."
+}
+```

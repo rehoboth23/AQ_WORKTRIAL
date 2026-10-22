@@ -1,0 +1,1 @@
+[judgement] an internal web service where no outbound request may ever reach an address the caller supplies outside an allow-list, violated through several different request paths (redirect following, URL parsing quirks, DNS names, proxies)

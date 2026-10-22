@@ -1,0 +1,132 @@
+```json
+{
+  "name": "etl-pipeline-restore",
+  "description": "Fix a broken nightly ETL job that loads CSV exports into PostgreSQL and generates a summary report, diagnosing chained runtime obstacles and a silent logic bug.",
+  "difficulty": "hard",
+  "category": "system-administration",
+  "tags": ["etl", "postgresql", "locale", "debugging", "data-pipeline"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 90,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A company's nightly ETL job at /app/etl_runner.py loads the day's CSV exports from /data/imports/ into a local PostgreSQL 15 database (etl_db) and publishes a summary report at /data/reports/daily_summary.txt. After a recent crash and some system changes, the job no longer completes. The agent must diagnose and fix all issues so a clean run produces a correct report following the stated business rules.",
+  "environment_setup": "The Dockerfile installs PostgreSQL 15, python3-psycopg2 (via pip), and the locales package. It initializes the PostgreSQL cluster and creates the etl_user (superuser) with password etl_pass, but does NOT create the etl_db database. It then sets up seven obstacles: (1) a stale lock file at /tmp/etl.lock, (2) PostgreSQL service is not started at container boot, (3) the etl_db database does not exist, (4) a hidden manifest file /data/imports/.manifest marking all CSVs as already imported, (5) the en_US.UTF-8 locale is listed in /etc/locale.gen but never generated with locale-gen, (6) /data/reports exists as a regular file (not a directory), and (7) the SQL in /app/db/queries.sql lacks WHERE status='completed' filters, so cancelled orders inflate all revenue and order counts. The CSV data includes 5 customers, 5 products, and 10 orders (8 completed, 2 cancelled). The Python script uses locale.setlocale for currency formatting and server-side COPY FROM for bulk loading.",
+  "instruction_summary": "Fix /app/etl_runner.py's environment and code so that running `python3 /app/etl_runner.py` from a clean state (no stale lock, no pre-imported manifest entries) completes without error and produces /data/reports/daily_summary.txt. The report must follow these business rules: (1) Revenue and order counts include only completed orders (status='completed'); cancelled orders are excluded from ALL totals and breakdowns. (2) Regional breakdown lists regions alphabetically. (3) Top products are sorted by revenue descending, then product name ascending for ties. (4) All monetary amounts use dollar sign, comma thousands separator, and exactly two decimal places (e.g. $1,234.56). Database: PostgreSQL 15 on localhost:5432, database etl_db, user etl_user, password etl_pass.",
+  "solution_outline": [
+    "rm -f /tmp/etl.lock",
+    "pg_ctlcluster 15 main start && sleep 2",
+    "su - postgres -c \"psql -c \\\"CREATE DATABASE etl_db OWNER etl_user;\\\"\" 2>/dev/null || true",
+    "rm -f /data/imports/.manifest",
+    "locale-gen en_US.UTF-8",
+    "rm -f /data/reports && mkdir -p /data/reports",
+    "Rewrite /app/db/queries.sql adding WHERE status='completed' (or o.status='completed' for aliased queries) to all four queries: total_orders, total_revenue, orders_by_region, top_products",
+    "python3 /app/etl_runner.py"
+  ],
+  "test_plan": [
+    "test_postgresql_running: pg_isready returns 0 on localhost:5432",
+    "test_database_exists: psql -h localhost -U etl_user -d etl_db -c 'SELECT 1' succeeds",
+    "test_customers_loaded: SELECT COUNT(*) FROM customers returns 5",
+    "test_orders_loaded: SELECT COUNT(*) FROM orders returns 10",
+    "test_products_loaded: SELECT COUNT(*) FROM products returns 5",
+    "test_report_file_exists: /data/reports/daily_summary.txt is a regular file",
+    "test_report_total_orders: report line 'Total Orders:' shows 8",
+    "test_report_total_revenue: report line 'Total Revenue:' shows $610.00",
+    "test_report_regional_breakdown: East=1/$50.00, North=4/$350.00, South=1/$100.00, West=2/$110.00",
+    "test_report_top_products: Sensor Delta=$200.00, Widget Alpha=$200.00, Gadget Beta=$150.00, Module Epsilon=$60.00 appear in order",
+    "test_cancelled_excluded_hidden: insert a large cancelled order (ORD_CHK, qty=1000, price=25, status=cancelled), call the script's generate_report via Python import, verify Total Revenue is still $610.00, then clean up",
+    "test_csv_data_in_db_hidden: SELECT name FROM customers WHERE customer_id='C002' contains 'Alpine', proving data comes from CSV not hardcoding",
+    "test_no_tool_gamma_hidden: 'Tool Gamma' does not appear anywhere in the report (its only orders are cancelled)"
+  ],
+  "anti_cheat": "The SQL logic bug is in /app/db/queries.sql which contains no comment marking it as a bug; it simply omits a WHERE clause that the business rules require. Hard-coding report values fails because test_cancelled_excluded_hidden inserts fresh data and re-runs report generation. Deleting cancelled rows from the CSV fails because test_orders_loaded expects 10 rows total. Changing cancelled statuses to 'completed' in the CSV fails because test_cancelled_excluded_hidden adds a new cancelled order that an unfixed SQL would include. The manifest, lock file, locale, and directory obstacles are all runtime state invisible in the source code.",
+  "failure_modes": "An agent that only reads the code and never runs the script will miss most obstacles (lock, missing DB, stale manifest, locale, bad report path). An agent that fixes errors one at a time without checking the final report output will miss the silent SQL bug. An agent who deletes the manifest but doesn't realize the report path is a file (not a directory) will get a confusing 'Not a directory' error. An agent who fixes everything but doesn't verify the report values against the business rules will have wrong revenue totals. An agent who hard-codes report output passes basic value checks but fails the hidden test that inserts additional data and regenerates.",
+  "challenge_kind": "long_road",
+  "failing_state": "Running `python3 /app/etl_runner.py` prints 'Error: ETL lock file found at /tmp/etl.lock. Another instance may be running.' and exits with code 1.",
+  "end_state": [
+    "Running `python3 /app/etl_runner.py` completes with exit code 0 and no errors on stderr",
+    "The file /data/reports/daily_summary.txt exists and is a regular file",
+    "The report contains 'Total Orders: 8'",
+    "The report contains 'Total Revenue: $610.00'",
+    "The report's regional breakdown shows East: 1 orders/$50.00, North: 4 orders/$350.00, South: 1 orders/$100.00, West: 2 orders/$110.00",
+    "The report's top products include Sensor Delta, Widget Alpha, Gadget Beta, and Module Epsilon with their correct revenues",
+    "The report does not contain 'Tool Gamma' (cancelled-only product)",
+    "The etl_db database contains 5 customers, 5 products, and 10 orders matching the CSV data"
+  ],
+  "obstacles": [
+    {
+      "stage": "stale_state",
+      "symptom": "Script prints 'Error: ETL lock file found at /tmp/etl.lock. Another instance may be running.' and exits immediately with code 1.",
+      "cause": "A stale /tmp/etl.lock PID file left by a previous crashed run.",
+      "revealed_by": "start",
+      "fix": "Remove the lock file: rm -f /tmp/etl.lock",
+      "hidden_test": "test_report_file_exists"
+    },
+    {
+      "stage": "service",
+      "symptom": "psycopg2.OperationalError: connection to server at localhost (127.0.0.1), port 5432 failed: Connection refused",
+      "cause": "PostgreSQL service is not running; the container starts with sleep infinity, not pg_ctlcluster.",
+      "revealed_by": "fixing obstacle 1 (removing lock lets script proceed to DB connection)",
+      "fix": "Start PostgreSQL: pg_ctlcluster 15 main start",
+      "hidden_test": "test_postgresql_running"
+    },
+    {
+      "stage": "environment",
+      "symptom": "psycopg2.OperationalError: FATAL: database \"etl_db\" does not exist",
+      "cause": "The etl_db database was never created; the Dockerfile only created the user.",
+      "revealed_by": "fixing obstacle 2 (PostgreSQL running lets script attempt connection)",
+      "fix": "Create the database: sudo -u postgres psql -c \"CREATE DATABASE etl_db OWNER etl_user;\"",
+      "hidden_test": "test_database_exists"
+    },
+    {
+      "stage": "stale_state",
+      "symptom": "Script prints 'Skipping already imported: customers.csv', 'Skipping already imported: orders.csv', 'Skipping already imported: products.csv' then 'Imported: {}' and generates a report showing Total Orders: 0, Total Revenue: $0.00.",
+      "cause": "A hidden manifest file /data/imports/.manifest (dotfile) records all three CSVs as imported from the previous run, causing the script to skip them.",
+      "revealed_by": "fixing obstacle 3 (database exists, script runs schema creation and proceeds to data loading)",
+      "fix": "Delete the manifest: rm -f /data/imports/.manifest",
+      "hidden_test": "test_orders_loaded"
+    },
+    {
+      "stage": "environment",
+      "symptom": "locale.Error: unsupported locale setting when generate_report() calls locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')",
+      "cause": "The en_US.UTF-8 locale is listed in /etc/locale.gen but was never compiled with locale-gen; the slim image has the locales package but no generated locale data.",
+      "revealed_by": "fixing obstacle 4 (data loads successfully, script proceeds to report generation)",
+      "fix": "Generate the locale: locale-gen en_US.UTF-8",
+      "hidden_test": "test_report_total_revenue"
+    },
+    {
+      "stage": "environment",
+      "symptom": "FileNotFoundError: [Errno 20] Not a directory: '/data/reports/daily_summary.txt' (or similar OS error) when the script tries to open the report file for writing.",
+      "cause": "/data/reports exists as a regular file (created by the Dockerfile), not a directory. The script cannot write a file inside something that is already a file.",
+      "revealed_by": "fixing obstacle 5 (locale is set, script proceeds to write the report file)",
+      "fix": "Remove the file and create a directory: rm -f /data/reports && mkdir -p /data/reports",
+      "hidden_test": "test_report_file_exists"
+    },
+    {
+      "stage": "logic",
+      "symptom": "Script completes successfully, but the report shows Total Orders: 10 and Total Revenue: $730.00 instead of the correct 8 and $610.00. Cancelled orders (ORD003, ORD007) are incorrectly included.",
+      "cause": "All four SQL queries in /app/db/queries.sql lack a WHERE status='completed' filter, so cancelled orders contribute to every total and breakdown.",
+      "revealed_by": "fixing obstacle 6 (script runs end-to-end without error; silent wrong output only found by checking against business rules)",
+      "fix": "Add WHERE status='completed' (or o.status='completed' for aliased queries) to each query in /app/db/queries.sql",
+      "hidden_test": "test_cancelled_excluded_hidden"
+    }
+  ],
+  "shortcut_guards": [
+    {
+      "shortcut": "Delete cancelled orders from the CSV files so only 8 completed orders remain, avoiding the need to fix the SQL filter",
+      "hidden_test": "test_orders_loaded checks for exactly 10 orders in the database (including the 2 cancelled ones from the original CSV)"
+    },
+    {
+      "shortcut": "Change the status of cancelled orders from 'cancelled' to 'completed' in the CSV data",
+      "hidden_test": "test_cancelled_excluded_hidden inserts a new cancelled order (ORD_CHK) with revenue $25,000 and regenerates the report; if the SQL still lacks a status filter, the report shows $25,610.00 and fails"
+    },
+    {
+      "shortcut": "Hard-code the report file with the correct values instead of generating it from the database",
+      "hidden_test": "test_cancelled_excluded_hidden inserts fresh data and calls the script's generate_report function; a hard-coded report won't reflect the new cancelled order being properly excluded"
+    },
+    {
+      "shortcut": "Remove the locale.setlocale call entirely without generating the locale, causing number formatting to differ",
+      "hidden_test": "test_report_total_revenue parses the dollar-formatted value; without en_US.UTF-8 locale the thousands separator may be wrong or missing, causing the regex or value to fail"
+    }
+  ],
+  "offline": "All packages are installed in the Dockerfile: postgresql-15, postgresql-client-15, postgresql-15-contrib, locales, and psycopg2-binary via pip. locale-gen compiles locale data from on-disk definitions without network. No pip install or apt-get is needed at solve time.",
+  "reference_in_environment": "None. There is no .git history, no backup of the correct queries.sql, no test files, and no comments in the code marking any obstacle. The queries.sql simply omits the WHERE clause with no indication it was ever different."
+}
+```

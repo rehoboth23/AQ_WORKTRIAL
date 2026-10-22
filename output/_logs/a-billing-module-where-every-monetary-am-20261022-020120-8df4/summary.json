@@ -1,0 +1,156 @@
+{
+  "topic": "a billing module where every monetary amount must be rounded the same way at every boundary, violated in several places that use different arithmetic paths",
+  "run_id": "a-billing-module-where-every-monetary-am-20261022-020120-8df4",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-billing-module-where-every-monetary-am-20261022-020120-8df4",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/billing-rounding-consistency",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md names shipped source/config files (bulk.py, core.py, discounts.py, fees.py, tax.py, utils.py); which points the agent at the fault; describe the symptom and goal instead and let the agent find the location"
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030421-oracle",
+          "seconds": 22.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030421-oracle/billing-rounding-consistency__BJDwSRa",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030421-nop",
+          "seconds": 20.0,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030421-nop/billing-rounding-consistency__oPU6moU",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": [],
+      "mutation": [
+        {
+          "fault": 0,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant0"
+        },
+        {
+          "fault": 1,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant1"
+        },
+        {
+          "fault": 10,
+          "wrong_fix": "fix every other site but leave this one as it is",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant10"
+        },
+        {
+          "fault": 2,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant2"
+        },
+        {
+          "fault": 3,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant3"
+        },
+        {
+          "fault": 4,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant4"
+        },
+        {
+          "fault": 5,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant5"
+        },
+        {
+          "fault": 6,
+          "wrong_fix": "fix every other site but leave this one as it is",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant6"
+        },
+        {
+          "fault": 7,
+          "wrong_fix": "fix every other site but leave this one as it is",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant7"
+        },
+        {
+          "fault": 8,
+          "wrong_fix": "fix every other site but leave this one as it is",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant8"
+        },
+        {
+          "fault": 9,
+          "wrong_fix": "fix every other site but leave this one as it is",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 12,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-billing-module-where-every-monetary-am-20261022-020120-8df4-r1-030504-mutant9"
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 41266,
+    "completion_tokens": 151448,
+    "cost_usd": 0.0
+  },
+  "seconds": 2595.8,
+  "task_name": "afterquery/billing-rounding-consistency"
+}

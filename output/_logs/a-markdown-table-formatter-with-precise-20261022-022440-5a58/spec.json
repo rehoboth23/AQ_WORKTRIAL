@@ -1,0 +1,288 @@
+{
+  "name": "mdtbl-precise-table-format",
+  "description": "Fix a Markdown table formatter to match 18 precise rules spanning display-width, numeric detection, alignment, sorting, escaping, truncation and multi-table handling.",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": [
+    "markdown",
+    "unicode",
+    "formatting",
+    "parsing",
+    "cli"
+  ],
+  "expert_time_estimate_min": 45.0,
+  "junior_time_estimate_min": 120.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You inherit mdtbl, a Python CLI tool at /app/mdtbl that reformats Markdown tables. It runs and produces output, but the formatting doesn't match the project's style guide. Your job is to update it so every detail matches the 18 rules listed in /app/instruction.md. A sample file /app/sample.md is available for ad-hoc testing. There is no reference formatter, no expected-output file, and no verify command \u2014 you must read the rules carefully and implement each one precisely.",
+  "environment_setup": "The Dockerfile copies a ~350-line Python 3 script to /app/mdtbl (chmod +x, shebang #!/usr/bin/env python3) and a /app/sample.md with two small tables (one with numbers, one with CJK text). The script uses argparse, has options --sort, --max-width, --input, --align, --compact, --no-header, --check, --version. It reads Markdown, finds the first table (header + delimiter + data rows), and reformats it. Current defaults that differ from the spec: uses len() not display width; 2-space cell padding; no minimum column width; delimiter row is all dashes with no alignment colons; no numeric detection (all left-aligned); no number normalization; case-sensitive string sort; no --sort-desc; no tab expansion; no whitespace normalization; backslash stripped from \\|; extra cells in a row are silently dropped instead of merged; only the first table is processed; truncation uses ASCII '...' instead of '\u2026'; output has no trailing newline. The --check mode validates table structure and prints issues. The --compact, --no-header, --align, --input, and --version features work correctly and must be preserved.",
+  "instruction_summary": "instruction.md lists 18 numbered rules the formatter must follow exactly. Rule 1: cell padding exactly 1 space each side. Rule 2: display width counts CJK ranges U+4E00-U+9FFF, U+3040-U+30FF, U+AC00-U+D7AF as 2. Rule 3: minimum column content width 3. Rules 4-6: delimiter format with alignment colons (left=all dashes, right=dashes+colon, center=colon+dashes+colon; width-3 center = :-:). Rule 7: numeric detection when ALL non-empty data cells match ^[+-]?\\d+(\\.\\d+)?$. Rule 8: numeric columns \u2192 data right-aligned, header center-aligned. Rule 9: number normalization (strip leading +, strip trailing zeros and decimal if all zero). Rule 10: sort text case-insensitive, numeric by value, stable. Rule 11: --sort-desc reverses sort. Rule 12: tab \u2192 4 spaces before other processing. Rule 13: strip/collapse whitespace in cells. Rule 14: \\| preserved in output, counts as 1 display width, not a cell separator. Rule 15: short rows padded, extra cells merged into last with space. Rule 16: all tables processed, non-table lines preserved. Rule 17: --max-width truncation uses \u2026 (U+2026) not .... Rule 18: output always ends with exactly one newline (\\n); if the assembled output (formatted tables + preserved non-table lines) does not end with \\n, append one; if it ends with multiple \\n, remove extras so only one remains; if output is empty (zero bytes), do nothing. Also: 'everything the tool does today must keep working' \u2014 existing flags, modes, exit codes, and behaviours not mentioned above must be preserved.",
+  "solution_outline": [
+    "Replace str_width() with a function that counts CJK characters (3 Unicode ranges) as 2 and others as 1",
+    "Change DEFAULT_PADDING from 2 to 1",
+    "Add minimum column width of 3 in format_table width calculation",
+    "Implement format_delimiter_cell to produce left-aligned (all dashes), right-aligned (dashes+colon), and center-aligned (colon+dashes+colon) delimiters, handling width-3 center edge case as :-:",
+    "Implement numeric column detection: check ALL non-empty data cells against regex ^[+-]?\\d+(\\.\\d+)?$",
+    "Set alignments: numeric \u2192 data right, header center; non-numeric \u2192 all left",
+    "Implement number normalization in numeric columns: strip leading +, strip trailing zeros after decimal, remove decimal point if all following digits are zero",
+    "Change sort key: numeric columns \u2192 float(value), text columns \u2192 str.lower(value); sort remains stable",
+    "Add --sort-desc argument to argparse; when set, reverse the sort",
+    "Add tab expansion (replace \\t with 4 spaces) in cell content before other processing",
+    "Add whitespace normalization: strip leading/trailing, collapse internal runs to single space",
+    "Implement escaped-pipe-aware row parsing: replace \\| with placeholder before split, restore after; preserve \\| in output; count \\| as 1 for display width",
+    "Fix row consistency: short rows padded right with empty cells; extra cells merged into last column with space separator",
+    "Implement multiple table processing: iterate all found tables, preserve non-table lines between them",
+    "Change truncation ellipsis from '...' to '\u2026' (U+2026); adjust truncation logic for display width 1 ellipsis",
+    "Add exactly one trailing newline to output (per R18 final-constraint rule)",
+    "Ensure --compact, --no-header, --align, --input, --check, --version still work",
+    "Ensure exit code 0 on success, 1 on error"
+  ],
+  "test_plan": [
+    "R1-padding: feed a 4-column table with empty cells; check each output line has exactly 1 space between | and content on both sides; empty cell is |  | (pipe space space pipe)",
+    "R2-display-width: feed a table with a Korean header '\uc774\ub984' (2 Hangul syllables, display width 4) and ASCII data 'Name' (width 4); verify column accounts for double-width chars",
+    "R2-boundary: feed a table with Katakana '\u30a1' (U+30A1, in U+3040-U+30FF range) in a header; verify it counts as width 2",
+    "R3-min-width: feed a table where a column has only 1-char header 'X' and 1-char data 'Y'; verify content area is at least 3 wide",
+    "R3-boundary: feed a table where one column's cells are all empty (width 0); verify column content width becomes 3",
+    "R4-left-delim: feed a left-aligned column of display width 9; verify delimiter cell is 9 dashes",
+    "R5-right-delim: use --align l,r on 2-col table; verify right-aligned delimiter ends with colon, total display width = column content width",
+    "R5-boundary: width-3 right-aligned column; delimiter is '--:'",
+    "R6-center-delim: use --align l,c on 2-col table with column width 8; verify center delimiter is ':------:'",
+    "R6-boundary: width-3 center-aligned column; delimiter must be exactly ':-:'",
+    "R7-numeric-detect: feed table where col-2 data is -0.5, 99, +2.00 (all numeric); verify right-aligned. Feed table where col-2 has '3.5x'; verify left-aligned",
+    "R7-boundary: cell '1e3' (scientific notation) must fail numeric detection",
+    "R8-numeric-alignment: feed a numeric column table; verify header is center-aligned, data is right-aligned",
+    "R8-boundary: header center-alignment with odd padding (width 7, content 3 \u2192 left-pad 2, right-pad 2)",
+    "R9-number-norm: feed +0.10, 2.0, +99, -0.25 in a numeric column; verify output shows 0.1, 2, 99, -0.25",
+    "R9-boundary: value '+0.10' should become '0.1'; value '0.0' should become '0'",
+    "R10-sort: feed rows 'Delta','alpha','Gamma','beta' in text col with --sort 1; verify order alpha,beta,Delta,Gamma",
+    "R10-numeric-sort: feed rows 2.5, 10, 0.3 in numeric col with --sort 1; verify order 0.3,2.5,10",
+    "R11-sort-desc: feed rows with --sort 1 --sort-desc; verify descending order by column 1",
+    "R11-boundary: --sort-desc alone (no --sort) should produce unsorted output",
+    "R12-tab: feed a cell containing 'foo\\tbar'; after tab expansion and whitespace normalization, becomes 'foo bar'",
+    "R12-boundary: multiple consecutive tabs '\\t\\t' become 8 spaces, then collapsed to 1 by R13",
+    "R13-whitespace: feed a cell '\\t  foo\\t\\tbar  ' (tab, spaces, text); after tab expansion and normalization, becomes 'foo bar'",
+    "R13-boundary: a cell that is all whitespace '   ' becomes empty string ''",
+    "R14-escaped-pipe: feed a row '| p\\|q \\| r | s |'; has two cells: 'p|q | r' and 's'; output preserves \\| and width of cell 1 is 5 (p,pipe,q,space,pipe,space,r) wait: after parsing, cell content is 'p|q | r' but output must show 'p \\| q \\| r'. Let me recalculate: display width of the cell content is 5 (p, |, q, space, |, space, r = 7? No. The rule says \\| counts as 1. So the display width of 'p\\|q' is p(1)+\\|(1)+q(1)=3. For 'p\\|q\\|r' display width is 5.",
+    "R14-boundary: multiple escaped pipes 'x\\|y\\|z' has display width 5",
+    "R15-row-consistency: 3-column table with a data row of 5 cells; last 2 cells merged into column 3 with space separator",
+    "R15-boundary: a row with exactly 1 cell in a 4-column table: padded with 3 empty cells",
+    "R16-multi-table: input with 3 tables separated by paragraph text and blank lines; verify all 3 formatted and all non-table lines preserved verbatim",
+    "R16-boundary: a table at the very end of input with no trailing newline; a table at the very start with no preceding content",
+    "R17-truncation: a cell 'Hello World' (width 11) with --max-width 7; should show 'Hello \u2026' (width 6 + ellipsis 1 = 7)",
+    "R17-boundary: a CJK character (width 2) in a cell with --max-width 2; first char width 2 > N-1=1, so show just '\u2026'",
+    "R18-newline: run on any table input; verify result ends with exactly one \\n (not 0, not 2)",
+    "R18-boundary: input with non-table content ending with no newline; verify output still ends with exactly one \\n",
+    "R18-boundary2: input with non-table content ending with \\n\\n; verify output ends with exactly one \\n (extras removed)",
+    "preserved-compact: run with --compact; verify 0 padding between pipe and content",
+    "preserved-no-header: run with --no-header; verify first row treated as data, output header row is empty cells",
+    "preserved-align: run with --align r,l on 2-col table with numeric col-2; verify col-2 is left-aligned despite being numeric (--align override)",
+    "preserved-input-file: run with --input /app/sample.md; verify it reads the file",
+    "preserved-check: run with --check on a table with a row that has fewer cells than the header; verify a warning is printed (no reformatting)",
+    "preserved-version: run with --version; verify output contains version string",
+    "preserved-exit-code: run with --input /nonexistent; verify exit code is 1"
+  ],
+  "anti_cheat": "No reference output or expected-answer file exists in the image. The sample.md is for ad-hoc testing only and its correct output depends on all 18 rules, so hard-coding for sample.md would fail hidden tests with different inputs. No verify/diff command is available. The original script has the wrong behavior, so running it produces incorrect output. Tests use inputs with non-round CJK strings (Hangul, Katakana), boundary widths (width 3 center delimiter, width 3 right delimiter), numbers like +0.10 and 0.0 requiring normalization, escaped pipes in cell content, multiple tables with intermixed non-table lines, and trailing-newline edge cases \u2014 none of which appear in sample.md or instruction.md examples.",
+  "failure_modes": "An agent that skims the rules will miss several: CJK display width (uses len() or wcwidth which disagrees with the spec's three ranges), number normalization (forgets +0.10\u21920.1 or 0.0\u21920), case-insensitive sort (leaves case-sensitive), escaped-pipe width counting (forgets \\| is width 1 not 2), center-alignment delimiter edge case (width 3 \u2192 :-:), ellipsis character (uses ASCII ... not U+2026) and its display width (1 not 3), multiple-table support (only formats first), trailing newline normalization (forgets to remove extra \\n or add missing one), non-table line preservation (adds/removes blank lines). An agent that rewrites from scratch instead of modifying the starter will likely drop --compact, --no-header, --check, or --align and fail preserved-behavior tests. An agent that only tests with sample.md won't catch edge cases like minimum column width 3 for empty columns, width-3 center delimiter, Hangul display width, or the trailing newline rule when non-table content follows the last table.",
+  "faults": [],
+  "requirements": [
+    {
+      "id": "R1",
+      "rule": "Cell padding is exactly 1 space between the pipe character and the cell content on each side. Empty cells render as |  | (pipe, space, space, pipe). With --compact, padding is 0.",
+      "theme": "formatting",
+      "default_behaviour": "Starter uses 2 spaces of padding",
+      "hidden_test_input": "A 4-column table with one empty cell and one single-character cell; padding measured precisely on every pipe-content boundary",
+      "boundary": "Empty cell where only padding spaces appear; single-char cell in a width-3 column"
+    },
+    {
+      "id": "R2",
+      "rule": "Display width counts characters in Unicode ranges U+4E00\u2013U+9FFF, U+3040\u2013U+30FF, and U+AC00\u2013U+D7AF as 2; all other non-combining characters as 1. Do NOT use Unicode East Asian Width property or external width libraries \u2014 only these three ranges are double-width.",
+      "theme": "unicode_width",
+      "default_behaviour": "Python len() counts every codepoint as 1; wcwidth library uses full East Asian Width which disagrees with this spec",
+      "hidden_test_input": "A table with a Korean header '\uc774\ub984' (2 Hangul syllables in U+AC00-U+D7AF, display width 4) and short ASCII data 'nm' (width 2); column must be width 4",
+      "boundary": "Katakana character \u30a1 (U+30A1) which is in the U+3040-U+30FF range and must count as width 2"
+    },
+    {
+      "id": "R3",
+      "rule": "The content area of every column must be at least 3 characters wide (by display width), even if all cells (header and data) are narrower or empty.",
+      "theme": "structure",
+      "default_behaviour": "Column width = max content width, no minimum enforced",
+      "hidden_test_input": "A 2-column table where col-2 has header 'A' and data 'B' (both width 1); column content width must be padded to 3",
+      "boundary": "A column where all cells (header and data) are empty strings (display width 0 \u2192 must become 3)"
+    },
+    {
+      "id": "R4",
+      "rule": "For a left-aligned column, the delimiter cell content is all dashes (-), exactly as many as the column content width (by display width).",
+      "theme": "formatting",
+      "default_behaviour": "Starter produces all dashes for every column regardless of alignment",
+      "hidden_test_input": "A left-aligned column of display width 9; delimiter must be exactly 9 dashes",
+      "boundary": "Width-3 left-aligned column (minimum width) must have exactly 3 dashes"
+    },
+    {
+      "id": "R5",
+      "rule": "For a right-aligned column, the delimiter cell content is dashes followed by a colon (:). The total display width equals the column content width. The last character is always ':'.",
+      "theme": "formatting",
+      "default_behaviour": "Starter uses all dashes for every column regardless of alignment",
+      "hidden_test_input": "A right-aligned column of display width 7; delimiter must be '------:'",
+      "boundary": "Width-3 right-aligned column; delimiter is '--:'"
+    },
+    {
+      "id": "R6",
+      "rule": "For a center-aligned column, the delimiter cell content is a colon, then dashes, then a colon. The total display width equals the column content width. When the column content width is exactly 3, the delimiter cell is :-: (colon, one dash, colon).",
+      "theme": "formatting",
+      "default_behaviour": "Starter has no center-alignment delimiter support",
+      "hidden_test_input": "A center-aligned column of display width 8; delimiter must be ':------:'",
+      "boundary": "Width-3 center-aligned column; delimiter must be exactly ':-:'"
+    },
+    {
+      "id": "R7",
+      "rule": "A column is numeric if ALL non-empty data cells (not the header) match the pattern: optional + or -, then one or more digits, then optionally a decimal point followed by one or more digits. Regex: ^[+-]?\\d+(\\.\\d+)?$. No commas, no underscores, no scientific notation. Empty cells are ignored (neither confirm nor deny). If any non-empty data cell fails, the column is text.",
+      "theme": "arithmetic",
+      "default_behaviour": "Starter does not detect numeric columns at all (all left-aligned)",
+      "hidden_test_input": "Column with data -0.5, 99, +2.00 (all match \u2192 numeric); column with 10, 20, 3.5x (3.5x fails \u2192 text)",
+      "boundary": "A cell containing '1e3' (scientific notation) \u2014 this fails numeric detection, making the column text"
+    },
+    {
+      "id": "R8",
+      "rule": "In numeric columns, data cells are right-aligned and the header cell is center-aligned. In non-numeric columns, all cells are left-aligned. Center-aligned means left-padding is floor((col_width - content_width) / 2) and right-padding is ceil((col_width - content_width) / 2).",
+      "theme": "formatting",
+      "default_behaviour": "Starter aligns everything left",
+      "hidden_test_input": "A 2-column table: col-1 text (names), col-2 numeric (values); check col-1 left-aligned, col-2 header center-aligned, col-2 data right-aligned",
+      "boundary": "Header center-alignment: width 7, content 'Price' (width 5) \u2192 left-pad 1, right-pad 1"
+    },
+    {
+      "id": "R9",
+      "rule": "In numeric columns, normalize numbers before output: strip any leading + sign; strip trailing zeros after the decimal point; if all digits after the decimal point are zero (or there are none left after stripping), remove the decimal point too. The minus sign is never stripped. Examples: +3.50 \u2192 3.5, 100.0 \u2192 100, -0.50 \u2192 -0.5, +7 \u2192 7.",
+      "theme": "arithmetic",
+      "default_behaviour": "Numbers are output exactly as they appear in input",
+      "hidden_test_input": "Numeric column with values +0.10, 2.0, +99, -0.25; verify output shows 0.1, 2, 99, -0.25",
+      "boundary": "Value '0.0' should become '0'; value '+0' should become '0'"
+    },
+    {
+      "id": "R10",
+      "rule": "--sort N sorts data rows by column N (1-based) in ascending order. For numeric columns, sort by numeric value (float comparison). For text columns, sort case-insensitively using str.lower(). The sort is stable: rows with equal sort keys preserve their original relative order.",
+      "theme": "ordering",
+      "default_behaviour": "Starter sorts case-sensitively as strings for all columns",
+      "hidden_test_input": "Text column with 'Delta', 'alpha', 'Gamma', 'beta'; sorted order must be alpha, beta, Delta, Gamma",
+      "boundary": "Numeric column with 2.5, 10, 0.3; must sort as 0.3, 2.5, 10 (not '0.3','10','2.5' lexicographic)"
+    },
+    {
+      "id": "R11",
+      "rule": "--sort-desc (flag, no argument) reverses the sort direction when combined with --sort. Without --sort it has no effect. With --sort and --sort-desc together, rows are in descending order by the sort column.",
+      "theme": "ordering",
+      "default_behaviour": "Starter has no --sort-desc option",
+      "hidden_test_input": "Table with text values 'Delta','alpha','Gamma','beta' and --sort 1 --sort-desc; verify order Gamma, Delta, beta, alpha",
+      "boundary": "--sort-desc alone (no --sort) should produce unsorted output in original row order"
+    },
+    {
+      "id": "R12",
+      "rule": "Before any other cell processing, replace each tab character (U+0009) with exactly 4 spaces.",
+      "theme": "input_tolerance",
+      "default_behaviour": "Starter passes tab characters through unchanged",
+      "hidden_test_input": "A cell containing 'foo\\tbar' (foo, tab, bar); after tab expansion and whitespace normalization (R13), becomes 'foo bar'",
+      "boundary": "Two consecutive tabs: '\\t\\t' becomes 8 spaces, then collapsed to 1 space by R13"
+    },
+    {
+      "id": "R13",
+      "rule": "Strip leading and trailing whitespace from each cell's content. Collapse any internal run of whitespace characters (spaces, tabs already expanded by R12) to a single space. A cell that becomes empty after stripping is treated as an empty cell.",
+      "theme": "input_tolerance",
+      "default_behaviour": "Starter preserves whitespace as-is (except stripping during row parsing)",
+      "hidden_test_input": "A cell with '\\t  foo\\t\\tbar  ' (tab, spaces, text); after tab expansion (R12) and normalization, becomes 'foo bar'",
+      "boundary": "A cell that is all whitespace '   ' becomes empty string ''"
+    },
+    {
+      "id": "R14",
+      "rule": "The sequence \\| in cell content represents a literal pipe character and must not be treated as a cell separator when parsing rows. It is preserved as \\| in the output. For display width calculation, \\| counts as 1 character (the visible pipe it represents); the backslash is not displayed and not counted.",
+      "theme": "unicode_width",
+      "default_behaviour": "Starter strips the backslash and treats | as a cell separator",
+      "hidden_test_input": "A row '| p\\|q | r |' has two cells: 'p|q' (display width 3) and 'r' (display width 1); output preserves \\| in the cell",
+      "boundary": "Multiple escaped pipes: 'x\\|y\\|z' has display width 5 (x, pipe, y, pipe, z)"
+    },
+    {
+      "id": "R15",
+      "rule": "If a data row has fewer cells than the number of header columns, pad it on the right with empty cells. If a data row has more cells than the number of header columns, merge the extra cells into the last column by joining them with a single space.",
+      "theme": "structure",
+      "default_behaviour": "Starter silently drops extra cells instead of merging",
+      "hidden_test_input": "3-column table with a data row of 5 cells; cells 4 and 5 are merged into column 3 with space separator",
+      "boundary": "A row with exactly 1 cell in a 4-column table: padded with 3 empty cells on the right"
+    },
+    {
+      "id": "R16",
+      "rule": "Format all tables found in the input, not just the first. Non-table lines (including blank lines) between and around tables are preserved in the output exactly as they appear in the input, byte-for-byte. A table is defined as a header row followed immediately by a delimiter row, then zero or more data rows. Consecutive non-table lines are preserved verbatim.",
+      "theme": "structure",
+      "default_behaviour": "Starter only processes the first table and discards surrounding content",
+      "hidden_test_input": "Input with 3 tables separated by paragraph text 'Intro\\n\\n' and 'Mid text\\n' and 'End\\n'; verify all 3 tables formatted and all non-table lines preserved verbatim",
+      "boundary": "A table at the very end of input with no trailing newline; a table at the very start with no preceding content"
+    },
+    {
+      "id": "R17",
+      "rule": "When --max-width N is given, cells whose display width exceeds N are truncated. Show as many leading characters (by display width) as fit in N-1 width, followed by the single Unicode ellipsis character \u2026 (U+2026, display width 1). If N is 1, show just \u2026. If no characters fit before the ellipsis (the first character's display width exceeds N-1), show just \u2026. The total display width of the truncated cell content must not exceed N.",
+      "theme": "formatting",
+      "default_behaviour": "Starter uses ASCII '...' (3 dots, display width 3) instead of U+2026 (display width 1)",
+      "hidden_test_input": "A cell 'Greetings' (width 9) with --max-width 7; should show 'Greeti\u2026' (6 chars width 6 + ellipsis width 1 = 7)",
+      "boundary": "A CJK character '\u6f22' (width 2) in a cell with --max-width 2; first char width 2 > N-1=1, so show just '\u2026'"
+    },
+    {
+      "id": "R18",
+      "rule": "The tool's output must end with exactly one newline character (\\n). After all table formatting and non-table line preservation, if the assembled output does not end with \\n, append one; if it ends with multiple \\n, remove extras so only one remains. If the output is empty (zero bytes), do not add a newline.",
+      "theme": "formatting",
+      "default_behaviour": "Starter outputs with no trailing newline (print with end='')",
+      "hidden_test_input": "A table followed by a non-table line 'Footer' (no trailing newline in input); verify output ends with exactly one \\n",
+      "boundary": "Input where the last non-table content ends with \\n\\n; verify output ends with exactly one \\n (the extra \\n is removed)"
+    }
+  ],
+  "themes": [
+    "formatting",
+    "arithmetic",
+    "ordering",
+    "unicode_width",
+    "structure",
+    "input_tolerance"
+  ],
+  "starter": "A ~350-line Python 3 script at /app/mdtbl with shebang #!/usr/bin/env python3. It uses argparse with options --sort (int), --max-width (int), --input (str), --align (str), --compact (flag), --no-header (flag), --check (flag), --version. It reads Markdown from stdin or file, finds tables via header+delimiter detection, and formats the first table only. Key functions: str_width (returns len), is_numeric_value (uses float()), normalize_numeric (identity), is_delimiter_row, parse_row_cells (splits on |), extract_tables (finds first table only), detect_alignment (always 'left'), format_delimiter_cell (all dashes), format_cell (2-space padding, left/center/right alignment), truncate_cell (uses '...'), format_table (assembles rows). Main reads input, parses align overrides, extracts first table, formats it, writes to stdout with end=''. The --compact flag sets padding to 0. The --no-header flag moves header to data rows and uses empty header. The --check mode validates tables and prints issues. The --align option parses comma-separated l/r/c and passes overrides. All these extras work correctly and must be preserved.",
+  "property": "",
+  "reported_symptom": "",
+  "sites": [],
+  "partial_fix": "",
+  "preserved_behaviours": [
+    {
+      "behaviour": "--compact flag removes all cell padding (0 spaces between pipe and content)",
+      "hidden_test_input": "A simple 2-column table run with --compact; verify cells like |data| with no padding spaces"
+    },
+    {
+      "behaviour": "--no-header treats the first row as data, outputting an empty header row",
+      "hidden_test_input": "A table with 2 data rows run with --no-header; verify the header row contains empty cells and both input rows appear as data"
+    },
+    {
+      "behaviour": "--align SPEC overrides auto-detected alignment per column (including numeric detection)",
+      "hidden_test_input": "A 2-column table with numeric col-2, run with --align l,l; verify col-2 is left-aligned despite being numeric"
+    },
+    {
+      "behaviour": "--input FILE reads from the named file instead of stdin",
+      "hidden_test_input": "Run with --input /app/sample.md; verify it reads and formats the first table from that file"
+    },
+    {
+      "behaviour": "--check mode validates table structure without reformatting",
+      "hidden_test_input": "Run with --check on a table with a row that has fewer cells than the header; verify a warning is printed to stderr and no formatted table is output"
+    },
+    {
+      "behaviour": "--version prints version string and exits",
+      "hidden_test_input": "Run with --version; verify output contains '1.2.0' and exits 0"
+    },
+    {
+      "behaviour": "Exit code 0 on success, 1 on error (e.g., file not found with --input)",
+      "hidden_test_input": "Run with --input /nonexistent; verify exit code is 1"
+    }
+  ],
+  "decoys": [],
+  "hidden_edge_cases": [],
+  "why_not_textbook": "",
+  "static_read": "",
+  "crux": "",
+  "challenge_kind": "build_from_spec",
+  "sequence_invariant": "",
+  "nameable_fix": "",
+  "self_check_blind_spot": "Agents are most likely to miss or misimplement: (1) CJK display width \u2014 forgetting the Hangul range U+AC00-U+D7AF, or incorrectly using wcwidth which disagrees with the spec's three ranges; (2) the width-3 center-alignment delimiter edge case :-: \u2014 a generic colon+dashes+colon formula produces wrong output for width 3; (3) number normalization edge cases \u2014 +0.10\u21920.1, 0.0\u21920, +0\u21920 are not in the instruction.md examples and only arise with non-round test inputs; (4) escaped-pipe-aware parsing \u2014 using simple split('|') breaks on \\|, and the display-width counting of \\| as 1 (not 2) is easy to forget; (5) Unicode ellipsis \u2026 vs ASCII ... and its display width of 1 (not 3) \u2014 the agent's truncation logic may allocate 3 chars for ellipsis instead of 1, breaking column alignment; (6) trailing newline normalization (R18) \u2014 the agent may add a newline but forget to handle the case where the output already ends with multiple \\n; (7) non-table line preservation (R16) \u2014 the agent may format multiple tables but not preserve interstitial text exactly, especially blank lines and text at file boundaries. These blind spots arise because the agent tests with the sample.md (which has Chinese and numbers but no Hangul, no width-3 columns, no escaped pipes, no trailing-newline edge cases) and with simple ASCII test inputs of its own design.",
+  "reference_in_environment": "none",
+  "interaction": "",
+  "runnable_reference": "none",
+  "expected_agent_steps": null
+}

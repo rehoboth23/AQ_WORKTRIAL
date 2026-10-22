@@ -1,0 +1,1 @@
+[spec] a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and totals

@@ -1,0 +1,1 @@
+[judgement] a small HTTP service whose responses must never let a user-supplied value break out of a header, cookie or redirect, violated in several differently built places

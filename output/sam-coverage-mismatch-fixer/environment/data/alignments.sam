@@ -1,0 +1,16 @@
+@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:200
+read12	0	chr1	1	60	5M	*	0	0	ACGTA	*	MD:Z:5
+read01	0	chr1	10	60	5M	*	0	0	CGTAC	*	MD:Z:5
+read14	0	chr1	10	60	3M	*	0	0	CGT	*	MD:Z:3
+read08	0	chr1	12	60	5M	*	0	0	TACGT	*	MD:Z:5
+read02	0	chr1	25	60	3M2I3M	*	0	0	ACGTTTAC	*	MD:Z:6
+read03	0	chr1	40	60	2S3M	*	0	0	GGTAC	*	MD:Z:3
+read04	0	chr1	55	60	3M2D3M	*	0	0	GTATAC	*	MD:Z:3^CG3
+read05	0	chr1	75	60	3M10N3M	*	0	0	GTATAC	*	MD:Z:3^CGTACGTACG3
+read06	0	chr1	100	60	5M	*	0	0	TATGT	*	MD:Z:2G2
+read07	0	chr1	115	60	2=1X2=	*	0	0	GTACG	*	MD:Z:2T2
+read09	0	chr1	135	60	1H5M	*	0	0	GTACG	*	MD:Z:5
+read10	16	chr1	150	60	4M	*	0	0	CGTA	*	MD:Z:2A1
+read11	0	chr1	165	60	3M2S	*	0	0	ACGTT	*	MD:Z:3
+read13	0	chr1	180	60	2=2X1=	*	0	0	TACGT	*	MD:Z:2AT1

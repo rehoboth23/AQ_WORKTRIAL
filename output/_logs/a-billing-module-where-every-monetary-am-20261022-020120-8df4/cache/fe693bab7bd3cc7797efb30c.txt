@@ -1,0 +1,70 @@
+```json
+{
+  "name": "billing-rounding-consistency",
+  "description": "Fix inconsistent rounding across a billing module where different arithmetic paths use different rounding methods, all violating the stated round-half-up rule.",
+  "difficulty": "hard",
+  "category": "debugging",
+  "tags": ["rounding", "billing", "monetary", "consistency", "python"],
+  "expert_time_estimate_min": 20,
+  "junior_time_estimate_min": 60,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "The agent finds a Python billing library at /app/billing_lib that calculates invoices including subtotals, discounts, tax, processing fees, currency conversion, and late penalties. A customer complaint reports that a $1.00 item at 12.5% tax shows $0.12 instead of $0.13. The codebase has a central rounding utility (rounding.py) and several modules that each implement their own inline rounding instead of using the central utility — each using a different method (Python round, math.trunc, math.ceil, Decimal quantize with wrong mode, etc.). The agent must find and fix every site where a monetary amount is rounded incorrectly.",
+  "environment_setup": "The Dockerfile copies a Python package billing_lib/ into /app/billing_lib/ with modules: __init__.py, __main__.py, cli.py, calculator.py, rounding.py, tax.py, discount.py, fees.py, currency.py. The rounding.py module defines round_money() using Decimal ROUND_HALF_EVEN (wrong mode). calculator.py uses round_money() for subtotal, total, and late penalty. tax.py uses Python's round() directly. discount.py uses math.trunc() directly. fees.py uses math.ceil() directly. currency.py uses Decimal.quantize(ROUND_HALF_EVEN) inline. No .git, no tests, no reference implementation. The CLI entry point is python3 -m billing_lib <invoice.json>.",
+  "instruction_summary": "The billing module at /app/billing_lib/ must round every monetary amount using round-half-up to 2 decimal places. A customer reported that a $1.00 item with 12.5% tax shows $0.12 instead of $0.13. Fix all rounding throughout the module. CLI: python3 -m billing_lib <invoice.json>. JSON input: items (array of {name, price, qty}), optional rates: tax_rate, discount_rate, processing_fee_rate, exchange_rate, late_penalty_rate. Output JSON fields: subtotal, discount, after_discount, tax, processing_fee, pre_conversion_total, currency_adjusted, late_penalty, total.",
+  "solution_outline": [
+    "Fix rounding.py: change ROUND_HALF_EVEN to ROUND_HALF_UP in import and usage",
+    "Fix tax.py: replace round(tax, 2) with round_money(tax) from .rounding",
+    "Fix discount.py: replace math.trunc(discount * 100) / 100 with round_money(discount) from .rounding",
+    "Fix fees.py: replace math.ceil(fee * 100) / 100 with round_money(fee) from .rounding",
+    "Fix currency.py: replace inline Decimal quantize with round_money(converted) from .rounding"
+  ],
+  "test_plan": [
+    "test_subtotal_rounding_half_up: items=[{price:4.5,qty:0.25}], subtotal=1.125 should be 1.13 (not 1.12 from ROUND_HALF_EVEN). Probes rounding.py site.",
+    "test_tax_rounding_half_up: items=[{price:1.0,qty:1}], tax_rate=0.125, tax=0.125 should be 0.13 (not 0.12 from Python round()). Probes tax.py site.",
+    "test_discount_rounding_half_up: items=[{price:3.0,qty:1}], discount_rate=0.025, discount=0.075 should be 0.08 (not 0.07 from math.trunc). Probes discount.py site.",
+    "test_processing_fee_rounding_half_up: items=[{price:1.33,qty:1}], processing_fee_rate=0.01, fee=0.0133 should be 0.01 (not 0.02 from math.ceil). Probes fees.py site.",
+    "test_currency_conversion_rounding_half_up: items=[{price:50.9,qty:1}], exchange_rate=0.05, converted=2.545 should be 2.55 (not 2.54 from Decimal ROUND_HALF_EVEN). Probes currency.py site."
+  ],
+  "anti_cheat": "No test inputs or expected outputs exist anywhere in the image. The billing code contains no comments marking bug sites. Tests compute expected values independently using Decimal ROUND_HALF_UP. Each test uses an input that is not present in any shipped data file. Hard-coding outputs fails because tests use different inputs for each site. A solution that deletes everything or outputs empty JSON fails because the CLI must produce valid JSON with correct numeric values.",
+  "failure_modes": "An agent that fixes only the reported symptom (tax.py round() call) and tests only that case will believe the task is done. An agent that greps for 'round(' after fixing tax.py won't find math.trunc, math.ceil, or Decimal.quantize calls. An agent that does a global sed of ROUND_HALF_EVEN→ROUND_HALF_UP fixes rounding.py and currency.py but still misses discount.py (math.trunc) and fees.py (math.ceil). An agent must audit every module for any code that reduces precision to 2 decimal places, not just search for one pattern.",
+  "challenge_kind": "property_completeness",
+  "property": "Every monetary amount in the billing pipeline must be rounded using round-half-up to 2 decimal places. Values exactly halfway between two cents (e.g., $0.125) must always round up (to $0.13), never to the nearest even cent.",
+  "reported_symptom": "A $1.00 item with 12.5% tax rate shows $0.12 tax instead of $0.13",
+  "sites": [
+    {
+      "where": "rounding.py, round_money()",
+      "mechanism": "Uses Decimal.quantize with ROUND_HALF_EVEN (banker's rounding), so 1.125 rounds to 1.12 instead of 1.13",
+      "differs_from_other_sites": "Uses the Decimal quantize API, not Python's round() built-in. Fixing round() calls or math.trunc/ceil won't touch this. A grep for 'round(' misses Decimal.quantize entirely.",
+      "hidden_test_input": "items=[{price:4.5,qty:0.25}] → subtotal=1.125, expects 1.13"
+    },
+    {
+      "where": "tax.py, calculate_tax()",
+      "mechanism": "Uses Python's built-in round() which implements banker's rounding on floats, so 0.125 rounds to 0.12 instead of 0.13",
+      "differs_from_other_sites": "Uses the Python built-in round() function directly, not the Decimal API or math module. Fixing Decimal ROUND_HALF_EVEN imports won't affect this. This is the reported symptom.",
+      "hidden_test_input": "items=[{price:1.0,qty:1}], tax_rate=0.125 → tax=0.125, expects 0.13"
+    },
+    {
+      "where": "discount.py, calculate_discount()",
+      "mechanism": "Uses math.trunc(discount*100)/100 which truncates toward zero, so 0.075 becomes 0.07 instead of 0.08",
+      "differs_from_other_sites": "Uses math.trunc() for truncation — completely different function from round() or Decimal. Grep for 'round(' or 'ROUND_HALF' won't find math.trunc.",
+      "hidden_test_input": "items=[{price:3.0,qty:1}], discount_rate=0.025 → discount=0.075, expects 0.08"
+    },
+    {
+      "where": "fees.py, calculate_processing_fee()",
+      "mechanism": "Uses math.ceil(fee*100)/100 which always rounds up toward positive infinity, so 0.0133 becomes 0.02 instead of 0.01",
+      "differs_from_other_sites": "Uses math.ceil() which always rounds up — the opposite bias from truncation. Searching for round, trunc, or Decimal won't find math.ceil.",
+      "hidden_test_input": "items=[{price:1.33,qty:1}], processing_fee_rate=0.01 → fee=0.0133, expects 0.01"
+    },
+    {
+      "where": "currency.py, convert_currency()",
+      "mechanism": "Uses Decimal.quantize with ROUND_HALF_EVEN inline (not via round_money), so 2.545 rounds to 2.54 instead of 2.55",
+      "differs_from_other_sites": "Uses the Decimal API directly with its own ROUND_HALF_EVEN import, bypassing rounding.py entirely. Fixing rounding.py's ROUND_HALF_EVEN does not fix this module. A grep limited to rounding.py misses this inline usage.",
+      "hidden_test_input": "items=[{price:50.9,qty:1}], exchange_rate=0.05 → converted=2.545, expects 2.55"
+    }
+  ],
+  "partial_fix": "The agent fixes rounding.py (ROUND_HALF_EVEN→ROUND_HALF_UP) and tax.py (round()→round_money()). The reported symptom ($1.00 at 12.5% tax) now shows $0.13 correctly. The subtotal rounding also works. The agent re-tests the reported case, which passes, and may conclude the fix is complete.",
+  "self_check_blind_spot": "After the partial fix, the reported symptom disappears and the tax calculation is correct for all inputs. The agent's natural re-test (tax on various amounts) passes. The other three modules (discount, fees, currency) produce wrong amounts that the agent never checks because they weren't part of the reported complaint and use different code patterns the agent didn't search for.",
+  "runnable_reference": "none",
+  "reference_in_environment": "none"
+}
+```

@@ -1,0 +1,68 @@
+{
+  "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout",
+  "key": "6c18ad97a3",
+  "stage": "gen_failed",
+  "calibration": "",
+  "arm": "treatment",
+  "genre": "spec",
+  "updated": "2026-10-22T03:51:45",
+  "started": "2026-10-22T02:01:41",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-timesheet-to-payroll-converter-with-st-20261022-020141-ec7a",
+  "gen": {
+    "status": "failed",
+    "task_dir": null,
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-timesheet-to-payroll-converter-with-st-20261022-020141-ec7a",
+    "run_id": "a-timesheet-to-payroll-converter-with-st-20261022-020141-ec7a",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md pastes 11 expected values from the tests (e.g. ['0.0', '0.25', '1806.25']); state the rule that produces them instead"
+        ]
+      },
+      {
+        "round": 1,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md pastes 8 expected values from the tests (e.g. ['0.0', '0.25', '40.0']); state the rule that produces them instead"
+        ]
+      },
+      {
+        "round": 2,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md pastes 5 expected values from the tests (e.g. ['0.0', '5.0', 'FLAGGED ENTRIES:']); state the rule that produces them instead"
+        ]
+      },
+      {
+        "round": 3,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md pastes 4 expected values from the tests (e.g. ['0.0', '5.0', 'missing clock-in']); state the rule that produces them instead"
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 117664,
+      "completion_tokens": 439958,
+      "cost_usd": 0.36318052219999997
+    },
+    "seconds": 6604.6,
+    "task_name": null
+  },
+  "record": {
+    "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout",
+    "arm": "treatment",
+    "stage": "generate",
+    "verdict": "gen_failed",
+    "decision": "rejected",
+    "why": "failed generation: Part 1 checks",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-timesheet-to-payroll-converter-with-st-20261022-020141-ec7a"
+  }
+}

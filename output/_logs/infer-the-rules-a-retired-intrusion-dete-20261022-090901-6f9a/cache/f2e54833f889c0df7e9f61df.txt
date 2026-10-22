@@ -1,0 +1,169 @@
+```json
+{
+  "name": "ids-rule-inference-from-logs",
+  "description": "Infer the exact rules of a retired IDS from a labelled flow log and reproduce its decisions on held-out flows.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["ids", "rule-inference", "network-flows", "classification", "reverse-engineering"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A company retired its Watchgate v3.2 intrusion detection system and needs a compatible replacement. Before decommissioning, the ops team exported a labelled log of ~300 network flows with the system's decisions (PASS or the rule that flagged it). The old documentation survives but was revised for a later version and no longer matches v3.2 exactly. Your job is to reverse-engineer the real rules from the data and build a classifier that reproduces Watchgate's behaviour on new flows.",
+  "environment_setup": "The Dockerfile installs Python 3.12, copies a data-generation script to /tmp, runs it (seed 42) to produce /app/flows_labelled.csv, then deletes the generator. It also copies /app/classifier.py (a skeleton with wrong default parameters from the stale README), /app/README.md (partially inaccurate Watchgate documentation), and /app/DECISIONS.md (precedence rules). The CSV has columns: timestamp,source_ip,dest_ip,dest_port,protocol,syn_flag,ack_flag,bytes_out,bytes_in,label. No services run; everything is offline.",
+  "instruction_summary": "Build a classifier at /app/classifier.py that reads a CSV of flows (path given as sole argument) and prints one label per line to stdout (BACKDOOR, SYN_FLOOD, PORT_SCAN, SWEEP, or PASS). Flows are processed in timestamp order; each flow's classification may depend on preceding flows within sliding time windows. instruction.md states: time windows are inclusive on both ends [t-window, t]; a flow counts itself in its own window; rules are evaluated in order BACKDOOR → SYN_FLOOD → PORT_SCAN → SWEEP (first match wins); internal IPs are RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16); when the README and the data disagree, the data is correct.",
+  "solution_outline": [
+    "Write the correct classifier.py to /app/classifier.py with the inferred rule parameters",
+    "BACKDOOR_PORTS = {31337, 4444, 5555, 12345, 6666, 6667}, with exception: skip if both source_ip and dest_ip are internal",
+    "SYN_FLOOD: ≥ 6 flows with syn_flag=1 AND ack_flag=0 from same source_ip to same dest_ip within [t-60, t] inclusive",
+    "PORT_SCAN: ≥ 5 distinct dest_ports from same source_ip to same dest_ip within [t-90, t] inclusive",
+    "SWEEP: ≥ 4 distinct dest_ips from same source_ip within [t-120, t] inclusive",
+    "Evaluate in order BACKDOOR → SYN_FLOOD → PORT_SCAN → SWEEP; first match wins",
+    "Each flow is included in its own window count",
+    "Verify classifier against /app/flows_labelled.csv before finishing"
+  ],
+  "test_plan": [
+    "test_backdoor_port_31337: External→internal flow to port 31337 (not in README) must output BACKDOOR",
+    "test_backdoor_port_12345: External→internal flow to port 12345 (not in README) must output BACKDOOR",
+    "test_backdoor_port_6667: External→internal flow to port 6667 (not in README) must output BACKDOOR",
+    "test_internal_internal_backdoor: Internal→internal flow to BACKDOOR port 4444 must output PASS (exception)",
+    "test_syn_flood_threshold: 5 SYN-only flows → PASS, 6 SYN-only flows → SYN_FLOOD (threshold is 6, README says 4)",
+    "test_syn_flood_window: 6 SYN-only flows where first is 61s before last → PASS (window is 60s, README says 120s)",
+    "test_syn_flood_ack_flag: 6 flows with syn=1 ack=1 → PASS (ack_flag must be 0; README omits this)",
+    "test_port_scan_threshold: 4 distinct ports → PASS, 5 distinct ports → PORT_SCAN (threshold is 5, README says 3)",
+    "test_port_scan_window: 5 ports spread over 91s with first outside window → PASS (window is 90s, README says 60s)",
+    "test_sweep_threshold: 3 distinct dest IPs → PASS, 4 distinct dest IPs → SWEEP (threshold is 4, README says 3)",
+    "test_rule_order_backdoor_first: Flow matching both BACKDOOR and SYN_FLOOD labelled BACKDOOR",
+    "test_rule_order_portscan_before_sweep: Flow matching both PORT_SCAN and SWEEP labelled PORT_SCAN",
+    "test_window_inclusive_left_boundary: Flow at exact left edge of window (t-60) is counted toward SYN_FLOOD",
+    "test_self_inclusive: 5 prior SYN-only flows + current = 6 → SYN_FLOOD (current flow counts itself)",
+    "test_normal_traffic_pass: Standard web/SSH/DNS flows on common ports output PASS",
+    "test_held_out_mixed_accuracy: 200 flows from seed 101 covering all rules; every label must match reference"
+  ],
+  "anti_cheat": "The data generator script is deleted from the image after build. The classifier skeleton has the README's wrong defaults. The README lists only 3 of 6 BACKDOOR ports, gives wrong thresholds (4/3/3 instead of 6/5/4), wrong windows (120/60 instead of 60/90), omits the ack_flag requirement, omits the internal-internal exception, and states half-open windows. No reference implementation, .git, or expected-output file exists. The tests use their own independent reference classifier in tests/reference.py, never the image's code.",
+  "failure_modes": "An agent that implements the README's values without verifying against data will fail on thresholds, windows, port lists, and the ack_flag requirement. An agent that doesn't notice the internal-internal BACKDOOR exception will over-flag. An agent that uses half-open windows [t-w, t) instead of inclusive [t-w, t] will miss boundary flows. An agent that doesn't count the current flow in its own window will under-count by one at threshold boundaries. An agent that checks rules in the wrong order will mislabel overlapping patterns.",
+  "shape": "rule induction from labelled examples with a stale specification",
+  "hidden_evaluation": "The tests construct specific flow scenarios targeting each rule parameter that differs from the README (3 hidden BACKDOOR ports, the internal-internal exception, the exact thresholds 6/5/4, the exact windows 60/90/120, the ack_flag=0 requirement, inclusive boundaries, self-inclusive counting, rule precedence). A final broad-accuracy test generates 200 flows from seed 101 and compares every label to the reference classifier. The agent never sees the test inputs; each check isolates one parameter so partial credit is impossible.",
+  "checks": [
+    {
+      "requirement": "DECISIONS.md: 'The labelled export data reflects the actual system behavior'",
+      "assumed_instead": "BACKDOOR ports are only {4444, 5555, 6666} as the README states",
+      "hidden_test_input": "External IP sends TCP flow to port 31337",
+      "why_missed": "Agent may only look at README port list and not group BACKDOOR-labelled flows by dest_port to find additional ports"
+    },
+    {
+      "requirement": "DECISIONS.md: 'The labelled export data reflects the actual system behavior'",
+      "assumed_instead": "BACKDOOR ports are only {4444, 5555, 6666} as the README states",
+      "hidden_test_input": "External IP sends TCP flow to port 12345",
+      "why_missed": "Only 2-3 examples of port 12345 in 300-flow training set; agent may dismiss them as noise"
+    },
+    {
+      "requirement": "DECISIONS.md: 'The labelled export data reflects the actual system behavior'",
+      "assumed_instead": "BACKDOOR ports are only {4444, 5555, 6666} as the README states",
+      "hidden_test_input": "External IP sends TCP flow to port 6667",
+      "why_missed": "Port 6667 (IRC) looks benign; only 2 examples in training data"
+    },
+    {
+      "requirement": "Training data: internal→internal flows to BACKDOOR ports are labelled PASS",
+      "assumed_instead": "All flows to BACKDOOR ports are flagged regardless of source/destination (as README states: 'Applies to all TCP flows')",
+      "hidden_test_input": "10.0.1.5 sends TCP flow to 10.0.2.10 on port 4444",
+      "why_missed": "Only 2-3 internal-internal examples in training data; easy to overlook when most BACKDOOR flows are external"
+    },
+    {
+      "requirement": "Training data: flows with exactly 5 SYN-only (syn=1,ack=0) within 60s are PASS; 6 are SYN_FLOOD",
+      "assumed_instead": "Threshold is ≥4 as README states",
+      "hidden_test_input": "5 SYN-only flows from same source to same dest within 60s → expected PASS",
+      "why_missed": "Agent may use README threshold without verifying boundary cases in data"
+    },
+    {
+      "requirement": "Training data: SYN_FLOOD only triggers when flows fit within 60s window",
+      "assumed_instead": "Window is 120s as README states",
+      "hidden_test_input": "6 SYN-only flows spread over 61s (first at t=0, last at t=61) → expected PASS",
+      "why_missed": "Agent must reconstruct time windows from timestamps and labels; straightforward but rarely done"
+    },
+    {
+      "requirement": "Training data: flows with syn=1 and ack=1 do not contribute to SYN_FLOOD count",
+      "assumed_instead": "SYN_FLOOD counts all flows with syn_flag=1 (as README states, omitting ack_flag)",
+      "hidden_test_input": "6 flows with syn=1 ack=1 from same source to same dest within 60s → expected PASS",
+      "why_missed": "README only mentions syn_flag; agent must check whether ack_flag matters by analyzing labelled SYN_FLOOD vs PASS flows"
+    },
+    {
+      "requirement": "Training data: PORT_SCAN triggers at ≥5 distinct ports, not ≥3",
+      "assumed_instead": "Threshold is ≥3 as README states",
+      "hidden_test_input": "4 distinct ports from same source to same dest within 90s → expected PASS",
+      "why_missed": "Agent may trust README threshold; boundary cases in training data require careful counting"
+    },
+    {
+      "requirement": "Training data: PORT_SCAN window is 90s, not 60s",
+      "assumed_instead": "Window is 60s as README states",
+      "hidden_test_input": "5 ports with first at t=0 and last at t=91 → only 4 ports in window [1,91] → expected PASS",
+      "why_missed": "Temporal boundary analysis is tedious; most agents skip it"
+    },
+    {
+      "requirement": "Training data: SWEEP triggers at ≥4 distinct dest IPs, not ≥3",
+      "assumed_instead": "Threshold is ≥3 as README states",
+      "hidden_test_input": "3 distinct dest IPs from same source within 120s → expected PASS",
+      "why_missed": "Only 1-2 boundary examples in training data"
+    },
+    {
+      "requirement": "instruction.md: 'Rules are evaluated in order: BACKDOOR → SYN_FLOOD → PORT_SCAN → SWEEP. First matching rule wins.'",
+      "assumed_instead": "Rule order does not matter in practice",
+      "hidden_test_input": "6 SYN-only flows to port 31337 from external IP → all labelled BACKDOOR (not SYN_FLOOD)",
+      "why_missed": "Agent may implement rules in different order or not handle first-match-wins correctly"
+    },
+    {
+      "requirement": "instruction.md: 'Time windows are inclusive on both ends: [t - window, t]'",
+      "assumed_instead": "Half-open interval [t-window, t) as README states",
+      "hidden_test_input": "SYN-only flow at t=0 and 5 more at t=60; the t=0 flow is at exact left boundary of [0,60] window → SYN_FLOOD",
+      "why_missed": "Agent may follow README's half-open convention instead of instruction.md's inclusive specification"
+    },
+    {
+      "requirement": "instruction.md: 'A flow counts itself in its own time window'",
+      "assumed_instead": "Only previously seen flows count toward the window",
+      "hidden_test_input": "5 prior SYN-only flows in window + current SYN-only flow = 6 total → SYN_FLOOD",
+      "why_missed": "Self-inclusion is stated but unintuitive; agent may count only previous flows"
+    },
+    {
+      "requirement": "Basic classification correctness: normal traffic must remain PASS",
+      "assumed_instead": "N/A",
+      "hidden_test_input": "Standard HTTP (port 80), HTTPS (443), SSH (22), DNS (53/UDP) flows between normal IPs",
+      "why_missed": "Overly aggressive thresholds or missing exceptions could flag benign traffic"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Normal web traffic (ports 80, 443) from any source to internal dest is PASS",
+      "hidden_test_input": "External→internal flows on ports 80 and 443 with typical payload sizes"
+    },
+    {
+      "behaviour": "Internal-to-internal SSH (port 22) traffic is PASS",
+      "hidden_test_input": "10.0.1.5 → 10.0.2.10 on port 22 with syn=1, ack=1"
+    }
+  ],
+  "ground_truth": "tests/reference.py contains the canonical classifier with the true rule parameters (BACKDOOR_PORTS, thresholds, windows, ack_flag check, internal-internal exception). Each test either constructs specific flows and compares the agent's output to the reference, or generates a batch from seed 101 and compares all labels. Expected values are never hand-coded; they come from running the reference classifier.",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "Contradicting sources with a stated precedence",
+      "where": "README.md has wrong thresholds (4/3/3 vs 6/5/4), wrong windows (120/60 vs 60/90), incomplete BACKDOOR port list, omits ack_flag, omits internal-internal exception, states half-open windows; DECISIONS.md says data wins over documentation",
+      "fairness": "DECISIONS.md explicitly states: 'The labelled export data reflects the actual system behavior. If the README contradicts the data, the data is correct.'"
+    },
+    {
+      "knob": "Hidden-edge coverage",
+      "where": "The training data has only 2-3 examples of each hidden BACKDOOR port and the internal-internal exception; README-documented ports have many more examples",
+      "fairness": "Every hidden edge case IS present in the training data with correct labels; a thorough analysis of BACKDOOR-labelled and PASS-labelled flows reveals all of them"
+    },
+    {
+      "knob": "Convention traps",
+      "where": "README says half-open windows [t-w, t); instruction.md says inclusive [t-w, t]. README says SYN_FLOOD counts syn_flag=1; real rule requires syn=1 AND ack=0",
+      "fairness": "instruction.md explicitly states the inclusive convention and self-inclusion; the ack_flag requirement is inferable from training data (syn=1,ack=1 flows are never labelled SYN_FLOOD)"
+    },
+    {
+      "knob": "Varied hidden draws",
+      "where": "The final broad-accuracy test generates 200 flows from seed 101 covering all rule types with randomized IPs, timestamps, and port sequences",
+      "fairness": "The training data uses the same data distribution (seed 42); the agent can validate their classifier against all 300 training labels before submitting"
+    }
+  ]
+}
+```

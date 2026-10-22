@@ -1,0 +1,162 @@
+```json
+{
+  "name": "address-normalisation-rule-recovery",
+  "description": "Recover ordered rewrite rules from 900 before/after address pairs and implement a Python normaliser that reproduces the retired engine on unseen addresses.",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": ["rule-induction", "regex-rewrites", "address-normalization", "ordered-rules"],
+  "expert_time_estimate_min": 75,
+  "junior_time_estimate_min": 180,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A postal service retired an address-normalisation engine that applied a fixed ordered list of regex rewrite rules. About 900 before/after address pairs captured from the engine survive in a TSV file, along with a postal style guide documenting the conventions the engine followed. Your job is to study the pairs, infer the exact rules and their order, and implement a replacement normaliser in Python that reproduces the engine's output character-for-character on new addresses.",
+  "environment_setup": "The Dockerfile builds from python:3.12-slim-bookworm. At build time, a generator script creates ~900 training pairs using the reference engine (24 ordered regex rewrite rules + final uppercase), writes them to /app/data/training.tsv, and the generator + engine scripts are deleted. The stub /app/normalise.py has --input/--output argparse flags and reads stdin/writes stdout. /app/data/README.md is the postal style guide. /app/instruction.md describes the task. /app/tests_public/ has ~60 common-path test pairs. No extra packages are installed; the solution must use only stdlib.",
+  "instruction_summary": "Implement /app/normalise.py to read addresses from stdin (one per line) and write normalised addresses to stdout (one per line), preserving the existing --input and --output CLI flags. The training pairs are in /app/data/training.tsv (tab-separated: before<TAB>after). The postal style guide is in /app/data/README.md. The normaliser must reproduce the retired engine's behaviour exactly, including rule ordering for overlapping patterns, rare rule expansions, and patterns that must NOT trigger a rule. Held-out evaluation pairs come from the same generator as the training pairs.",
+  "solution_outline": [
+    "Read /app/data/training.tsv and /app/data/README.md to understand the rules",
+    "Identify whitespace normalization rules (strip, collapse, comma→space) from training pairs",
+    "Identify PO Box normalization pattern from training pairs (P.O. Box, PO Box, P.O.B. → PO BOX)",
+    "Identify unit designator rules: Apt→UNIT, Suite→UNIT, #N→UNIT N, Rm→ROOM",
+    "Discover SAINT-before-STREET ordering: 'St' followed by a letter means SAINT; 'St' at end means STREET; SAINT rule must fire first",
+    "Identify all street type expansions: St→STREET, Rd→ROAD, Ave→AVENUE, Dr→DRIVE, Blvd→BOULEVARD, Ln→LANE, Ct→COURT, Pl→PLACE, Cir→CIRCLE, Ter→TERRACE, Pkwy→PARKWAY, Hwy→HIGHWAY",
+    "Identify rare rules: Bldg→BUILDING, Flr→FLOOR from sparse training examples",
+    "Identify directional prefix rules: ^N→NORTH, ^S→SOUTH, ^E→EAST, ^W→WEST (single letter + whitespace at start only)",
+    "Verify near-miss patterns are NOT expanded: Mt, Ft, North-as-name, NE/NW/SE/SW",
+    "Implement all rules as ordered regex substitutions in /app/normalise.py with final .upper()",
+    "Test against training pairs and public tests, iterating on edge cases"
+  ],
+  "test_plan": [
+    "test_stdin_interface: pipe 5 simple addresses via stdin, check stdout matches engine output line-by-line",
+    "test_input_flag: run with --input file, verify output matches engine",
+    "test_output_flag: run with --output file, verify file contents match engine",
+    "test_whitespace: 5 addresses with extra spaces, leading/trailing whitespace → single-space uppercase output",
+    "test_comma_removal: 3 addresses with commas → commas replaced by spaces, collapsed",
+    "test_po_box: 5 PO Box variants (P.O. Box, PO Box, P.O.B., P O Box) → all become PO BOX",
+    "test_street_types: 10 addresses covering each of St/Rd/Ave/Dr/Blvd/Ln/Ct/Pl/Cir/Ter → full expansion",
+    "test_saint_vs_street: 5 addresses like 'St John St', 'St Paul Rd', 'St Mary Blvd' → SAINT expansion before STREET",
+    "test_unit_apt: 5 addresses with Apt/Apt. → UNIT",
+    "test_unit_suite: 3 addresses with Suite → UNIT",
+    "test_unit_hash: 3 addresses with #N → UNIT N",
+    "test_room: 3 addresses with Rm/Rm. → ROOM",
+    "test_bldg: 3 addresses with Bldg/Bldg. → BUILDING (rare rule)",
+    "test_flr: 3 addresses with Flr/Flr. → FLOOR (rarest rule, ~1 training instance)",
+    "test_pkwy: 3 addresses with Pkwy → PARKWAY",
+    "test_hwy: 3 addresses with Hwy → HIGHWAY",
+    "test_directional: 5 addresses starting with N/S/E/W + space → NORTH/SOUTH/EAST/WEST",
+    "test_north_not_direction: 3 addresses with 'North' as a street name (e.g., '123 North Ave') → just uppercased, not treated as directional prefix",
+    "test_mt_not_expanded: 3 addresses with 'Mt' (e.g., 'Mt Vernon Rd') → MT stays, not MOUNT",
+    "test_ft_not_expanded: 3 addresses with 'Ft' (e.g., 'Ft Worth Dr') → FT stays, not FORT",
+    "test_ne_not_expanded: 3 addresses starting with 'NE' → NE stays, not NORTHEAST",
+    "test_3rule_chain: 5 addresses with directional + SAINT + STREET (e.g., 'N St John St') → NORTH SAINT JOHN STREET",
+    "test_uppercase: 5 mixed-case addresses → all-uppercase output",
+    "test_overall_rate: 300 held-out pairs from fresh seed; exact match rate must be ≥85%"
+  ],
+  "anti_cheat": "The engine rules and generator are deleted from the image after build. No reference implementation, no .git, no backup. A lookup-table approach fails because the 300 held-out addresses are generated from a different seed with novel component combinations (e.g., unseen street names + seen abbreviation patterns), so they are almost certainly not in the 900 training pairs. The anti-cheese gate checks that outputs on novel combinations match rule-based inference, not memorisation.",
+  "failure_modes": "The most common failure is treating all 'St' as STREET and missing the SAINT rule, which causes wrong output on any 'St <Name>' address. A close second is getting the SAINT/STREET ordering wrong (STREET first corrupts 'St John' into 'STREET John'). Agents also frequently miss rare rules (Bldg, Flr) that appear only 1-3 times in 900 pairs, or incorrectly expand decoy patterns (Mt→MOUNT, Ft→FORT, NE→NORTHEAST). Getting directional prefix scope wrong (expanding mid-line N or full-word 'North') is another common error. These are the agent's fault because the README states the conventions and the training data contains the evidence, but the agent must study both carefully rather than assuming default behaviours.",
+  "shape": "rule induction from examples; graded on held-out address pairs",
+  "hidden_evaluation": "The tests generate 300 held-out address pairs from fresh seeds using the same generator and engine that produced the training data. Each pair uses a novel combination of street names, numbers, types, units, directionals, and formatting variations. The agent's normaliser is run once on all 300 'before' addresses, and each output is compared character-by-character to the engine's 'after'. Specific subsets test SAINT/STREET ordering, rare rules (Bldg with 3 training instances, Flr with 1), near-miss patterns (North, Mt, Ft, NE), and 3-rule chains. The agent cannot reproduce this evaluation because the held-out seeds and component combinations are not available in the image.",
+  "checks": [
+    {
+      "requirement": "README: 'St followed by a proper name means Saint and is expanded to SAINT. St at the end means STREET. SAINT expansion must happen before STREET.'",
+      "assumed_instead": "Replace all 'St' with 'STREET' globally, or don't distinguish Saint from Street",
+      "hidden_test_input": "5 addresses like 'St Catherine Cir', 'St Andrew Pl St', '45 St Mark Rd' where St precedes a name",
+      "why_missed": "Agent might test only 'St' at end-of-line cases and assume all St→STREET"
+    },
+    {
+      "requirement": "README: 'SAINT expansion must happen before STREET expansion; otherwise St John becomes STREET John'",
+      "assumed_instead": "Apply STREET rule first, or apply both simultaneously",
+      "hidden_test_input": "3 addresses like 'St John St', 'N St Paul St' requiring SAINT rule to fire before STREET rule on the same line",
+      "why_missed": "Agent might not test addresses with two St occurrences where order matters"
+    },
+    {
+      "requirement": "README: 'Bldg (or Bldg.) → BUILDING'",
+      "assumed_instead": "Ignore Bldg because it appears only ~3 times in 900 pairs",
+      "hidden_test_input": "3 addresses with Bldg (e.g., 'PO Box 45 Bldg 3', '123 Main St Bldg 7')",
+      "why_missed": "Rare rule with few training examples; agent might filter out 'noise' or not notice the pattern"
+    },
+    {
+      "requirement": "README: 'Flr (or Flr.) → FLOOR'",
+      "assumed_instead": "Ignore Flr because it appears only ~1 time in 900 pairs",
+      "hidden_test_input": "3 addresses with Flr (e.g., '456 Oak Ave Flr 2', 'PO Box 12 Flr 5')",
+      "why_missed": "Extremely rare rule; agent may not discover it from data alone without reading README"
+    },
+    {
+      "requirement": "README: 'Only single letters followed by whitespace are treated as directional prefixes. Full words like North are NOT directional prefixes.'",
+      "assumed_instead": "Expand any word starting with N/S/E/W at line start as a directional, or expand mid-line directionals",
+      "hidden_test_input": "3 addresses like '123 North Ave', '456 South Ln', 'NE Main St' where North/NE must not be expanded as directionals",
+      "why_missed": "Agent might implement ^North\\s+ → NORTH (harmless) but also ^NE\\s+ → NORTHEAST (wrong)"
+    },
+    {
+      "requirement": "README: 'The following abbreviations are NOT expanded: Mt, Ft'",
+      "assumed_instead": "Expand Mt→MOUNT and Ft→FORT as 'common sense' address normalization",
+      "hidden_test_input": "3 addresses with Mt/Ft: 'Mt Vernon Rd', 'Ft Worth Dr', '789 Mt Adams Pl'",
+      "why_missed": "Agent might add rules for common abbreviations not in the engine's rule set"
+    },
+    {
+      "requirement": "README: 'P.O. Box, PO Box, P.O.B., P O Box → PO BOX'",
+      "assumed_instead": "Only handle the most common 'PO Box' variant",
+      "hidden_test_input": "3 addresses with unusual PO Box formats: 'P.O. Box 1234', 'P.O.B. 567', 'P O Box 89'",
+      "why_missed": "Agent might write a simple string replace for 'PO Box' without handling all variants"
+    },
+    {
+      "requirement": "README: '# followed by a number → UNIT [number]'",
+      "assumed_instead": "Ignore # as a unit designator, or treat # as a comment character",
+      "hidden_test_input": "3 addresses with #: '123 Main St #5', '456 Oak Ave #12A'",
+      "why_missed": "Agent might not notice # in the training data or might not implement the regex correctly"
+    },
+    {
+      "requirement": "instruction.md: 'The engine applied its rules in a specific order. When two rules could both match the same text, the order of application changes the output.'",
+      "assumed_instead": "Apply rules in arbitrary order or all at once",
+      "hidden_test_input": "5 addresses with 3-rule chains: 'N St John St', 'S St Mary Pl Apt 3' requiring directional→SAINT→STREET ordering",
+      "why_missed": "Agent might test each rule independently but not verify ordering on overlapping cases"
+    },
+    {
+      "requirement": "README: 'All output is uppercase. Components are separated by single spaces. No commas, no trailing periods, no extra whitespace.'",
+      "assumed_instead": "Preserve original casing, leave commas, keep extra spaces",
+      "hidden_test_input": "5 addresses with mixed case, commas, extra spaces, trailing periods on abbreviations",
+      "why_missed": "Agent might focus on abbreviation expansion and forget output formatting"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "The stub's --input and --output CLI flags must remain functional",
+      "hidden_test_input": "Run normalise.py with --input /tmp/addr.txt and --output /tmp/out.txt on 5 test addresses"
+    },
+    {
+      "behaviour": "Stdin/stdout interface: read one address per line from stdin, write one normalised address per line to stdout",
+      "hidden_test_input": "Pipe 10 addresses via stdin, verify 10 lines on stdout"
+    },
+    {
+      "behaviour": "Addresses that already match the normal form are left unchanged (idempotent for clean input)",
+      "hidden_test_input": "3 already-normalised addresses like '123 MAIN STREET' → output is identical"
+    }
+  ],
+  "ground_truth": "The tests import the reference engine from /tests/engine.py, which contains the exact 24 ordered regex rewrite rules + final .upper() call. The /tests/generator.py creates 'before' addresses from component lists and formatting variations using a seeded RNG, then applies the engine to produce 'after' addresses. The test generates 300 held-out pairs with seed 99999 (different from the training seed 42) and compares the agent's output to the engine's output character-by-character. Expected values are never hardcoded; they are always computed by running the engine on the generated input.",
+  "dial": "Share of 300 held-out pairs reproduced exactly. Fair range 85–97%. The task is calibrated at 92%: a rule-per-pattern baseline (correct rules but wrong order, missing rare rules, missing near-miss guards) scores ~75%; a careful implementation scores 92%+; the oracle scores 100%. The threshold for passing is 85%.",
+  "quirk_matrix": {
+    "dimensions": ["rule_overlap", "rare_rule_frequency_in_training", "near_miss"],
+    "levels": {
+      "rule_overlap": ["none", "2-rule_overlap", "3-rule_chain"],
+      "rare_rule_frequency_in_training": ["5+_instances", "2-3_instances", "1_instance"],
+      "near_miss": ["absent", "1_decoy_pattern", "decoy_plus_casing_variant"]
+    },
+    "mix": "~30% easy cells (no overlap, 5+ training instances, no near-miss), ~40% medium (2-rule overlap or 2-3 training instances or 1 decoy), ~30% hard (3-rule chain, 1 training instance, decoy + casing variant). Each held-out draw covers one level per dimension; no draw is all-easy."
+  },
+  "public_tests": "About 30% coverage: 60 visible address pairs in /app/tests_public/test_common.py covering single-rule cases (simple street type expansion, basic unit designators, PO Box, whitespace cleanup, uppercase). No ordering interactions, no rare rules (Bldg/Flr), no near-miss patterns, no SAINT/STREET overlap in public tests.",
+  "anti_cheese": "Output-identity check: the 300 held-out pairs use fresh seeds generating novel component combinations not in the 900 training pairs. A lookup table of training pairs fails because held-out addresses contain unseen street names + seen abbreviation patterns (e.g., 'St Catherine Blvd' when training had 'St John Rd' but never 'St Catherine'). The test also includes at least 10 addresses with components that never appear in training (e.g., Flr with an unseen floor number, Bldg with an unseen building number), ensuring rule-based generalisation is required. No network access is available.",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "varied hidden draws",
+      "where": "300 held-out pairs generated from seed 99999, using the same generator and engine as training (seed 42). Different seeds produce different street name + type + unit + formatting combinations.",
+      "fairness": "README states: 'The held-out evaluation pairs are drawn from the same address generator as the training pairs.' The generator uses the same component lists and formatting logic for both training and held-out, only the seed differs."
+    },
+    {
+      "knob": "convention trap",
+      "where": "The postal style guide in /app/data/README.md specifies conventions that differ from 'common sense' normalization: SAINT before STREET ordering, single-letter-only directionals, Mt/Ft NOT expanded, # → UNIT, PO Box format variants.",
+      "fairness": "README explicitly states each convention: 'SAINT expansion must happen before STREET', 'Only single letters followed by whitespace are treated as directional prefixes', 'The following abbreviations are NOT expanded: Mt, Ft'. An expert reading the README can derive every expected behaviour."
+    }
+  ]
+}
+```

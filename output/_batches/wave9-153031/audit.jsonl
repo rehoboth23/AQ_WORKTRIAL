@@ -1,0 +1,54 @@
+{"time": "2026-10-22T15:30:31", "pid": 5331, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:31", "pid": 5331, "event": "stage", "topic": "@seeds/reaction-kinetics.yaml", "key": "0a7019b9c5", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:33", "pid": 5358, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:33", "pid": 5358, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:33", "pid": 5358, "event": "stage", "topic": "@seeds/excise-return.yaml", "key": "9d01066dab", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:35", "pid": 5373, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:35", "pid": 5373, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:35", "pid": 5373, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:35", "pid": 5373, "event": "stage", "topic": "@seeds/amplicon-variants.yaml", "key": "d291f1c717", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:37", "pid": 5398, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:37", "pid": 5398, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:37", "pid": 5398, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:37", "pid": 5398, "event": "skipped_locked", "topic": "@seeds/amplicon-variants.yaml"}
+{"time": "2026-10-22T15:30:37", "pid": 5398, "event": "stage", "topic": "@seeds/checkpoint-race.yaml", "key": "d1c4f47b75", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:39", "pid": 5417, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:39", "pid": 5417, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:39", "pid": 5417, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:39", "pid": 5417, "event": "skipped_locked", "topic": "@seeds/amplicon-variants.yaml"}
+{"time": "2026-10-22T15:30:39", "pid": 5417, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T15:30:39", "pid": 5417, "event": "stage", "topic": "@seeds/route-speedup.yaml", "key": "7f97d6890a", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "skipped_locked", "topic": "@seeds/amplicon-variants.yaml"}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "skipped_locked", "topic": "@seeds/route-speedup.yaml"}
+{"time": "2026-10-22T15:30:41", "pid": 5435, "event": "stage", "topic": "@seeds/stream-cipher.yaml", "key": "c70b87f6ee", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "skipped_locked", "topic": "@seeds/amplicon-variants.yaml"}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "skipped_locked", "topic": "@seeds/route-speedup.yaml"}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "skipped_locked", "topic": "@seeds/stream-cipher.yaml"}
+{"time": "2026-10-22T15:30:43", "pid": 5458, "event": "stage", "topic": "@seeds/pharmacy-prior-auth.yaml", "key": "dc20b0289b", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/amplicon-variants.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/route-speedup.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/stream-cipher.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T15:30:45", "pid": 5476, "event": "stage", "topic": "@seeds/key-rotation.yaml", "key": "edbce2e81d", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "batch_start", "batch": "wave9-153031", "topics": 9, "waves": [9], "control": false}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/amplicon-variants.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/route-speedup.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/stream-cipher.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "skipped_locked", "topic": "@seeds/key-rotation.yaml"}
+{"time": "2026-10-22T15:30:47", "pid": 5489, "event": "stage", "topic": "@seeds/session-store-migration.yaml", "key": "7d6f9d40ea", "frm": "pending", "to": "generating", "why": ""}

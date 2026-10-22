@@ -1,0 +1,183 @@
+```json
+{
+  "walkthrough": [
+    "1. Agent reads instruction.md: sees three explicitly stated rules — (1) strip CR/LF from any user-supplied value before it enters a response header, (2) replace external redirect targets with /, (3) strip semicolons from any user-supplied value before it enters a Set-Cookie header — plus the reported symptom: CRLF in POST /api/docs author field injects extra headers via X-Authored-By.",
+    "2. Agent reads docvault.py (single file, ~300 lines). Finds the POST /api/docs handler and sees self.send_header('X-Authored-By', author). Adds author = author.replace('\\r','').replace('\\n','') before the send_header call. This is Site A.",
+    "3. Agent retests the reported symptom: POST /api/docs with CRLF in author → no extra headers. Reported symptom gone. ✓",
+    "4. Agent greps for send_header in docvault.py. Gets ~8-9 hits including Content-Type, Content-Length (safe), X-Authored-By (fixed), Content-Disposition via make_content_disposition(), Location in /login, Location in /api/go, Set-Cookie in /api/prefs, Set-Cookie in /api/docs/{title}/star.",
+    "5. Agent examines each send_header hit. Finds Site B (Content-Disposition from make_content_disposition helper — CRLF in filename). Adds CRLF stripping inside the helper or at the call site.",
+    "6. Agent finds Site C (Location in /login from next_url query param). Recognizes both CRLF and open-redirect. Adds strip_crlf and redirect sanitization.",
+    "7. Agent finds Site D (Location in /api/go from row['url'] database lookup). Recognizes same two rules apply. Adds strip_crlf and redirect sanitization. Traces data flow from POST /api/shortcuts → shortcuts table → GET /api/go.",
+    "8. Agent finds Site E (Set-Cookie in /api/prefs from layout body field). Adds semicolon stripping.",
+    "9. Agent finds Site F (Set-Cookie in /api/docs/{title}/star from urllib.parse.unquote of path segment). Adds semicolon stripping. Recognizes URL-decoded semicolons (%3B → ;).",
+    "10. Agent writes ad-hoc curl tests for each site. All pass. Agent declares done.",
+    "VERDICT: A methodical agent that greps send_header in the single file finds ALL six sites. The only agents that fail are those who stop after fixing Site A and retesting only the reported symptom, or those who fix CRLF everywhere but forget the other two rules. Estimated solve rate: 3-4/5 — too high."
+  ],
+  "too_easy_because": [
+    "Single file (docvault.py): grep for 'send_header' immediately reveals every vulnerable call site in one search. The agent does not need to trace across modules.",
+    "Sites C and D share a mechanism too closely: both are send_header('Location', user_data) in the same file. After fixing Site C, a grep for 'Location' or 'send_header.*Location' instantly finds Site D. No cross-file tracing needed.",
+    "Sites E and F share a mechanism: both are send_header('Set-Cookie', f-string_with_user_data) in the same file. A grep for 'Set-Cookie' finds both in one pass.",
+    "The codebase is small enough (~300 lines) for the agent to read it end-to-end and spot every vulnerability without any search.",
+    "No indirection: except for Site B's helper function, every vulnerable send_header call is directly in a route handler the agent is already reading. There is no cross-module data flow that requires tracing.",
+    "The three rules, while adding conceptual complexity, function as a checklist: once the agent sees the rules, they can mechanically check each send_header call against all three rules. The challenge reduces to a scan, not a judgement of completeness."
+  ],
+  "spec": {
+    "name": "docvault-header-cookie-redirect-fix",
+    "description": "Fix header injection, open redirect, and cookie injection vulnerabilities across a small HTTP document management service with varied code paths, abstraction layers, and data flows spanning multiple modules.",
+    "difficulty": "hard",
+    "category": "security",
+    "tags": [
+      "http-security",
+      "crlf-injection",
+      "open-redirect",
+      "cookie-injection",
+      "python",
+      "property-completeness"
+    ],
+    "expert_time_estimate_min": 35.0,
+    "junior_time_estimate_min": 150.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "You are maintaining DocVault, a small internal document management service written in Python using the standard library's http.server. A penetration test found that sending a POST to /api/docs with carriage-return/line-feed characters in the author field causes extra HTTP headers to appear in the response. The pen-test report identifies three distinct security properties that the service violates at multiple locations. You must find and fix every violation while preserving all existing functionality.",
+    "environment_setup": "The Dockerfile builds from python:3.12-slim-bookworm with WORKDIR /app. It copies the docvault package (docvault/__init__.py, docvault/server.py, docvault/helpers.py, docvault/db.py, docvault/config.py) into /app/docvault/ and a run script into /app/run.sh. The service uses SQLite (stdlib) initialized on first run with seed data (a 'home' shortcut pointing to /dashboard, a 'Welcome' doc by 'admin', and default prefs). The service listens on port 8080. No comments mark any site. No .git, no upstream, no tests, no verify command.",
+    "instruction_summary": "Fix all violations of three security properties in the DocVault service (Python files under /app/docvault/). The service runs on port 8080.\n\n(1) No header injection: strip all CR (\\r) and LF (\\n) characters from user-supplied data before it goes into any response header value. 'Strip' means remove those characters and use the remaining string; do not reject the request or return an error — the request must still succeed normally.\n\n(2) No open redirect: if a user-supplied redirect target starts with http://, https://, or //, replace the entire Location value with '/' instead; relative paths (starting with '/') must redirect normally. Do not reject the request — the redirect must still occur.\n\n(3) No cookie attribute injection: strip all semicolons (;) from user-supplied data before it goes into any Set-Cookie header value. 'Strip' means remove those characters and use the remaining string; do not reject the request or return an error.\n\nUser-supplied data includes: JSON body fields, query parameters, URL path segments (after URL decoding), and data stored in the database that originally came from users.\n\nAll existing endpoints and behavior must continue working.\n\nThe reported symptom: POST /api/docs with author containing \\r\\n creates extra HTTP response headers.",
+    "solution_outline": [
+      "Add three helper functions (can go in helpers.py or server.py): strip_crlf(value) returning value with all \\r and \\n removed, sanitize_redirect(url) returning '/' if url starts with http://, https://, or //, else url unchanged, and strip_semicolons(value) returning value with all ';' removed",
+      "Fix Site A (server.py, do_POST /api/docs): wrap author in strip_crlf() before it becomes the X-Authored-By header value",
+      "Fix Site B (helpers.py, make_content_disposition()): call strip_crlf(filename) inside the helper before the f-string that builds the Content-Disposition value",
+      "Fix Site C (server.py, do_GET /login): apply sanitize_redirect() then strip_crlf() to next_url before it becomes the Location header value",
+      "Fix Site D (helpers.py, RedirectMixin.do_redirect()): apply sanitize_redirect() then strip_crlf() to the url parameter before it becomes the Location header value — this is the method called by server.py's /api/go handler after retrieving the URL from the database via db.get_shortcut()",
+      "Fix Site E (server.py, do_POST /api/prefs): wrap layout in strip_semicolons() before it goes into the Set-Cookie f-string",
+      "Fix Site F (helpers.py, set_starred_cookie()): wrap title in strip_semicolons() inside the helper before the f-string that builds the Set-Cookie value — this helper is called from server.py's /api/docs/{title}/star handler which URL-decodes the path segment"
+    ],
+    "test_plan": [
+      "test_authored_by_no_crlf: POST /api/docs with author='Alice\\r\\nX-Injected: true', assert no X-Injected header and X-Authored-By contains no CR/LF and equals 'AliceX-Injected: true' (stripped)",
+      "test_export_no_crlf: GET /api/exports/rep%0d%0aX-Evil:%20true, assert no X-Evil header and Content-Disposition has no CR/LF",
+      "test_login_location_no_crlf: GET /login?next=/dash%0d%0aX-Bad:%20evil, assert 302, no X-Bad header, Location has no CR/LF",
+      "test_shortcut_location_no_crlf: POST /api/shortcuts with code='xt', url='/path%0d%0aX-Hax:true', then GET /api/go/xt, assert no injected header and Location has no CR/LF",
+      "test_login_no_open_redirect_http: GET /login?next=http://evil.com, assert Location is '/'",
+      "test_login_no_open_redirect_https: GET /login?next=https://attacker.net/path, assert Location is '/'",
+      "test_login_protocol_relative: GET /login?next=//evil.com, assert Location is '/'",
+      "test_shortcut_no_open_redirect: POST /api/shortcuts with code='ab', url='https://evil.com', then GET /api/go/ab, assert Location is '/'",
+      "test_prefs_no_cookie_injection: POST /api/prefs with layout='dark; Secure', assert Set-Cookie value for layout is 'dark Secure' (semicolons stripped), no injected Secure attribute",
+      "test_star_no_cookie_injection: POST /api/docs/test%3B%20Secure/star, assert Set-Cookie starred value is 'test Secure' (semicolons stripped), no injected Secure attribute",
+      "test_create_doc_normal: POST /api/docs with normal author='Alice', assert 201 and X-Authored-By equals 'Alice'",
+      "test_export_normal: GET /api/exports/annual_report, assert 200 and Content-Disposition contains 'annual_report' and 'attachment'",
+      "test_login_relative_redirect: GET /login?next=/dashboard, assert Location is '/dashboard'",
+      "test_shortcut_internal_redirect: POST /api/shortcuts with url='/settings', then GET /api/go/{code}, assert Location is '/settings'",
+      "test_prefs_normal: POST /api/prefs with layout='dark', assert Set-Cookie starts with 'layout=dark' and contains 'Path=/'",
+      "test_star_normal: POST /api/docs/myproject/star, assert Set-Cookie starts with 'starred=myproject' and contains 'Path=/'",
+      "test_login_crlf_and_redirect_both: GET /login?next=http://evil.com%0d%0aX-Bad:true, assert Location is '/' (redirect rule fires first) and no X-Bad header",
+      "test_shortcut_crlf_and_redirect_both: POST /api/shortcuts with url='https://evil.com%0d%0aX-Bad:true', GET /api/go/{code}, assert Location is '/' and no X-Bad header",
+      "test_list_docs_still_works: GET /api/docs, assert 200 and JSON body contains documents",
+      "test_get_doc_still_works: GET /api/docs/Welcome, assert 200 and body contains doc content"
+    ],
+    "anti_cheat": "No solution, expected output, or test file exists in the image. The service code has no comments marking vulnerability sites. No .git or upstream to diff against. No verify/check command. The database is initialized with clean seed data at runtime. Tests exercise the live service with fresh inputs not present in shipped data, checking actual HTTP response headers parsed by http.client, not superficial strings. A solution that outputs nothing or hard-codes responses fails regression tests that check normal functionality with varied inputs.",
+    "failure_modes": "Agent fixes only the reported CRLF symptom in X-Authored-By (Site A), retests that one case, and stops. Agent fixes CRLF at all send_header call sites in server.py but misses Sites B, D, and F whose send_header calls are in helpers.py (inside make_content_disposition, RedirectMixin.do_redirect, and set_starred_cookie). Agent fixes CRLF everywhere but misses open redirects (different rule) or cookie injection (yet another rule). Agent fixes the obvious redirect (Site C, query param in server.py) but misses Site D (URL from database, redirected via RedirectMixin.do_redirect in helpers.py). Agent fixes cookie injection in /api/prefs (Site E, direct body field in server.py) but misses Site F (URL-decoded path parameter where the Set-Cookie header is set inside set_starred_cookie in helpers.py, and semicolons are percent-encoded in the raw request). Agent strips CRLF from redirect targets but forgets to also check for open redirects at the same code locations. Agent rejects requests with bad input instead of stripping and continuing, breaking the 'request must still succeed' requirement.",
+    "faults": [],
+    "requirements": [],
+    "themes": [],
+    "starter": "",
+    "property": "No user-supplied value can break out of a response header (via CRLF), a redirect Location (via external URL), or a cookie value (via semicolons that inject attributes).",
+    "reported_symptom": "Sending POST /api/docs with author field containing \\r\\n characters causes extra HTTP headers to appear in the response (CRLF injection in X-Authored-By).",
+    "sites": [
+      {
+        "where": "/app/docvault/server.py, do_POST /api/docs handler, send_header('X-Authored-By', author)",
+        "mechanism": "author from JSON request body is used directly as a header value without stripping CR/LF",
+        "differs_from_other_sites": "Most obvious: direct concatenation in a handler, the reported symptom points here. Fixing by adding .replace calls to the author variable in server.py doesn't reveal that helpers.py has make_content_disposition (Site B), RedirectMixin.do_redirect (Site D), or set_starred_cookie (Site F).",
+        "hidden_test_input": "POST /api/docs with author='Al\\r\\nice', check no 'ice' header exists and X-Authored-By equals 'Alice'"
+      },
+      {
+        "where": "/app/docvault/helpers.py, make_content_disposition(filename) function, called from server.py GET /api/exports/{filename} handler",
+        "mechanism": "filename from URL path goes through make_content_disposition() which f-strings it into a Content-Disposition return value; the caller in server.py passes that return value to send_header without re-checking for CRLF",
+        "differs_from_other_sites": "The CRLF vulnerability is entirely inside a helper function in a different module. Fixing Site A by adding strip calls to handler variables in server.py doesn't touch helpers.py. Grepping for send_header in server.py finds the call site but the dangerous concatenation is inside make_content_disposition in helpers.py. The agent must read the helper to see the f-string vulnerability.",
+        "hidden_test_input": "GET /api/exports/rep%0d%0aX-Evil:%20true, check no X-Evil header in response"
+      },
+      {
+        "where": "/app/docvault/server.py, do_GET /login handler, send_header('Location', next_url)",
+        "mechanism": "next_url from query parameter is used directly in Location header; vulnerable to both CRLF injection and open redirect",
+        "differs_from_other_sites": "Violates TWO rules (CRLF and open redirect) at a direct send_header call in server.py. Fixing only the open redirect (sanitize_redirect) doesn't fix CRLF for internal-path targets containing %0d%0a; fixing only CRLF doesn't fix open redirect for external URLs. Different vulnerability classes than the reported CRLF symptom require the agent to think beyond the obvious fix pattern.",
+        "hidden_test_input": "GET /login?next=//evil.com (open redirect) and GET /login?next=/dash%0d%0aX-Bad:evil (CRLF)"
+      },
+      {
+        "where": "/app/docvault/helpers.py, RedirectMixin.do_redirect(self, url) method, send_header('Location', url) — called from server.py GET /api/go/{code} handler after db.get_shortcut(code) returns a stored URL",
+        "mechanism": "URL from database (originally user-supplied via POST /api/shortcuts) flows through db.get_shortcut() in db.py, then into RedirectMixin.do_redirect() in helpers.py, which sets Location without checking for external URLs or CRLF",
+        "differs_from_other_sites": "Three-module data flow: user stores URL via POST /api/shortcuts → db.py writes to SQLite → server.py handler calls db.get_shortcut() → passes result to helpers.py RedirectMixin.do_redirect(). The send_header('Location', url) is inside a mixin method in helpers.py, not at the call site in server.py. Fixing Site C's direct send_header in server.py doesn't reveal this site — the agent must either grep helpers.py separately or trace the /api/go code path through the mixin. The user-supplied data is also indirect (from database, not the current request).",
+        "hidden_test_input": "POST /api/shortcuts with code='xt', url='https://evil.com', then GET /api/go/xt, check Location is '/'. Also POST shortcut with url='/path%0d%0aX-Hax:true', check no injected header."
+      },
+      {
+        "where": "/app/docvault/server.py, do_POST /api/prefs handler, send_header('Set-Cookie', f'layout={layout}; Path=/')",
+        "mechanism": "layout from JSON body is f-stringed into Set-Cookie without stripping semicolons, allowing injection of cookie attributes like Secure or HttpOnly",
+        "differs_from_other_sites": "Different rule (cookie injection, not CRLF or open redirect). Requires understanding that semicolons are the delimiter for cookie attributes. The code pattern (f-string into Set-Cookie) is in server.py but the vulnerability class is entirely different from CRLF, so an agent focused on CRLF patterns may overlook it.",
+        "hidden_test_input": "POST /api/prefs with layout='dark; Secure', check Set-Cookie layout value is 'dark Secure' (no Secure attribute injected)"
+      },
+      {
+        "where": "/app/docvault/helpers.py, set_starred_cookie(handler, title) function, handler.send_header('Set-Cookie', f'starred={title}; Path=/') — called from server.py POST /api/docs/{title}/star handler which does urllib.parse.unquote on the path segment before calling this helper",
+        "mechanism": "title is URL-decoded from the path parameter, then passed to set_starred_cookie() in helpers.py which f-strings it into Set-Cookie without stripping semicolons; the raw request has %3B not ;, so surface-level review of the URL path misses the danger",
+        "differs_from_other_sites": "The semicolons are not visible in the raw URL path — they appear only after URL decoding in server.py, and the Set-Cookie header is set in a helper function in helpers.py, not at the call site. Fixing Site E by searching for Set-Cookie in server.py doesn't reveal this site because the send_header call is inside set_starred_cookie in helpers.py. Different module AND different input mechanism (URL-decoded path vs. JSON body) than Site E.",
+        "hidden_test_input": "POST /api/docs/test%3B%20Secure/star, check Set-Cookie starred value is 'test Secure' (no Secure attribute injected)"
+      }
+    ],
+    "partial_fix": "Agent fixes Site A only (stripping CRLF from author in POST /api/docs in server.py). Retesting the reported symptom (CRLF in X-Authored-By) passes. The agent may also find Sites C and E by grepping for send_header in server.py, since those are also direct send_header calls in that file. But Sites B, D, and F have their send_header calls inside helper functions in helpers.py (make_content_disposition, RedirectMixin.do_redirect, set_starred_cookie), which a grep limited to server.py won't reveal. Even if the agent greps across all files, they must still (a) apply the correct rule at each site (CRLF vs redirect vs semicolons), (b) apply BOTH CRLF and redirect rules at Sites C and D, (c) recognize that database values and URL-decoded path segments count as user-supplied data.",
+    "preserved_behaviours": [
+      {
+        "behaviour": "Normal document creation returns 201 with correct X-Authored-By header (value after stripping)",
+        "hidden_test_input": "POST /api/docs with title='My Doc' author='Alice', assert status 201 and X-Authored-By='Alice'"
+      },
+      {
+        "behaviour": "Normal export returns 200 with correct Content-Disposition containing the stripped filename",
+        "hidden_test_input": "GET /api/exports/annual_report, assert Content-Disposition contains 'annual_report' and 'attachment'"
+      },
+      {
+        "behaviour": "Relative-path redirects in /login still work (not blocked by open-redirect fix)",
+        "hidden_test_input": "GET /login?next=/dashboard, assert Location='/dashboard'"
+      },
+      {
+        "behaviour": "Internal-path shortcuts still redirect correctly through RedirectMixin.do_redirect",
+        "hidden_test_input": "POST /api/shortcuts with url='/settings', then GET /api/go/{code}, assert Location='/settings'"
+      },
+      {
+        "behaviour": "Normal preference setting sets cookie with correct value and Path=/ (value after stripping)",
+        "hidden_test_input": "POST /api/prefs with layout='dark', assert Set-Cookie starts with 'layout=dark' and contains 'Path=/'"
+      },
+      {
+        "behaviour": "Normal document starring sets cookie with correct title and Path=/ (value after stripping) via set_starred_cookie helper",
+        "hidden_test_input": "POST /api/docs/myproject/star, assert Set-Cookie starts with 'starred=myproject' and contains 'Path=/'"
+      },
+      {
+        "behaviour": "Document listing endpoint still returns all documents",
+        "hidden_test_input": "GET /api/docs, assert 200 and JSON array containing at least the 'Welcome' document"
+      },
+      {
+        "behaviour": "Single document retrieval still works",
+        "hidden_test_input": "GET /api/docs/Welcome, assert 200 and body contains document content"
+      }
+    ],
+    "decoys": [
+      {
+        "description": "server.py sets X-Request-Id header from uuid4() — this is server-generated, NOT user-supplied, so no CRLF stripping is needed. An overzealous agent might add unnecessary stripping here.",
+        "location": "/app/docvault/server.py, send_header('X-Request-Id', ...)"
+      },
+      {
+        "description": "helpers.py has a format_json_response() function that sets Content-Type and Content-Length from server-computed values — safe, but an agent might waste time auditing it.",
+        "location": "/app/docvault/helpers.py, format_json_response()"
+      }
+    ],
+    "hidden_edge_cases": [
+      "A redirect target that is BOTH an external URL AND contains CRLF (e.g., http://evil.com\\r\\nX-Bad:true) must be caught by the redirect rule first (Location becomes '/') and the CRLF rule second (any remaining CRLF stripped from '/')",
+      "A cookie value containing both semicolons and CRLF characters must have BOTH stripped, not just one",
+      "URL-decoded path with %00 (null byte) in a cookie value — while not one of the three rules, the agent should not break the service by mishandling it"
+    ],
+    "why_not_textbook": "The three security rules are well-known (CRLF injection, open redirect, cookie attribute injection) but their application requires finding violations across multiple modules with different data flows (direct body, query param, URL-decoded path, database lookup) and different levels of indirection (direct send_header, helper function return value, mixin method, URL-decoded-then-passed-to-helper). No single grep pattern reveals all sites; the agent must trace data flows across files and apply the correct rule(s) at each location. Some sites violate two rules simultaneously, requiring compound fixes. The instruction explicitly states all three rules (never hidden) but never lists the sites, their count, or their locations.",
+    "static_read": "",
+    "crux": "After fixing the obvious CRLF site (Site A) and perhaps a few more direct send_header calls in server.py, the agent must realize that (1) two other vulnerability classes exist (open redirect, cookie injection) requiring different sanitization, (2) some send_header calls are inside helper functions and a mixin class in a separate module (helpers.py), reachable only by tracing code paths across files, and (3) user-supplied data can arrive indirectly through database lookups or URL decoding, not just from the current request's body or query string.",
+    "challenge_kind": "property_completeness",
+    "sequence_invariant": "",
+    "nameable_fix": "",
+    "self_check_blind_spot": "After fixing Site A, the reported symptom (CRLF in X-Authored-By) disappears. The agent's natural retest passes. The three rules require qualitatively different test inputs (CRLF chars, external URLs, semicolons) that the agent may not think to try at every code location. Sites B, D, and F are in helpers.py, not server.py — a grep for send_header limited to server.py misses them. Site D requires creating a shortcut first (two-step test). Site F requires URL-encoding the semicolons (the raw path looks safe). Sites C and D need BOTH CRLF and open-redirect checks; fixing one rule doesn't reveal the other is still broken without a specific test for it. No test suite or verify command exists to tell the agent they are incomplete.",
+    "runnable_reference": "none",
+    "reference_in_environment": "none",
+    "interaction": "",
+    "expected_agent_steps": null
+  }
+}
+```

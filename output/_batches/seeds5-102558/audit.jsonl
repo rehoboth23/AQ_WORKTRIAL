@@ -1,0 +1,25 @@
+{"time": "2026-10-22T10:25:58", "pid": 5640, "event": "batch_start", "batch": "seeds5-102558", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T10:25:58", "pid": 5640, "event": "stage", "topic": "@seeds/microgrid-forecast.yaml", "key": "c825920969", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T10:26:00", "pid": 5657, "event": "batch_start", "batch": "seeds5-102558", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T10:26:00", "pid": 5657, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T10:26:00", "pid": 5657, "event": "stage", "topic": "@seeds/ids-rules.yaml", "key": "6bb9dd2373", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T10:26:02", "pid": 5670, "event": "batch_start", "batch": "seeds5-102558", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T10:26:02", "pid": 5670, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T10:26:02", "pid": 5670, "event": "skipped_locked", "topic": "@seeds/ids-rules.yaml"}
+{"time": "2026-10-22T10:26:02", "pid": 5670, "event": "stage", "topic": "@seeds/address-rules.yaml", "key": "410de41297", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T10:26:04", "pid": 5683, "event": "batch_start", "batch": "seeds5-102558", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T10:26:04", "pid": 5683, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T10:26:04", "pid": 5683, "event": "skipped_locked", "topic": "@seeds/ids-rules.yaml"}
+{"time": "2026-10-22T10:26:04", "pid": 5683, "event": "skipped_locked", "topic": "@seeds/address-rules.yaml"}
+{"time": "2026-10-22T10:26:04", "pid": 5683, "event": "stage", "topic": "@seeds/reaction-kinetics.yaml", "key": "0a7019b9c5", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T10:26:06", "pid": 5696, "event": "batch_start", "batch": "seeds5-102558", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T10:26:06", "pid": 5696, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T10:26:06", "pid": 5696, "event": "skipped_locked", "topic": "@seeds/ids-rules.yaml"}
+{"time": "2026-10-22T10:26:06", "pid": 5696, "event": "skipped_locked", "topic": "@seeds/address-rules.yaml"}
+{"time": "2026-10-22T10:26:06", "pid": 5696, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T10:26:06", "pid": 5696, "event": "stage", "topic": "@seeds/stream-cipher.yaml", "key": "c70b87f6ee", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T10:54:28", "pid": 5640, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T10:54:28", "pid": 5670, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T10:54:28", "pid": 5657, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T10:54:28", "pid": 5696, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T10:54:28", "pid": 5683, "event": "killed", "signal": "SIGTERM", "children": []}

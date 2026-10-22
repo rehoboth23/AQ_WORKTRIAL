@@ -1,0 +1,1 @@
+[domain] a bond cash-flow scheduler that computes accrual fractions and adjusted payment dates under named ISDA day-count and business-day conventions (30/360 variants, Actual/Actual ISDA, Modified Following) for a desk's trade file

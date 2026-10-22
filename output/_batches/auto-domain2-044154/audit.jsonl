@@ -1,0 +1,3 @@
+{"time": "2026-10-22T04:41:55", "pid": 28187, "event": "batch_start", "batch": "auto-domain2-044154", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T04:41:55", "pid": 28187, "event": "stage", "topic": "[domain] a bond cash-flow scheduler that computes accrual fractions and adjusted payment dates under named ISDA day-count and business-day conventions (30/360 variants, Actual/Actual ISDA, Modified Following) for a desk's trade file", "key": "7066ad3106", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T05:22:32", "pid": 28187, "event": "killed", "signal": "SIGTERM", "children": []}

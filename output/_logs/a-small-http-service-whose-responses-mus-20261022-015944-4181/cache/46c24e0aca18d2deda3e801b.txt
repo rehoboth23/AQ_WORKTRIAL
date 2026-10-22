@@ -1,0 +1,35 @@
+VERDICT: leaks
+- "A security review found that visiting a redirect endpoint whose stored target URL contains CRLF characters (`\r\n`) causes extra, attacker-controlled headers to appear in the HTTP response. For example, creating a short link with the URL `http://example.com\r\nX-Injected: pwned` and then visiting `/go/{code}` results in an `X-Injected: pwned` header appearing in the response." -> reveals WHERE one specific fault lives (the redirect endpoint / Location header), provides the exact counterexample for site 0, and reveals the mechanism (CRLF in stored URL breaks out of Location header)
+- "cookie value, or redirect location" in the security property -> reveals the categories of faults (cookie handling, redirect handling are exactly two of the five fault categories)
+- The curl example specifically tests only the redirect path -> narrows focus to site 0
+
+<<<FILE instruction.md>>>
+# LinkVault: CRLF Injection Fix
+
+## Background
+
+LinkVault is a lightweight URL-shortener service written in Python using `http.server`. It runs on port 8080 and is started with:
+
+```
+python3 -m linkvault.app
+```
+
+The codebase lives in `/app/linkvault/` and consists of:
+
+- `app.py` — main HTTP handler (routing, redirect, shorten, login, profile, dashboard, error responses)
+- `auth.py` — authentication helpers (password hashing, cookie setting, session checking)
+- `response.py` — JSON response builder (constructs and sends complete HTTP responses)
+- `store.py` — SQLite storage layer (users, links, sessions)
+
+A fresh database is created on first start at `/app/data/linkvault.db`, seeded with an admin user (username `admin`, password `admin123`, display name `Administrator`) and two sample short links.
+
+## Security Property
+
+**No user-supplied value can ever put a line break (CR or LF) into any HTTP response header, status line, or cookie.** This must hold for every endpoint and every code path in the service.
+
+## Your Task
+
+Fix the codebase so the above property holds everywhere. The fix must not break any legitimate functionality — redirects must still redirect, cookies must still be set, error responses must still indicate errors, and headers that do not contain CRLF must be passed through unchanged.
+
+You can test the service by starting it and using `curl` (installed) or any other tool. After making changes, restart the server to pick them up.
+<<<END>>>

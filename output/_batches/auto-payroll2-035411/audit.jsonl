@@ -1,0 +1,4 @@
+{"time": "2026-10-22T03:54:11", "pid": 10331, "event": "batch_start", "batch": "auto-payroll2-035411", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T03:54:11", "pid": 10331, "event": "stage", "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout", "key": "6c18ad97a3", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T04:20:03", "pid": 10331, "event": "stage", "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout", "key": "6c18ad97a3", "frm": "generating", "to": "gen_failed", "why": "failed generation: spec failed after 3 attempts: ValueError('no JSON object in reply')"}
+{"time": "2026-10-22T04:20:03", "pid": 10331, "event": "batch_end", "batch": "auto-payroll2-035411", "skipped_locked": 0, "stopped": ""}

@@ -1,0 +1,5 @@
+{"time": "2026-10-22T09:08:59", "event": "start", "topic": "recover the ordered rewrite rules a retired address-normalisation engine applied, from about 900 before/after address pairs, so that held-out addresses normalise identically", "model": "z-ai/glm-5.1", "calibration": "", "control": false, "pid": 99027, "genre": "task"}
+{"time": "2026-10-22T09:08:59", "event": "llm_start", "label": "spec", "attempt": 0, "model": "z-ai/glm-5.1"}
+{"time": "2026-10-22T09:24:41", "event": "llm_call", "label": "spec", "attempt": 0, "usage": {"prompt_tokens": 3257, "completion_tokens": 37927, "reasoning_tokens": 34026, "cost_usd": 0.1157306778, "finish_reason": "stop"}, "seconds": 941.8}
+{"time": "2026-10-22T09:24:41", "event": "spec_gate", "attempt": 0, "problems": []}
+{"time": "2026-10-22T09:24:41", "event": "llm_start", "label": "critic", "attempt": 0, "model": "z-ai/glm-5.1"}

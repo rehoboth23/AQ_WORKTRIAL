@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Create input file with: | Name | Score |\n| --- | --- |\n| Alice | 100 |. Run mdtbl on it. Correct solution outputs header 'Score' center-aligned and data '100' right-aligned in column 2, while mutant left-aligns both cells despite the right-aligned delimiter (---:) still being emitted.",
+ "reason": "The mutant's format_cell always uses left-alignment (lp=0, rp=space) ignoring the alignment parameter, so numeric column data cells and center-aligned headers will be left-aligned instead of right/center-aligned as required by R8."}
+```

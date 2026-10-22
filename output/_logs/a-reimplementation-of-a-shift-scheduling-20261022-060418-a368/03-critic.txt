@@ -1,0 +1,197 @@
+```json
+{
+  "walkthrough": [
+    "Agent runs the binary on the sample input, observes ROSTER and SUMMARY format, notes section structure and field layout.",
+    "Agent creates minimal inputs (2 staff, 2 shifts) to verify basic assignment. Notices staff with higher preference scores get assigned first, confirming a priority system exists.",
+    "Agent probes fill order by creating two shifts with different numbers of eligible candidates. Discovers shifts with fewer eligible candidates are filled first (#1), not chronologically or by ID.",
+    "Agent probes preference scores systematically: creates staff with scores 1 through 5 competing for the same shift. Notices score=2 and score=1 produce same priority, while score=3 jumps up. By testing score=2 vs score=3 vs score=5 head-to-head, the agent may deduce the nonlinear 1-2→1, 3-4→2, 5→3 mapping (#2), but could easily mis-map as 1-3→low, 4-5→high or assume linear.",
+    "Agent compares senior vs junior staff with same preferences. Notices seniors get priority. Probes to find exact bonus: senior with pref=1 beats junior with pref=3 (bonus=2 makes senior priority=3 vs junior priority=2). But without careful calibration, agent might assume bonus=1 (#3).",
+    "Agent tests staff with no PREFERENCES entries. If they still get assigned, agent knows there's a default. Probing against staff with known scores reveals default maps to same weight as scores 1-2. Agent might assume default=0 or default=3 (#4).",
+    "Agent creates a shift with duration 500 minutes (8h20m). If the summary shows 8.0h not 8.5h, flooring is revealed. But agent might not think to create non-standard durations, or might assume rounding instead of flooring (#5).",
+    "Agent creates a 5-day work streak (Mon-Fri). Sees it's allowed. Tries 6th day - blocked. Discovers cap=5 (#6). Straightforward but requires the specific test.",
+    "Agent tests rest gaps: shift ending 06:00, next starting at various times. Discovers the 11h (660 min) threshold by binary search. Common wrong assumption is 8h (#7).",
+    "Agent constructs input where staff reach exactly 40.0 hours. Checks overtime flag. Discovers strictly > 40.0 (#8). This is hard — requires precise hour construction and the agent might assume >=.",
+    "Agent tests part-timer at exactly max hours. Discovers <= is allowed (#9). Again requires precise construction; agent might assume strict <.",
+    "Agent creates a Tuesday holiday and a Monday 22:00 night shift. If staff can't work it, night shift belongs to next day (#10). Moderate difficulty — agent would likely test this.",
+    "Agent notices ROSTER lists shifts in a non-obvious order. By cross-referencing with eligible counts, discovers it's fill order not ID order (#11). Somewhat visible from sample.",
+    "Agent notices some STAFF members don't appear in SUMMARY. Discovers unassigned staff are excluded (#12). Visible if sample includes such staff.",
+    "Agent creates two staff with identical hours but IDs 'S10' and 'S2'. Sees S10 listed first, discovers lexicographic (not numeric) tie-breaking (#13). Hard — requires specific input.",
+    "Agent creates input where including max_hrs in eligible count would change fill order vs excluding it. Observes actual fill order to discover eligible count ignores max_hrs (#14). Very hard — requires sophisticated input construction.",
+    "Agent creates a 2-slot shift where highest-priority staff has a higher ID. Observes output order within the shift line. Discovers assignment order not ID sort (#15). Moderate — requires checking within-line ordering."
+  ],
+  "too_easy_because": [
+    "Original decision point 'unfilled marker ---' is directly visible in any sample output containing shifts with no eligible staff (which the sample must include per input_kinds), so it requires zero probing.",
+    "Original decision point 'summary sorted by hours descending' is directly visible in sample output — the agent just reads the output order.",
+    "Points #11 (ROSTER order) and #12 (zero-hours excluded) in the original are somewhat visible from sample output without targeted probing.",
+    "Some probes can reveal multiple points simultaneously: e.g., a single test with senior staff + preference scores + night shifts could partially reveal points #2, #3, and #10 together, reducing effective depth.",
+    "The original 12 points included 2 trivially observable ones and 2 somewhat observable ones, meaning only ~8 required genuine probing — below the 8-15 target for real difficulty."
+  ],
+  "spec": {
+    "name": "shift-scheduling-roster-engine",
+    "description": "Reimplement a shift scheduling engine producing identical rosters including all tie-breaks and constraint edge cases",
+    "difficulty": "hard",
+    "category": "software-engineering",
+    "tags": ["scheduling", "algorithm", "constraints", "reimplementation", "black-box"],
+    "expert_time_estimate_min": 55.0,
+    "junior_time_estimate_min": 150.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "A company needs a Python reimplementation of their shift-scheduling engine. The original is a compiled binary with no available source. You have the binary and a sample schedule file. You must reverse-engineer every behavioral detail by systematic probing, then build a Python script that produces byte-for-byte identical output for any valid schedule input.",
+    "environment_setup": "A multi-stage Dockerfile compiles reference.c with gcc in a builder stage and copies only the stripped binary to /usr/local/bin/roster in the python:3.12-slim-bookworm runtime image. A sample_schedule.txt at /app/sample_schedule.txt demonstrates all input kinds. No source code, build artifacts, or hints remain in the runtime image.",
+    "instruction_summary": "Create /app/roster.py that reads a schedule file (STAFF, SHIFTS, PREFERENCES, HOLIDAYS sections), assigns staff to shifts, and outputs a ROSTER and SUMMARY section to stdout. Output must be byte-for-byte identical to /usr/local/bin/roster for any valid input. The script must not call the binary or any external program. The binary will be removed during testing.",
+    "solution_outline": [
+      "Write /app/roster.py implementing the full scheduling algorithm",
+      "Parse input sections: STAFF (id name role skill max_hrs), SHIFTS (id day start end skill slots), PREFERENCES (staff_id shift_id score), HOLIDAYS (staff_id day)",
+      "Compute initial eligible count per shift: staff matching skill AND not on holiday for shift's effective day only. Does NOT check max_hrs, rest, or consecutive days.",
+      "Sort shifts by initial eligible count ascending, then alphabetical shift ID for ties",
+      "For each shift in sorted order, for each slot, find best eligible staff: skill match, not on holiday (night shifts start>=20:00 belong to NEXT day), within max hours (total + shift_hours <= max_hrs), consecutive effective days <=5, 11h rest (660 min gap between end of last assigned shift and start of new shift), not already assigned to this shift",
+      "Effective priority = preference_weight(score) + role_bonus(role); weights: 1-2→1, 3-4→2, 5→3; bonus: senior=2, junior=0; default pref score=2 (for missing entries)",
+      "Break priority ties by lowest staff ID (lexicographic: 'S10' < 'S2')",
+      "Shift hours = floor(duration_in_minutes / 30) * 0.5 (floor to nearest 0.5h); overtime flag if total > 40.0 strictly",
+      "Output ROSTER: one line per shift in fill order (same order as assignment), staff IDs in assignment order (highest priority first) or '---' for unfilled slots",
+      "Output SUMMARY: only staff with at least one assignment, sorted by total hours descending then staff ID ascending (lexicographic) for ties; format: id hours(yes/no) shift_count where hours always shows one decimal place"
+    ],
+    "test_plan": [
+      "Install gcc via apt-get, compile /tests/reference.c to /tmp/reference with gcc -O2 -o /tmp/reference /tests/reference.c -lm",
+      "Remove /usr/local/bin/roster to prevent artifact from calling it",
+      "Generate 500 test inputs using /tests/gen_cases.py (fixed seed 42, same input kinds as sample)",
+      "Run /tmp/reference and /usr/local/bin/python3 /app/roster.py on sample_schedule.txt and every generated input",
+      "Compare stdout and exit code for each input; fail on first mismatch printing the input, both outputs, and both exit codes",
+      "Verify no test passes with the binary removed and an empty/missing artifact script"
+    ],
+    "anti_cheat": "Source code is only in the builder stage and never reaches the runtime image. The binary is stripped (no symbol names). The test removes /usr/local/bin/roster before running the artifact. 'strings' on the binary reveals only format strings (e.g. section headers), not algorithm details, weight values, boundary constants, or rule logic. All fifteen decision points produce different output from reasonable assumptions and must be discovered by probing specific input scenarios.",
+    "failure_modes": "An agent implementing a 'reasonable' scheduler will fail on: assuming chronological fill order (most constrained first is actual order), linear preference weights (nonlinear 1-2→1, 3-4→2, 5→3), no role bonus or bonus=1 (senior bonus is 2), 8h rest minimum (actual is 11h), max 6-7 consecutive days (actual is 5), >= for overtime (actual is strict >), < for part-time max (actual is <=), night shifts on start day for holidays (actual is next day), default pref score 0 or 3 (actual is 2), round-half-up for hours (actual is floor to 0.5h), eligible count includes max_hrs (actual only checks skill+holiday), ROSTER in shift ID order (actual is fill order), all staff in SUMMARY (actual excludes unassigned), numeric sort for ties (actual is lexicographic on staff ID), staff IDs sorted within shift line (actual is assignment/priority order). Each wrong assumption causes different assignments on specific probe-able inputs.",
+    "faults": [],
+    "requirements": [],
+    "themes": [],
+    "starter": "",
+    "spec_document": "",
+    "property": "",
+    "reported_symptom": "",
+    "sites": [],
+    "partial_fix": "",
+    "preserved_behaviours": [],
+    "decoys": [],
+    "hidden_edge_cases": [],
+    "why_not_textbook": "",
+    "static_read": "",
+    "crux": "",
+    "challenge_kind": "executable_reference",
+    "black_box_kind": "scheduler",
+    "artifact_kind": "cli",
+    "reference_language": "c",
+    "reference_binary": "/usr/local/bin/roster",
+    "interface": "Invocation: roster <input_file> or python3 /app/roster.py <input_file>. Reads the schedule from the named file, writes ROSTER and SUMMARY sections to stdout, exits 0 on success. Input has four sections (STAFF, SHIFTS, PREFERENCES, HOLIDAYS) each starting with a header line; fields are whitespace-separated.",
+    "sample_file": "/app/sample_schedule.txt",
+    "input_kinds": [
+      "staff_with_skill_A",
+      "staff_with_skill_B",
+      "senior_staff",
+      "junior_staff",
+      "full_time_max40",
+      "part_time_max_under_40",
+      "multi_slot_shifts",
+      "single_slot_shifts",
+      "day_shifts_start_before_20",
+      "night_shifts_start_at_20_or_later",
+      "preference_scores_1_to_5",
+      "staff_without_preference_entries",
+      "holiday_entries",
+      "shifts_with_no_eligible_staff",
+      "shifts_with_non_standard_duration"
+    ],
+    "decision_points": [
+      {
+        "behaviour": "Shifts filled in order of fewest initial eligible candidates, then alphabetical shift ID for ties",
+        "assumed_instead": "Chronological order by day/time, by shift ID as listed, or by most constrained first",
+        "input_kind": "multi_slot_shifts",
+        "observe": "Two shifts same day with different eligible candidate counts: the one with fewer eligible candidates gets the best staff first"
+      },
+      {
+        "behaviour": "Preference weight mapping is nonlinear: scores 1-2→weight 1, 3-4→weight 2, 5→weight 3",
+        "assumed_instead": "Linear mapping where score equals weight, or simple 1-5 scale",
+        "input_kind": "preference_scores_1_to_5",
+        "observe": "Staff with pref=2 vs pref=3: nonlinear gives weight 1 vs 2 (double), linear gives only 2 vs 3 (50% more)"
+      },
+      {
+        "behaviour": "Senior role bonus is +2, junior is +0. Priority = pref_weight + role_bonus",
+        "assumed_instead": "No role bonus, senior=+1, or seniors always preferred regardless of preference",
+        "input_kind": "senior_staff",
+        "observe": "Junior with pref=5 (priority 3) ties with senior with default pref (priority 1+2=3); lower ID wins"
+      },
+      {
+        "behaviour": "Default preference score for missing entries is 2 (which maps to weight 1)",
+        "assumed_instead": "Default 0 (ineligible), 3 (middle), or staff skipped without preferences",
+        "input_kind": "staff_without_preference_entries",
+        "observe": "Staff with no preference entry still gets assigned to unfilled shifts with low priority (weight 1)"
+      },
+      {
+        "behaviour": "Shift hours floored to nearest 0.5h: floor(duration_min / 30) * 0.5. A 500-min shift = 8.0h not 8.5h",
+        "assumed_instead": "Rounded to nearest 0.5h, truncated to whole hours, or exact duration used",
+        "input_kind": "shifts_with_non_standard_duration",
+        "observe": "500-minute shift (8h20m) produces 8.0h in summary total, not 8.5h"
+      },
+      {
+        "behaviour": "Maximum 5 consecutive working days; 5 is allowed, 6th is blocked",
+        "assumed_instead": "Max 3, 6, 7, or that 5 itself is the blocking threshold",
+        "input_kind": "full_time_max40",
+        "observe": "Staff working Mon-Fri (5 days) is allowed; Sat assignment is blocked"
+      },
+      {
+        "behaviour": "Minimum 11 hours (660 min) rest between shifts; gap >= 660 OK, < 660 blocked",
+        "assumed_instead": "8 hours rest, 12 hours, or merely non-overlapping",
+        "input_kind": "night_shifts_start_at_20_or_later",
+        "observe": "Night shift ending 06:00 + day shift starting 17:00 = exactly 11h gap, allowed; starting 16:30 = 10.5h, blocked"
+      },
+      {
+        "behaviour": "Overtime flag at strictly > 40.0 hours; exactly 40.0 is NOT overtime",
+        "assumed_instead": "Overtime at >= 40.0, or >= 40 after rounding",
+        "input_kind": "full_time_max40",
+        "observe": "Staff at exactly 40.0 hours shows overtime=no in summary"
+      },
+      {
+        "behaviour": "Part-time staff can work up to max_weekly_hours inclusive (total + shift_hours <= max_hrs allowed)",
+        "assumed_instead": "Cannot reach max exactly (only < allowed), or > also allowed",
+        "input_kind": "part_time_max_under_40",
+        "observe": "Part-timer (max=30) at 28h with 2h shift available: 28+2=30, assigned"
+      },
+      {
+        "behaviour": "Night shifts (start >= 20:00) belong to NEXT calendar day for holiday checking and consecutive day tracking",
+        "assumed_instead": "Night shifts belong to the day they start, or both days",
+        "input_kind": "night_shifts_start_at_20_or_later",
+        "observe": "Staff with Tue holiday cannot work Mon 22:00 night shift (it belongs to Tue)"
+      },
+      {
+        "behaviour": "ROSTER section lists shifts in fill order (fewest eligible first), not by shift ID or chronological order",
+        "assumed_instead": "Shifts listed alphabetically by ID, chronologically, or in input order",
+        "input_kind": "multi_slot_shifts",
+        "observe": "Create two shifts where fill order differs from ID order: ROSTER lists them in fill order"
+      },
+      {
+        "behaviour": "Staff with zero assigned shifts are excluded from SUMMARY entirely",
+        "assumed_instead": "All staff appear in SUMMARY, including those with 0 hours and 0 shifts",
+        "input_kind": "shifts_with_no_eligible_staff",
+        "observe": "Staff whose skill doesn't match any shift don't appear in SUMMARY at all"
+      },
+      {
+        "behaviour": "SUMMARY ties in hours broken by staff ID ascending lexicographically ('S10' before 'S2')",
+        "assumed_instead": "Numeric sort of ID numbers, or alphabetical by name",
+        "input_kind": "full_time_max40",
+        "observe": "Staff S10 and S2 with same hours: S10 appears first in summary"
+      },
+      {
+        "behaviour": "Initial eligible count for fill order checks only skill match and holiday status, NOT max_hrs or rest/consecutive constraints",
+        "assumed_instead": "Eligible count includes all assignment constraints (max_hrs, rest, consecutive days)",
+        "input_kind": "multi_slot_shifts",
+        "observe": "Staff at max hours still counted as eligible for fill order, changing which shift gets filled first compared to an all-constraints count"
+      },
+      {
+        "behaviour": "Within a shift line in ROSTER, staff IDs appear in assignment order (highest priority first), not sorted by staff ID",
+        "assumed_instead": "Staff IDs within a shift line are sorted alphabetically or by staff ID",
+        "input_kind": "multi_slot_shifts",
+        "observe": "Multi-slot shift where highest-priority staff has higher ID: that staff appears first in the line, not sorted by ID"
+      }
+    ],
+    "shortcut_guard": "The test removes /usr/local/bin/roster before invoking the artifact, so subprocess calls to the binary fail. The reference is freshly compiled from tests/reference.c into /tmp/reference which the artifact cannot discover. The test compares against this independent compilation, not a cached result. A trivially wrong artifact (empty output, hardcoded sample output, or stub) will fail on the 500 generated inputs."
+  }
+}
+```

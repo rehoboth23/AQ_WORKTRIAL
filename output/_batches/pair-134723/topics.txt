@@ -1,0 +1,2 @@
+@seeds/ids-rules.yaml
+@seeds/pharmacy-prior-auth.yaml

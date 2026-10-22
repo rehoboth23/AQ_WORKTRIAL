@@ -1,0 +1,1 @@
+[domain] a tool that turns a small sequencing run's SAM alignments into per-base reference coverage and a mismatch report, for a lab whose old script miscounts

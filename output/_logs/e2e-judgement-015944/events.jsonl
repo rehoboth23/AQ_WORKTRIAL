@@ -1,0 +1,11 @@
+{"time": "2026-10-22T02:46:33", "event": "band_start", "task": "http-header-crlf-injection-audit", "run_id": "http-header-crlf-injection-audit-20261022-024633-e1fe"}
+{"time": "2026-10-22T02:51:48", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0", "requested": 5, "outcomes": ["fail", "pass", "pass", "fail", "pass"]}
+{"time": "2026-10-22T02:51:48", "event": "llm_start", "label": "triage-http-header-crlf-injection-audit__49UDMKj", "attempt": 0, "model": "z-ai/glm-5.1"}
+{"time": "2026-10-22T02:53:10", "event": "llm_call", "label": "triage-http-header-crlf-injection-audit__49UDMKj", "attempt": 0, "usage": {"prompt_tokens": 6215, "completion_tokens": 4093, "reasoning_tokens": 3879, "cost_usd": 0.0, "finish_reason": "stop"}, "seconds": 81.6}
+{"time": "2026-10-22T02:53:10", "event": "llm_start", "label": "triage-http-header-crlf-injection-audit__Ke6ga76", "attempt": 0, "model": "z-ai/glm-5.1"}
+{"time": "2026-10-22T02:53:32", "event": "llm_call", "label": "triage-http-header-crlf-injection-audit__Ke6ga76", "attempt": 0, "usage": {"prompt_tokens": 6202, "completion_tokens": 1215, "reasoning_tokens": 832, "cost_usd": 0.0, "finish_reason": "stop"}, "seconds": 22.4}
+{"time": "2026-10-22T03:02:57", "event": "band_job", "job": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-confirm1-0", "requested": 5, "outcomes": ["pass", "pass", "fail", "pass", "pass"]}
+{"time": "2026-10-22T03:02:57", "event": "confirmation", "task": "http-header-crlf-injection-audit", "results": [["too_easy", 4]]}
+{"time": "2026-10-22T03:02:57", "event": "llm_start", "label": "postmortem", "attempt": 0, "model": "z-ai/glm-5.1"}
+{"time": "2026-10-22T03:03:17", "event": "llm_call", "label": "postmortem", "attempt": 0, "usage": {"prompt_tokens": 763, "completion_tokens": 738, "reasoning_tokens": 508, "cost_usd": 0.0, "finish_reason": "stop"}, "seconds": 20.1}
+{"time": "2026-10-22T03:03:17", "event": "band_done", "task": "http-header-crlf-injection-audit", "verdict": "learnable", "passes": 3, "decision": "kept"}

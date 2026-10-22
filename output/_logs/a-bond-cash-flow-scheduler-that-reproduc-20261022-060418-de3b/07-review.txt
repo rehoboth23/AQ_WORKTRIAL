@@ -1,0 +1,60 @@
+VERDICT: leaks
+- "If settlement falls between coupon dates, the first period starts from the settlement date itself, creating a short stub; subsequent periods are full length." -> reveals the exact non-standard rule for decision point 7 (settlement-between-coupons behavior), which the agent should discover by probing
+- "Pay close attention to boundary conditions, day-count fractions near rounding thresholds, business-day adjustments near month boundaries, and how February dates are handled." -> reveals categories of faults (maps to decision points 0–1, 3–4, 5–7, 8–9)
+
+<<<FILE instruction.md>>>
+The bond trading desk relies on a legacy tool at `/usr/local/bin/bondsched` to compute
+fixed-rate bond coupon schedules. The original source code is lost — only the stripped
+binary remains. Your job is to build a Python replacement.
+
+## Goal
+
+Create `/app/bondsched.py`, runnable as `python3 /app/bondsched.py`, that reads one trade
+specification line from stdin and writes the coupon schedule to stdout. Your output must
+match the reference binary byte-for-byte (same stdout content and same exit status) for
+any input of the kinds shown in `/app/sample.txt`.
+
+## Interface
+
+Input: one line on stdin with space-separated key=value pairs:
+```
+settle=YYYY-MM-DD maturity=YYYY-MM-DD freq=N daycount=XXX bdc=YYY holidays=YYYY-MM-DD,...
+```
+
+- `freq`: 1 (annual), 2 (semi-annual), or 4 (quarterly)
+- `daycount`: 30U360, 30E360, ACT365, or ACTACT
+- `bdc`: NONE, FOLLOWING, PRECEDING, MODFOLLOW, or MODPRECED
+- `holidays`: comma-separated YYYY-MM-DD dates (may be empty)
+
+Output: one line per coupon period:
+```
+N START END PAYMENT FRACTION
+```
+
+- `N`: 1-based period index (no zero-padding)
+- `START`: unadjusted start date (YYYY-MM-DD)
+- `END`: unadjusted end date (YYYY-MM-DD)
+- `PAYMENT`: business-day-adjusted payment date (YYYY-MM-DD)
+- `FRACTION`: accrual fraction with exactly 6 decimal places
+
+Exit codes:
+- 0: success
+- 1: empty stdin
+- 2: malformed input, with `ERROR: reason` on stderr
+
+## Schedule construction rules
+
+1. Coupon dates are generated backwards from the maturity date at `12/freq`-month intervals.
+2. Accrual fractions are computed from the **unadjusted** start and end dates; the payment date is the **BDC-adjusted** end date.
+3. Weekends (Saturday, Sunday) are always non-business days.
+4. Listed holidays are also non-business days.
+5. Output must match byte-for-byte — identical text on stdout and identical exit code.
+
+## Important notes
+
+- The artifact **must not** call the reference binary or any external program.
+- The reference binary will **not** be available when the artifact is checked.
+- The legacy tool was written in-house and may deviate from ISDA textbook conventions.
+- Probe the binary systematically on the sample inputs and your own test cases to discover its exact behaviour.
+- See `/app/sample.txt` for 18 sample trade specifications covering all parameter values.
+<<<END>>>

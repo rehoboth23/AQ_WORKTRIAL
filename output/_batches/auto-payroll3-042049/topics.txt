@@ -1,0 +1,1 @@
+[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout

@@ -1,0 +1,273 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md containing 20 explicit payroll rules and reads /app/payroll.py starter code.",
+    "Agent identifies the starter ignores timezones, uses 2-decimal rounding, has no weekly OT, treats missing clock_out as 0h, skips midnight-crossing entries, uses lexicographic sort, no zero-padding, CSV dates for display, only HH:MM, Python round(), no 16h cap, no exit code 2.",
+    "Agent begins rewriting payroll.py: adds zoneinfo import, implements UTC conversion with midnight-crossing detection (R1), writes round_quarter_up and round_cent_up functions (R3, R18), adds HH:MM:SS parsing (R10).",
+    "Agent implements daily OT split at 8h (R4), weekly OT computation per Sunday-Saturday UTC week (R2), and weekly OT allocation — LIKELY implements chronological allocation by default, forgetting R5 specifies reverse-chronological.",
+    "Agent implements missing entry handling: missing clock_out → 8h regular + flag (R6), missing clock_in → skip + flag (R7). May forget that the 8h regular from R6 participates in weekly OT reallocation.",
+    "Agent adds 16h cap (R9) but has no shipped data to test it against — may implement incorrectly or forget edge at exactly 16.25h.",
+    "Agent formats output: zero-padded 4-digit IDs (R11), shift lines with UTC clock_in date (R12/R19), total line (R13), flagged entries with CSV dates (R15), grand total (R16). May accidentally use UTC date in flagged entries instead of CSV date.",
+    "Agent sorts employees numerically (R14) and shifts chronologically by UTC clock_in. May forget to sort flagged entries numerically by ID then date.",
+    "Agent adds blank lines between sections (R17) — easy to get placement slightly wrong (e.g., blank line before first employee, or missing blank between last employee and FLAGGED ENTRIES).",
+    "Agent adds exit codes (R20) — may forget exit 2 for short CSV rows, or may produce partial stdout before detecting the bad row.",
+    "Agent tests on shipped CSV: output looks plausible. Agent writes custom test CSVs for short IDs (catches R11), HH:MM:SS times (catches R10), long shifts (catches R9 if agent thinks to test), bad CSV (catches R20).",
+    "Agent LIKELY does NOT write a test specifically for reverse-chronological weekly OT direction (R5), does NOT test exact midpoint rounding values (R3/R18), does NOT verify blank line placement character-by-character (R17), and does NOT verify flagged entries use CSV date not UTC date (R15).",
+    "Agent submits; passes ~12-15 of 20 hidden tests. Most likely failures: R5 (reverse-chron weekly OT), R3/R18 (midpoint-up rounding at exact half-values), R17 (blank line placement), R15 (CSV date in flagged entries), R9 (16h cap at boundary)."
+  ],
+  "too_easy_because": [
+    "R6 and R7: original spec says starter already handles missing clock_out as 8h assumed and missing clock_in as skip — same as the rules, so no deviation to catch; agent gets these 'for free'.",
+    "R4 (daily OT): original spec says starter already computes daily OT, so the concept matches; only rounding differences affect it — weak independent test.",
+    "R8 (pay rates): merely constants; any implementation that reads the rule gets this right — doesn't truly test independent deviation from default.",
+    "R16 grand total pay computation is ambiguous: could be sum of individually-rounded employee pays, or round(recomputed from grand total hours). Two reasonable readings produce different outputs at half-cent boundaries. Unfair.",
+    "Processing order of 16h cap vs daily OT split is not specified: if a 16.25h shift is capped to 16h then split (8 reg + 8 dot), or split first then capped, results differ. Unfair ambiguity.",
+    "R6 does not explicitly state that the 8.0 regular hours participate in weekly OT reallocation per R5 — agent may leave them as fixed 'regular' that never converts to weekly OT.",
+    "Scenario says 'no overtime separation' but starter description says 'computes daily OT and distributes weekly OT chronologically' — contradictory, confusing the agent about what the starter actually does.",
+    "R1 and R19, while testing different things, are very closely related (both about UTC date handling); a single theme with two rules reduces effective independent-theme coverage.",
+    "No rule about line endings (LF vs CRLF) — a common default-deviation that would add an independent formatting check."
+  ],
+  "spec": {
+    "name": "timesheet-payroll-converter",
+    "description": "Rewrite a timesheet-to-payroll converter to comply with 20 strict rules spanning timezone conversion, overtime arithmetic, rounding, missing-entry handling, and exact output layout.",
+    "difficulty": "hard",
+    "category": "software-engineering",
+    "tags": ["payroll", "timezone", "overtime", "rounding", "csv-parsing"],
+    "expert_time_estimate_min": 45.0,
+    "junior_time_estimate_min": 120.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "A colleague wrote a quick prototype timesheet-to-payroll converter that works for basic cases but ignores the company's detailed payroll policies. The script reads a CSV of employee timesheet entries and must produce a formatted payroll report. The prototype skips timezone conversion, uses wrong rounding, has no weekly overtime, mishandles missing data, and produces incorrectly formatted output. You need to rewrite /app/payroll.py to follow all 20 company payroll rules precisely.",
+    "environment_setup": "The Dockerfile installs tzdata on python:3.12-slim-bookworm and copies two files to /app: timesheet.csv (a multi-employee, multi-week CSV with entries in America/New_York, America/Chicago, and America/Los_Angeles timezones, including a midnight-crossing shift, a missing clock-out, and a missing clock-in) and payroll.py (a working prototype that ignores timezones, rounds to 2 decimals, has daily OT but no weekly OT, treats missing clock_out as 0 hours with no flag, skips missing clock_in entries with no flag, uses lexicographic sort for employee IDs, has no zero-padding, uses CSV dates for shift lines, only parses HH:MM, uses Python's round() for pay, has no 16h cap, always exits 0, skips midnight-crossing entries entirely, and has incorrect blank line placement). No other files are present. No git repository exists.",
+    "instruction_summary": "Rewrite /app/payroll.py so that when run as `python3 /app/payroll.py <csv_path>` it converts timesheet CSV entries into a payroll report obeying 20 exact rules. CSV columns: employee_id, name, date, clock_in, clock_out, timezone. Processing order per entry: (1) parse row, (2) if clock_in blank → skip and flag per R7, (3) if clock_out blank → assume 8h regular and flag per R6, (4) convert times to UTC per R1 with midnight-crossing detection, (5) compute raw duration, (6) round to 0.25h per R3, (7) cap at 16h per R9, (8) split daily OT per R4, (9) after all entries, compute weekly OT per R5, (10) compute and round pay per R8/R18.",
+    "solution_outline": [
+      "Write the complete correct payroll.py implementation",
+      "Import zoneinfo for timezone conversion, math for floor-based round-half-up",
+      "Implement round_quarter_up(value) = floor(value*4+0.5)/4",
+      "Implement round_cent_up(value) = floor(value*100+0.5)/100",
+      "Implement parse_time() accepting both HH:MM and HH:MM:SS",
+      "Implement get_utc_datetime() converting local date+time+tz to UTC",
+      "For each entry: handle missing clock_in (skip+flag), missing clock_out (8h regular+flag), or compute UTC duration with midnight-crossing detection",
+      "Apply quarter-hour rounding, then 16h cap (flag if exceeded after rounding), then daily OT split",
+      "Group shifts by employee and week (Sunday-based UTC), compute weekly OT from excess regular > 40, allocate reverse-chronologically with partial conversion allowed",
+      "Output employees sorted by int(ID), shifts sorted by UTC clock_in",
+      "Format all lines per spec with zero-padded 4-digit IDs, LF line endings",
+      "Print flagged entries section with CSV dates sorted by (numeric id, date); omit section if no flags",
+      "Print grand total computed from sum-of-hours × rates, then rounded per R18",
+      "Handle exit codes: 0 success, 1 file not found, 2 bad CSV columns (no stdout)"
+    ],
+    "test_plan": [
+      "test_exit_code_success: run on shipped CSV, expect exit 0",
+      "test_exit_code_file_not_found: run on /nonexistent, expect exit 1",
+      "test_exit_code_bad_csv: write CSV with a short row (<6 cols), expect exit 2 and empty stdout",
+      "test_alice_total: parse Alice's TOTAL line from shipped CSV output, verify reg=56.0, dot=5.5, wot=4.0, pay=1806.25",
+      "test_bob_total: parse Bob's TOTAL line, verify reg=36.0, dot=5.0, wot=0.0, pay=1087.50",
+      "test_carol_total: parse Carol's TOTAL line, verify reg=40.0, dot=2.5, wot=0.0, pay=1093.75",
+      "test_carol_utc_date: verify Carol has exactly two shift lines showing 2024-01-18 (night shift + regular shift both land on Jan 18 UTC)",
+      "test_carol_shift_count: verify Carol has exactly 5 shift lines (starter skips the midnight-crossing one)",
+      "test_flagged_entries: verify two flagged entries with correct reasons, zero-padded IDs, and CSV dates (not UTC dates)",
+      "test_grand_total: verify reg=132.0, dot=13.0, wot=4.0, pay=3987.50",
+      "test_midpoint_rounding: custom CSV with 09:00:00–17:07:30 UTC = 8.125h, verify rounds up to 8.25 (0.25h daily OT shown)",
+      "test_shift_cap: custom CSV with 06:00–23:30 UTC = 17.5h, verify capped to 16.0 and 'exceeds cap' flag present",
+      "test_shift_cap_boundary: custom CSV with shift of exactly 16.25h after rounding, verify capped to 16.0; custom CSV with shift of exactly 16.0h, verify NOT capped",
+      "test_pay_half_cent_rounds_up: custom CSV producing pay of $228.125 → verify 228.13 (not 228.12)",
+      "test_zero_padded_short_id: custom CSV with employee_id=42, verify header shows 'EMPLOYEE: 0042'",
+      "test_numeric_employee_sort: custom CSV with IDs 100 and 99, verify 0099 appears before 0100",
+      "test_hhmmss_format: custom CSV with seconds in times (09:00:15–17:00:45), verify no crash and correct hours",
+      "test_weekly_ot_reverse: 6 shifts of 9h each in one week, verify last shift has wot=8.00 and first shift has wot=0.00",
+      "test_weekly_ot_boundary: week with exactly 40.0 regular hours (no weekly OT) vs 40.25 (0.25h weekly OT on last shift)",
+      "test_timezone_utc_date: evening PST shift (20:00–23:00) on Jan 15, verify shift line shows Jan 16 UTC date",
+      "test_output_blank_lines: verify blank line after each employee total, before FLAGGED ENTRIES, and before GRAND TOTAL",
+      "test_lf_line_endings: verify output contains no CR (\\r) characters",
+      "test_no_flagged_section: custom CSV with no flags, verify FLAGGED ENTRIES header is absent and blank line before GRAND TOTAL still appears",
+      "test_flagged_csv_date: custom CSV with timezone-crossing shift that is also capped, verify flagged entry uses CSV date not UTC date",
+      "test_missing_clockout_weekly_ot: custom CSV where missing clock-out pushes employee over 40 regular hours, verify weekly OT reallocation applies to the assumed 8h",
+      "test_grand_total_from_hours: custom CSV where sum-of-rounded-employee-pays differs from round(hours×rates); verify grand total pay is computed from grand total hours then rounded per R18",
+      "test_employee_zero_hours: custom CSV with employee who has only missing clock-in entries, verify header and TOTAL line with 0.00h and $0.00",
+      "test_trailing_newline: verify output ends with exactly one newline character"
+    ],
+    "anti_cheat": "The starter code produces plausible-looking but wrong output (wrong hours, wrong dates, wrong sort, wrong rounding). There is no reference implementation, no expected output file, no verify command, and no backup of a correct version anywhere in the image. No git repository exists. The CSV data is the only test input visible to the agent, but the hidden tests use completely different CSVs with edge-case inputs (midpoint rounding values, >16h shifts, short employee IDs, HH:MM:SS times, half-cent pay values, weeks with exactly 40 regular hours, employees with only missing clock-ins, no flagged entries) that are not represented in the shipped data. Hard-coding the shipped CSV's output would fail the custom-CSV tests.",
+    "failure_modes": "An agent might fix 15 of 20 rules but forget one: reverse-chronological weekly OT allocation (counterintuitive, shipped data may allocate same total either way), midpoint-up rounding for both hours and pay (Python's round() gives different results only at specific half-values absent from shipped CSV), the 16h cap (no shipped data exceeds it), zero-padding for IDs shorter than 4 digits (all shipped IDs are already 4 digits), UTC date display differing from CSV date (only Carol's night shift shows this and starter skips that entry), exit code 2 for bad CSV rows (starter always exits 0), LF-only line endings (default on Linux so unlikely to fail, but CRLF would fail), flagged entries using CSV dates not UTC dates, blank line when no flagged entries exist, and grand total computed from sum-of-hours rather than sum-of-employee-pays. Each forgotten rule causes at least one test failure.",
+    "faults": [],
+    "requirements": [
+      {
+        "id": "R1",
+        "rule": "Convert all clock_in/clock_out from their local timezone to UTC before computing duration. Use the date column as the local date. If clock_out local time is earlier than or equal to clock_in local time, clock_out is on the next local day (midnight crossing).",
+        "theme": "input_tolerance",
+        "default_behaviour": "Ignore timezone column, treat times as local/UTC, skip midnight-crossing entries",
+        "hidden_test_input": "Evening shift 20:00-23:00 PST on Jan 15 local, whose UTC clock_in is Jan 16 04:00",
+        "boundary": "Shift whose UTC clock_in date differs from the CSV date column"
+      },
+      {
+        "id": "R2",
+        "rule": "A work week runs Sunday 00:00:00 UTC through Saturday 23:59:59 UTC. A shift belongs to the week containing its UTC clock_in datetime. Weekly overtime is computed per employee per week based on UTC dates.",
+        "theme": "ordering",
+        "default_behaviour": "Use CSV dates or no week concept",
+        "hidden_test_input": "Shifts whose UTC clock_in datetimes span two different UTC weeks (one on Saturday, one on Sunday)",
+        "boundary": "A shift whose UTC clock_in is exactly at Sunday 00:00:00 UTC (week boundary)"
+      },
+      {
+        "id": "R3",
+        "rule": "Each shift's duration in hours is rounded to the nearest 0.25 (quarter-hour). Exact midpoints round UP. E.g., 8.125 rounds to 8.25; 8.375 rounds to 8.5. Use floor(value*4+0.5)/4.",
+        "theme": "arithmetic",
+        "default_behaviour": "Round to 2 decimal places or use Python's round() which does banker's rounding",
+        "hidden_test_input": "Shift of exactly 8h7m30s = 8.125h (midpoint between 8.00 and 8.25)",
+        "boundary": "Exact midpoint value that differentiates round-half-up from banker's rounding"
+      },
+      {
+        "id": "R4",
+        "rule": "If a shift's rounded-and-capped hours exceed 8.0, the first 8.0 hours are regular and the rest is daily overtime. If hours are exactly 8.0 or less, all hours are regular with zero daily overtime.",
+        "theme": "arithmetic",
+        "default_behaviour": "No daily overtime split; all hours are regular",
+        "hidden_test_input": "A 9.25h shift producing 1.25h daily OT; an 8.0h shift producing 0.0h daily OT",
+        "boundary": "Shift of exactly 8.0h (no daily OT) vs 8.25h (0.25h daily OT)"
+      },
+      {
+        "id": "R5",
+        "rule": "After daily OT separation, if an employee's total regular hours in a week exceed 40.0, the excess is weekly overtime. Weekly OT is allocated to shifts in reverse chronological order (last shift first by UTC clock_in), converting regular hours to weekly OT on each shift until the excess is consumed. Partial conversion is allowed: a shift with 5h regular can contribute up to 5h to weekly OT. The 8.0 regular hours from a missing clock-out (R6) participate in this reallocation like any other regular hours.",
+        "theme": "ordering",
+        "default_behaviour": "Allocate weekly OT chronologically (first shifts first) or have no weekly OT",
+        "hidden_test_input": "6 shifts of 9h each in one week (48 regular hours after daily OT, 8 excess); last shift should have 8h converted to weekly OT, earlier shifts have 0h weekly OT",
+        "boundary": "Week with exactly 40.0 regular hours (no weekly OT) vs 40.25 (0.25h weekly OT on last shift)"
+      },
+      {
+        "id": "R6",
+        "rule": "If clock_out is blank, assume the shift is 8.0 hours of regular time (zero daily overtime). Flag as 'missing clock-out'. These 8.0 regular hours are subject to weekly OT reallocation per R5 like any other regular hours.",
+        "theme": "input_tolerance",
+        "default_behaviour": "Treat missing clock_out as 0 hours or crash",
+        "hidden_test_input": "Employee with missing clock_out on a day where they already have 36 regular hours that week (the 8h assumed pushes them to 44, so 4h becomes weekly OT on this shift)",
+        "boundary": "Missing clock-out assumed as exactly 8.0 regular (cannot produce daily OT by itself)"
+      },
+      {
+        "id": "R7",
+        "rule": "If clock_in is blank, skip the entry entirely (0 hours counted, no duration computed). Flag as 'missing clock-in'. Clock_out is ignored even if present. If both clock_in and clock_out are blank, treat as missing clock-in.",
+        "theme": "input_tolerance",
+        "default_behaviour": "Crash, skip without flagging, or attempt to use clock_out only",
+        "hidden_test_input": "Entry with blank clock_in and a valid clock_out; entry with both blank",
+        "boundary": "Entry where both clock_in and clock_out are blank (flagged as missing clock-in, not missing clock-out)"
+      },
+      {
+        "id": "R8",
+        "rule": "Pay rates: regular $25.00/hr, daily overtime $37.50/hr (1.5×), weekly overtime $50.00/hr (2×). An employee's total pay = round_cent_up(regular_hours × 25.00 + daily_ot_hours × 37.50 + weekly_ot_hours × 50.00).",
+        "theme": "arithmetic",
+        "default_behaviour": "Single flat rate or different multipliers",
+        "hidden_test_input": "Employee with all three types of hours in one week: 30 reg + 3 dot + 5 wot = 750 + 112.5 + 250 = 1112.50",
+        "boundary": "Employee with only weekly OT and no daily OT (pay computed from two rate tiers only)"
+      },
+      {
+        "id": "R9",
+        "rule": "No shift may exceed 16.0 hours after rounding. If it does, cap the rounded hours at 16.0 and flag as 'exceeds cap'. The excess hours above 16.0 are discarded. The cap is applied BEFORE the daily OT split (R4): a 16.0h capped shift produces 8.0h regular + 8.0h daily OT.",
+        "theme": "edge_inputs",
+        "default_behaviour": "No cap on shift length",
+        "hidden_test_input": "A 17.5-hour shift (06:00-23:30 UTC) → capped to 16.0h → 8.0 reg + 8.0 dot",
+        "boundary": "A shift of exactly 16.0h (no cap, no flag) vs 16.25h (capped to 16.0, flagged)"
+      },
+      {
+        "id": "R10",
+        "rule": "Clock_in and clock_out may be in HH:MM or HH:MM:SS format. Both must be accepted. Seconds are included in the raw duration calculation before quarter-hour rounding.",
+        "theme": "input_tolerance",
+        "default_behaviour": "Only parse HH:MM, crash or misparse HH:MM:SS",
+        "hidden_test_input": "Times like 09:00:15 and 17:00:45 (8h0m30s raw = 8.0083h, rounds to 8.00h)",
+        "boundary": "Time with non-zero seconds that pushes raw duration to a quarter-hour midpoint (09:00:00–17:07:30 = 8.125h)"
+      },
+      {
+        "id": "R11",
+        "rule": "Employee header line: 'EMPLOYEE: {id} ({name})' where id is zero-padded to exactly 4 digits (e.g., 42 → 0042, 1001 → 1001).",
+        "theme": "formatting",
+        "default_behaviour": "Use ID as-is from CSV, no zero-padding",
+        "hidden_test_input": "Employee with ID '7' (should display as '0007')",
+        "boundary": "ID of exactly 4 digits (1001, no padding needed) vs 1 digit (7, needs 3 padding zeros)"
+      },
+      {
+        "id": "R12",
+        "rule": "Shift line: '  {date}  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot' where date is the UTC clock_in date in YYYY-MM-DD format (not the CSV date column). Two leading spaces. Values right-aligned in 6-character fields (e.g., '  0.25', '100.00').",
+        "theme": "formatting",
+        "default_behaviour": "Use CSV date, different column widths or labels, no leading spaces",
+        "hidden_test_input": "Shift whose UTC clock_in date differs from the CSV date column (PST 22:00 on Jan 17 → UTC Jan 18)",
+        "boundary": "Values requiring full 6-char width (100.00) vs small values (0.25)"
+      },
+      {
+        "id": "R13",
+        "rule": "Employee total line: '  TOTAL  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot  ${pay:>9.2f}'. Two leading spaces. Pay right-aligned in 9-character field (e.g., '$  1806.25', '$10000.00').",
+        "theme": "formatting",
+        "default_behaviour": "Different total format, no dollar sign, wrong field widths",
+        "hidden_test_input": "Employee with pay requiring full 9-char width",
+        "boundary": "Pay of exactly $9999.99 (fits in 9 with $) vs $10000.00 (also fits but borderline)"
+      },
+      {
+        "id": "R14",
+        "rule": "Employees sorted by employee_id as integers ascending (99 before 100). Shifts within an employee sorted by UTC clock_in datetime ascending. Flagged entries sorted by (employee_id numerically ascending, then date string ascending).",
+        "theme": "ordering",
+        "default_behaviour": "Lexicographic sort for employee IDs (100 before 99)",
+        "hidden_test_input": "Employees with IDs '99' and '100' (numeric: 99 first; lexicographic: '100' first)",
+        "boundary": "Two employees with IDs that sort differently numerically vs lexicographically"
+      },
+      {
+        "id": "R15",
+        "rule": "Flagged entries section: after all employees and a blank line, print 'FLAGGED ENTRIES:' then each flag as '  {id} {date}: {reason}' with id zero-padded to 4 digits, date from the original CSV date column (not the UTC date), sorted by (numeric id ascending, then date ascending). Reasons: 'missing clock-out', 'missing clock-in', 'exceeds cap'. If there are no flagged entries, omit the 'FLAGGED ENTRIES:' header entirely (do not print it).",
+        "theme": "formatting",
+        "default_behaviour": "Different flag format, no zero-padding, lexicographic sort, always print header, use UTC date",
+        "hidden_test_input": "Flagged entries for employees with short IDs (e.g., id=7 → '0007'); flagged entry where CSV date differs from UTC date",
+        "boundary": "Multiple flags for the same employee on different dates; no flagged entries at all (section omitted)"
+      },
+      {
+        "id": "R16",
+        "rule": "Grand total line: 'GRAND TOTAL  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot  ${pay:>9.2f}' after the flagged section and a blank line. Grand total reg/dot/wot are the sums of all employees' reg/dot/wot hours respectively. Grand total pay = round_cent_up(grand_total_reg × 25.00 + grand_total_dot × 37.50 + grand_total_wot × 50.00), NOT the sum of individually-rounded employee pays.",
+        "theme": "structure",
+        "default_behaviour": "No grand total, different format, or grand total pay = sum of employee pays",
+        "hidden_test_input": "Two employees whose individual pays round to $100.125→$100.13 and $200.125→$200.13 (sum=$300.26) but grand total hours produce pay=$300.25→$300.25",
+        "boundary": "Grand total pay that triggers cent-rounding edge case differing from sum-of-rounded-pays"
+      },
+      {
+        "id": "R17",
+        "rule": "Blank lines: one blank line after each employee's TOTAL line (including the last employee), one blank line between the last employee's blank line and 'FLAGGED ENTRIES:' (if any flagged entries exist; if no flagged entries, this blank line is still present between the last employee and 'GRAND TOTAL'), one blank line between the flagged entries (or the blank line after the last employee if no flags) and 'GRAND TOTAL'. An employee with zero counted hours still produces a header, TOTAL line, and the blank line after.",
+        "theme": "structure",
+        "default_behaviour": "Inconsistent, missing, or extra blank lines",
+        "hidden_test_input": "Output with multiple employees, no flagged entries (verify blank line before GRAND TOTAL still appears); employee with zero hours",
+        "boundary": "Single employee with no flags: header → TOTAL → blank → blank → GRAND TOTAL (two blank lines between TOTAL and GRAND TOTAL)"
+      },
+      {
+        "id": "R18",
+        "rule": "Each employee's total pay and the grand total pay are rounded to the nearest cent with exact half-cents rounding UP (not banker's rounding). Use floor(value*100+0.5)/100. E.g., $228.125 rounds to $228.13 (not $228.12).",
+        "theme": "arithmetic",
+        "default_behaviour": "Python's round() uses banker's rounding (round-half-to-even), so $228.125 → $228.12",
+        "hidden_test_input": "Pay of $228.125 (half-cent with even second decimal): round-half-up gives 228.13, Python round gives 228.12",
+        "boundary": "Pay value whose third decimal is exactly 5 and second decimal is even (triggers banker's rounding difference)"
+      },
+      {
+        "id": "R19",
+        "rule": "The date shown on each shift line (R12) is the UTC date of the clock_in time, which may differ from the CSV date column after timezone conversion. The date used in flagged entries (R15) is always the original CSV date column value.",
+        "theme": "edge_inputs",
+        "default_behaviour": "Use the CSV date column for both shift lines and flagged entries",
+        "hidden_test_input": "PST shift at 22:00 on Jan 17 local = Jan 18 06:00 UTC; shift line shows Jan 18, flagged entry (if any) shows Jan 17",
+        "boundary": "Shift where UTC clock_in is exactly at midnight UTC (00:00:00) — date is unambiguous"
+      },
+      {
+        "id": "R20",
+        "rule": "Exit 0 on success. Exit 1 if the input file cannot be opened (does not exist or no read permission). Exit 2 if any data row (rows after the header) has fewer than 6 comma-separated columns; on exit 2 produce no stdout output at all. The header row is not checked for column count. Rows with 6 or more columns are valid (extra columns are ignored). Output must use LF line endings only (no CR characters). The output must end with exactly one trailing newline (the GRAND TOTAL line followed by one \\n).",
+        "theme": "error_handling",
+        "default_behaviour": "Always exit 0, crash on bad input, output partial results, no line ending specification",
+        "hidden_test_input": "CSV with a valid header and one good row followed by a short row (5 columns); CSV with 7 columns in a data row (valid, extra ignored)",
+        "boundary": "Row with exactly 6 columns (valid) vs 5 columns (invalid, exit 2); output ending with no newline or double newline"
+      }
+    ],
+    "themes": ["formatting", "arithmetic", "ordering", "input_tolerance", "error_handling", "edge_inputs", "structure"],
+    "starter": "A working Python 3 script at /app/payroll.py that reads the CSV, computes hours without timezone conversion (treating all times as local and skipping midnight-crossing entries entirely), rounds to 2 decimal places, has daily OT for hours >8.0 (with 2-decimal rounding), has no weekly OT concept at all, treats missing clock_out as 0 hours with no flag, skips missing clock_in entries with no flag, outputs employee blocks with totals, a flagged section, and a grand total. It uses lexicographic sort for employee IDs, no zero-padding, CSV dates for shift lines, only HH:MM parsing, Python's round() for pay, no 16h cap, always exits 0 (no exit codes 1 or 2), and has incorrect blank line placement. No comments in the code reference any of the 20 rules.",
+    "self_check_blind_spot": "An agent is most likely to forget or misimplement: (1) Reverse-chronological weekly OT allocation (R5) — counterintuitive; the shipped data may produce the same total weekly OT hours regardless of direction, masking the error; the agent is unlikely to write a test that checks which specific shift receives weekly OT. (2) Midpoint-up rounding for both quarter-hours (R3) and cents (R18) — Python's round() gives different results only at exact half-values not present in the shipped CSV; the agent might use round() and never notice. (3) The 16h cap (R9) — no shipped data approaches it; the agent must think to create a >16h test shift. (4) Zero-padding for IDs shorter than 4 digits (R11) — all shipped IDs are already 4 digits. (5) UTC date for shift lines vs CSV date for flagged entries (R19/R15) — the starter skips the midnight-crossing entry entirely, so the agent never sees the date-shift requirement exercised in the shipped data. (6) Grand total pay computed from grand total hours × rates then rounded (R16), not sum of rounded employee pays — only differs at half-cent boundaries. (7) Exit code 2 for bad CSV rows producing no stdout (R20) — the starter always exits 0. (8) Blank line placement when no flagged entries exist (R17) — the agent may not test the no-flags case. (9) LF-only line endings and exactly one trailing newline (R20) — easy to overlook, only caught by byte-level output inspection.",
+    "runnable_reference": "none",
+    "reference_in_environment": "none",
+    "challenge_kind": "build_from_spec",
+    "property": "",
+    "reported_symptom": "",
+    "sites": [],
+    "partial_fix": "",
+    "decoys": [],
+    "hidden_edge_cases": [],
+    "why_not_textbook": "",
+    "static_read": "",
+    "crux": "",
+    "sequence_invariant": "",
+    "nameable_fix": "",
+    "interaction": "",
+    "expected_agent_steps": null
+  }
+}
+```

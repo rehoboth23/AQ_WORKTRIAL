@@ -1,0 +1,34 @@
+[
+  {
+    "topic": "a reimplementation of a shift-scheduling engine that produces identical rosters, tie-breaks included",
+    "stage": "gen_failed",
+    "spec_ok": true,
+    "files_written": true,
+    "structural": false,
+    "correct": false,
+    "evaluated": false,
+    "learnable": false,
+    "kept": false,
+    "confirmed": false,
+    "review": false,
+    "critic": "5 flag(s), revised",
+    "gen_cost": {
+      "input": 79049,
+      "output": 405501,
+      "cost_usd": 1.4754,
+      "cost_source": "gateway"
+    },
+    "eval_cost_usd": 0.0,
+    "gen_seconds": 10811.0,
+    "eval_seconds": 0.0,
+    "record": {
+      "topic": "a reimplementation of a shift-scheduling engine that produces identical rosters, tie-breaks included",
+      "arm": "treatment",
+      "stage": "generate",
+      "verdict": "gen_failed",
+      "decision": "rejected",
+      "why": "failed generation: Part 1 checks",
+      "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-reimplementation-of-a-shift-scheduling-20261022-060418-a368"
+    }
+  }
+]

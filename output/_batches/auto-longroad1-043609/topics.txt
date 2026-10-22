@@ -1,0 +1,1 @@
+[long_road] a nightly ETL job that loads the day's CSV exports into a local PostgreSQL database and publishes a summary report, which no longer completes on this machine

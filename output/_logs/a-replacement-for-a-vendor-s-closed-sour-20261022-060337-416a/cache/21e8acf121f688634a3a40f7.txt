@@ -1,0 +1,1128 @@
+Looking at the failure feedback, I need to fix two issues:
+
+1. **instruction.md names the binary path explicitly** — I need to describe the goal/symptom and let the agent discover the location
+2. **environment/reference.c filename suggests a reference/self-check** — I need to rename it to something innocuous
+
+Let me fix both issues:
+
+<<<FILE environment/Dockerfile>>>
+FROM ubuntu:24.04 AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+COPY build.c /tmp/build.c
+RUN gcc -O2 -std=c11 -o /tmp/feecalc /tmp/build.c && strip /tmp/feecalc
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc python3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /tmp/feecalc /usr/local/bin/feecalc
+COPY generate_sample.py /tmp/generate_sample.py
+RUN python3 /tmp/generate_sample.py > /app/sample.txt && rm /tmp/generate_sample.py
+<<<END>>>
+
+<<<FILE environment/build.c>>>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_ITEMS 1024
+#define MAX_LINE 4096
+
+typedef struct {
+    char category[64];
+    long long quantity;
+    long long price_cents;
+    long long ext_cents;
+    long long qty_disc_cents;
+} Item;
+
+static long long rhaz(long long a, long long b, long long d) {
+    if (d == 0) return 0;
+    long long prod = a * b;
+    long long q = prod / d;
+    long long r = prod % d;
+    if (prod >= 0) {
+        if (2 * r >= d) q++;
+    } else {
+        if (2 * r <= -d) q--;
+    }
+    return q;
+}
+
+static long long parse_price(const char *s) {
+    int neg = 0;
+    const char *p = s;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '-') { neg = 1; p++; }
+    long long whole = 0;
+    while (*p >= '0' && *p <= '9') {
+        whole = whole * 10 + (*p - '0');
+        p++;
+    }
+    long long frac = 0;
+    int fd = 0;
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9' && fd < 2) {
+            frac = frac * 10 + (*p - '0');
+            fd++;
+            p++;
+        }
+    }
+    long long cents = whole * 100 + (fd == 1 ? frac * 10 : frac);
+    if (neg) cents = -cents;
+    return cents;
+}
+
+static int tax_rate_bp(const char *s) {
+    if (strcmp(s, "CA") == 0) return 725;
+    if (strcmp(s, "TX") == 0) return 625;
+    if (strcmp(s, "NY") == 0) return 800;
+    if (strcmp(s, "FL") == 0) return 600;
+    if (strcmp(s, "WA") == 0) return 650;
+    if (strcmp(s, "OR") == 0) return 0;
+    if (strcmp(s, "MA") == 0) return 625;
+    if (strcmp(s, "IL") == 0) return 625;
+    if (strcmp(s, "PA") == 0) return 600;
+    if (strcmp(s, "OH") == 0) return 575;
+    return -1;
+}
+
+static int ship_idx(const char *s) {
+    if (strcmp(s, "standard") == 0) return 0;
+    if (strcmp(s, "express") == 0) return 1;
+    if (strcmp(s, "overnight") == 0) return 2;
+    return -1;
+}
+
+static const long long ship_tbl[3][5] = {
+    {500, 850, 1200, 1550, 2000},
+    {1000, 1500, 2000, 2500, 3200},
+    {2000, 2800, 3800, 4800, 6000}
+};
+
+static int pay_bp(const char *s) {
+    if (strcmp(s, "credit_card") == 0) return 250;
+    if (strcmp(s, "debit") == 0) return 0;
+    if (strcmp(s, "ach") == 0) return -50;
+    if (strcmp(s, "cash") == 0) return 0;
+    if (strcmp(s, "gift_card") == 0) return 100;
+    return -1;
+}
+
+static int food_ex(const char *s) {
+    return strcmp(s, "CA") == 0 || strcmp(s, "NY") == 0 ||
+           strcmp(s, "MA") == 0 || strcmp(s, "PA") == 0;
+}
+
+static int cloth_ex(const char *s) {
+    return strcmp(s, "PA") == 0;
+}
+
+static int med_ex(const char *s) {
+    return strcmp(s, "WA") != 0;
+}
+
+static int ship_taxed(const char *s) {
+    return strcmp(s, "TX") == 0 || strcmp(s, "FL") == 0 || strcmp(s, "OH") == 0;
+}
+
+static void fmt(long long c, char *buf) {
+    int neg = c < 0;
+    if (neg) c = -c;
+    if (neg)
+        sprintf(buf, "-%lld.%02lld", c / 100, c % 100);
+    else
+        sprintf(buf, "%lld.%02lld", c / 100, c % 100);
+}
+
+int main(void) {
+    char state[64] = ""; int state_set = 0;
+    char type[64] = ""; int type_set = 0;
+    int texempt = 0, texempt_set = 0;
+    char pay[64] = ""; int pay_set = 0;
+    char smeth[64] = ""; int smeth_set = 0;
+    int zone = 0, zone_set = 0;
+    char coup[64] = ""; int coup_set = 0;
+    Item items[MAX_ITEMS];
+    int ni = 0;
+    char line[MAX_LINE];
+
+    while (fgets(line, sizeof(line), stdin)) {
+        int len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+            line[--len] = '\0';
+        if (len == 0) continue;
+
+        if (strncmp(line, "STATE=", 6) == 0) {
+            state_set = 1;
+            strncpy(state, line + 6, 63); state[63] = '\0';
+        } else if (strncmp(line, "TYPE=", 5) == 0) {
+            type_set = 1;
+            strncpy(type, line + 5, 63); type[63] = '\0';
+        } else if (strncmp(line, "TAX_EXEMPT=", 11) == 0) {
+            texempt_set = 1;
+            texempt = (strcmp(line + 11, "true") == 0);
+        } else if (strncmp(line, "PAYMENT=", 8) == 0) {
+            pay_set = 1;
+            strncpy(pay, line + 8, 63); pay[63] = '\0';
+        } else if (strncmp(line, "SHIP_METHOD=", 12) == 0) {
+            smeth_set = 1;
+            strncpy(smeth, line + 12, 63); smeth[63] = '\0';
+        } else if (strncmp(line, "SHIP_ZONE=", 10) == 0) {
+            zone_set = 1;
+            zone = atoi(line + 10);
+        } else if (strncmp(line, "COUPON=", 7) == 0) {
+            coup_set = 1;
+            strncpy(coup, line + 7, 63); coup[63] = '\0';
+        } else if (strncmp(line, "ITEM ", 5) == 0) {
+            if (ni < MAX_ITEMS) {
+                char cat[64], ps[64];
+                long long q;
+                if (sscanf(line + 5, "%63s %lld %63s", cat, &q, ps) == 3) {
+                    strncpy(items[ni].category, cat, 63);
+                    items[ni].category[63] = '\0';
+                    items[ni].quantity = q;
+                    items[ni].price_cents = parse_price(ps);
+                    items[ni].ext_cents = items[ni].quantity * items[ni].price_cents;
+                    items[ni].qty_disc_cents = 0;
+                    ni++;
+                }
+            }
+        }
+    }
+
+    if (!state_set) { fprintf(stderr, "ERROR: missing STATE\n"); return 1; }
+    if (!type_set) { fprintf(stderr, "ERROR: missing TYPE\n"); return 1; }
+    if (!pay_set) { fprintf(stderr, "ERROR: missing PAYMENT\n"); return 1; }
+    if (!smeth_set) { fprintf(stderr, "ERROR: missing SHIP_METHOD\n"); return 1; }
+    if (!zone_set) { fprintf(stderr, "ERROR: missing SHIP_ZONE\n"); return 1; }
+    if (ni == 0) { fprintf(stderr, "ERROR: no items\n"); return 1; }
+    if (tax_rate_bp(state) < 0) { fprintf(stderr, "ERROR: unknown state\n"); return 1; }
+    if (strcmp(type, "retail") != 0 && strcmp(type, "wholesale") != 0 &&
+        strcmp(type, "government") != 0) {
+        fprintf(stderr, "ERROR: unknown type\n"); return 1;
+    }
+    if (pay_bp(pay) < 0) { fprintf(stderr, "ERROR: unknown payment method\n"); return 1; }
+    if (ship_idx(smeth) < 0) { fprintf(stderr, "ERROR: unknown shipping method\n"); return 1; }
+    if (zone < 1 || zone > 5) { fprintf(stderr, "ERROR: invalid zone\n"); return 1; }
+    for (int i = 0; i < ni; i++)
+        if (items[i].quantity < 0) { fprintf(stderr, "ERROR: negative quantity\n"); return 1; }
+    for (int i = 0; i < ni; i++)
+        if (items[i].price_cents < 0) { fprintf(stderr, "ERROR: negative price\n"); return 1; }
+
+    long long tqd = 0;
+    for (int i = 0; i < ni; i++) {
+        int p = 0;
+        if (items[i].quantity >= 50) p = 10;
+        else if (items[i].quantity >= 10) p = 5;
+        items[i].qty_disc_cents = rhaz(items[i].ext_cents, p, 100);
+        tqd += items[i].qty_disc_cents;
+    }
+
+    long long sub = 0;
+    for (int i = 0; i < ni; i++) sub += items[i].ext_cents;
+
+    long long pq = sub - tqd;
+
+    int bp = 0;
+    int ws = (strcmp(type, "wholesale") == 0);
+    if (ws) {
+        if (pq >= 50000) bp = 5;
+        else if (pq >= 25000) bp = 3;
+    } else {
+        if (pq >= 100000) bp = 5;
+        else if (pq >= 50000) bp = 3;
+    }
+    long long bd = rhaz(pq, bp, 100);
+
+    long long pb = pq - bd;
+
+    long long cd = 0;
+    int fs = 0;
+    if (coup_set && coup[0] != '\0') {
+        if (strcmp(coup, "SAVE10") == 0) {
+            cd = rhaz(pb, 10, 100);
+        } else if (strcmp(coup, "SAVE20") == 0) {
+            if (pb >= 10000) cd = rhaz(pb, 20, 100);
+        } else if (strcmp(coup, "DOLLAR5") == 0) {
+            if (pb >= 5000) cd = 500;
+        } else if (strcmp(coup, "DOLLAR25") == 0) {
+            if (pb >= 20000) cd = 2500;
+        } else if (strcmp(coup, "FREESHIP") == 0) {
+            fs = 1;
+        }
+    }
+
+    long long ds = pb - cd;
+
+    int si = ship_idx(smeth);
+    long long shp = ship_tbl[si][zone - 1];
+    if (fs) shp = 0;
+
+    long long fuel = rhaz(shp, 10, 100);
+    if (fuel > 500) fuel = 500;
+
+    long long tq = 0;
+    for (int i = 0; i < ni; i++) tq += items[i].quantity;
+    long long hdl = 200 + 50 * tq;
+    if (hdl > 1000) hdl = 1000;
+
+    int gov = (strcmp(type, "government") == 0);
+    long long sof = 0;
+    if (sub < 2500 && !gov) sof = 500;
+
+    long long exm = 0;
+    for (int i = 0; i < ni; i++) {
+        int ex = 0;
+        if (strcmp(items[i].category, "food") == 0 && food_ex(state)) ex = 1;
+        if (strcmp(items[i].category, "clothing") == 0 && cloth_ex(state)) ex = 1;
+        if (strcmp(items[i].category, "medicine") == 0 && med_ex(state)) ex = 1;
+        if (ex) exm += items[i].ext_cents - items[i].qty_disc_cents;
+    }
+
+    long long txbl = 0, tax = 0;
+    if (gov || texempt) {
+        txbl = 0; tax = 0;
+    } else {
+        txbl = ds - exm;
+        if (ship_taxed(state)) txbl += shp;
+        tax = rhaz(txbl, tax_rate_bp(state), 10000);
+    }
+
+    long long pp = ds + tax + shp + fuel + hdl + sof;
+    long long ps = rhaz(pp, pay_bp(pay), 10000);
+
+    long long tot = pp + ps;
+
+    char buf[64];
+    fmt(sub, buf); printf("SUBTOTAL=%s\n", buf);
+    fmt(tqd, buf); printf("QTY_DISCOUNT=%s\n", buf);
+    fmt(bd, buf); printf("BULK_DISCOUNT=%s\n", buf);
+    fmt(cd, buf); printf("COUPON_DISCOUNT=%s\n", buf);
+    fmt(txbl, buf); printf("TAXABLE=%s\n", buf);
+    fmt(tax, buf); printf("TAX=%s\n", buf);
+    fmt(shp, buf); printf("SHIPPING=%s\n", buf);
+    fmt(fuel, buf); printf("FUEL=%s\n", buf);
+    fmt(hdl, buf); printf("HANDLING=%s\n", buf);
+    fmt(sof, buf); printf("SMALL_ORDER_FEE=%s\n", buf);
+    fmt(ps, buf); printf("PAYMENT_SURCHARGE=%s\n", buf);
+    fmt(tot, buf); printf("TOTAL=%s\n", buf);
+
+    return 0;
+}
+<<<END>>>
+
+<<<FILE instruction.md>>>
+# Vendor Fee Calculator Replacement
+
+The procurement team needs to replace a vendor's closed-source tax-and-fee calculator before the contract expires. The calculator program is installed somewhere on this system — find it, figure out how it works by probing it with different inputs, and build an open Python replacement that produces identical results.
+
+A file of sample orders is available at `/app/sample.txt`. It contains example orders separated by lines containing only `===`. Each block is a complete order.
+
+## Goal
+
+Create `/app/quotelib.py` that behaves identically to the vendor calculator for any order input. Specifically, for any input of the kinds shown in `/app/sample.txt`, your program must produce **exactly the same stdout, stderr, and exit status** as the vendor calculator.
+
+## Input Format
+
+The program reads text lines from stdin:
+
+- `STATE=<2-letter code>` — US state code
+- `TYPE=<retail|wholesale|government>` — customer type
+- `TAX_EXEMPT=<true|false>` — optional, tax-exempt flag
+- `PAYMENT=<credit_card|debit|ach|cash|gift_card>` — payment method
+- `SHIP_METHOD=<standard|express|overnight>` — shipping method
+- `SHIP_ZONE=<1-5>` — shipping zone
+- `COUPON=<code>` — optional, coupon code
+- `ITEM <category> <quantity> <unit_price>` — one or more item lines
+
+Categories: `general`, `food`, `clothing`, `medicine`. Prices are in dollars with optional cents (e.g., `10.00`, `5`, `3.50`).
+
+Blank lines and unrecognized lines are ignored.
+
+## Output Format
+
+On success (exit 0), write exactly 12 lines to stdout, each as `KEY=<amount>` with amounts formatted to exactly 2 decimal places (e.g., `100.00`, `-0.55`, `0.00`):
+
+```
+SUBTOTAL=<amount>
+QTY_DISCOUNT=<amount>
+BULK_DISCOUNT=<amount>
+COUPON_DISCOUNT=<amount>
+TAXABLE=<amount>
+TAX=<amount>
+SHIPPING=<amount>
+FUEL=<amount>
+HANDLING=<amount>
+SMALL_ORDER_FEE=<amount>
+PAYMENT_SURCHARGE=<amount>
+TOTAL=<amount>
+```
+
+On validation error (exit 1), write `ERROR: <message>` to stderr and **nothing** to stdout.
+
+## Module Interface
+
+The program must also be importable as a Python module:
+
+```python
+from quotelib import calculate
+output = calculate(text: str) -> str  # returns the 12-line output string
+# raises ValueError with the error message on invalid input
+```
+
+When run as a script (`python3 /app/quotelib.py`), it reads from stdin and writes to stdout/stderr with the same contract as the vendor calculator.
+
+## Sample File
+
+`/app/sample.txt` contains example orders separated by lines containing only `===`. Each block is a complete order that should be fed individually to the calculator. The sample covers every kind of input your program must handle, but does **not** exhaust every edge case — you must probe the calculator to discover all rules.
+
+## Rules
+
+1. Your program must **not** call the vendor calculator or any external program.
+2. The vendor calculator will **not** be available when your program is checked.
+3. Probe the calculator systematically to discover every rule: tax rates by state, category exemptions by state, quantity discount tiers, bulk discount tiers, coupon codes and their logic, shipping rates, fuel surcharge, handling fees, small order fees, payment surcharges, and error handling.
+4. Every rule that affects output is observable by running the calculator on inputs you can construct.
+5. The comparison is byte-for-byte: stdout, stderr, and exit code must all match exactly.
+
+## How to Probe
+
+First, locate the calculator program on the system (check what's installed, look in common binary directories, or use `find`). Then feed individual order blocks to it:
+
+```bash
+printf 'STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n' | <calculator_command>
+```
+
+Split the sample file on `===` lines and feed each block individually:
+
+```bash
+python3 -c "
+data = open('/app/sample.txt').read()
+for block in data.split('==='):
+    block = block.strip()
+    if block:
+        import subprocess
+        r = subprocess.run(['<calculator_command>'], input=block, capture_output=True, text=True)
+        print(repr(block[:40]), 'rc=', r.returncode)
+        print(r.stdout, end='')
+        if r.stderr: print('STDERR:', r.stderr, end='')
+        print('---')
+"
+```
+
+Vary inputs systematically: change states, customer types, quantities, subtotals, categories, coupons, payment methods, shipping methods, and zones. Test a wide range of values and combinations the sample doesn't cover.
+<<<END>>>
+
+<<<FILE solution/solve.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat << 'PYEOF' > /app/quotelib.py
+#!/usr/bin/env python3
+"""Vendor fee calculator replacement - Python reimplementation of feecalc."""
+
+import sys
+
+TAX_RATES = {
+    "CA": 725, "TX": 625, "NY": 800, "FL": 600, "WA": 650,
+    "OR": 0, "MA": 625, "IL": 625, "PA": 600, "OH": 575,
+}
+
+SHIP_TABLE = {
+    "standard":  [500, 850, 1200, 1550, 2000],
+    "express":   [1000, 1500, 2000, 2500, 3200],
+    "overnight": [2000, 2800, 3800, 4800, 6000],
+}
+
+PAY_RATES = {
+    "credit_card": 250, "debit": 0, "ach": -50,
+    "cash": 0, "gift_card": 100,
+}
+
+FOOD_EXEMPT_STATES = {"CA", "NY", "MA", "PA"}
+CLOTHING_EXEMPT_STATES = {"PA"}
+SHIP_TAXED_STATES = {"TX", "FL", "OH"}
+
+
+def rhaz(a, b, d):
+    """Round half away from zero: compute round(a * b / d)."""
+    if d == 0:
+        return 0
+    prod = a * b
+    q, r = divmod(prod, d)
+    if prod < 0 and r != 0:
+        q += 1
+        r -= d
+    if prod >= 0:
+        if 2 * r >= d:
+            q += 1
+    else:
+        if 2 * r <= -d:
+            q -= 1
+    return q
+
+
+def parse_price(s):
+    """Parse a price string to cents, matching C's parse_price."""
+    p = s.lstrip(' \t')
+    neg = False
+    if p.startswith('-'):
+        neg = True
+        p = p[1:]
+    whole = 0
+    i = 0
+    while i < len(p) and p[i].isdigit():
+        whole = whole * 10 + int(p[i])
+        i += 1
+    frac = 0
+    fd = 0
+    if i < len(p) and p[i] == '.':
+        i += 1
+        while i < len(p) and p[i].isdigit() and fd < 2:
+            frac = frac * 10 + int(p[i])
+            fd += 1
+            i += 1
+    cents = whole * 100 + (frac * 10 if fd == 1 else frac)
+    if neg:
+        cents = -cents
+    return cents
+
+
+def fmt(cents):
+    """Format cents as a dollar string with 2 decimal places."""
+    neg = cents < 0
+    if neg:
+        cents = -cents
+    s = f"{cents // 100}.{cents % 100:02d}"
+    if neg:
+        s = "-" + s
+    return s
+
+
+def _atoi(s):
+    """C-style atoi."""
+    s = s.lstrip()
+    if not s:
+        return 0
+    sign = 1
+    i = 0
+    if s[0] == '-':
+        sign = -1
+        i = 1
+    elif s[0] == '+':
+        i = 1
+    result = 0
+    while i < len(s) and s[i].isdigit():
+        result = result * 10 + int(s[i])
+        i += 1
+    return sign * result
+
+
+def _parse_llong(s):
+    """Parse a string as a C long long (%lld behavior)."""
+    s = s.lstrip()
+    if not s:
+        return None
+    sign = 1
+    i = 0
+    if s[0] == '-':
+        sign = -1
+        i = 1
+    elif s[0] == '+':
+        i = 1
+    if i >= len(s) or not s[i].isdigit():
+        return None
+    result = 0
+    while i < len(s) and s[i].isdigit():
+        result = result * 10 + int(s[i])
+        i += 1
+    return sign * result
+
+
+def calculate(text):
+    """Calculate fees for an order.
+
+    Args:
+        text: Input text with key=value lines and ITEM lines.
+
+    Returns:
+        String with 12 output lines.
+
+    Raises:
+        ValueError: On validation error, with the error message.
+    """
+    state = ""
+    state_set = False
+    ctype = ""
+    type_set = False
+    texempt = False
+    texempt_set = False
+    pay = ""
+    pay_set = False
+    smeth = ""
+    smeth_set = False
+    zone = 0
+    zone_set = False
+    coup = ""
+    coup_set = False
+    items = []
+
+    for line in text.split('\n'):
+        line = line.rstrip('\r')
+        if len(line) == 0:
+            continue
+
+        if line.startswith("STATE="):
+            state_set = True
+            state = line[6:69]
+        elif line.startswith("TYPE="):
+            type_set = True
+            ctype = line[5:68]
+        elif line.startswith("TAX_EXEMPT="):
+            texempt_set = True
+            texempt = (line[11:] == "true")
+        elif line.startswith("PAYMENT="):
+            pay_set = True
+            pay = line[8:71]
+        elif line.startswith("SHIP_METHOD="):
+            smeth_set = True
+            smeth = line[12:75]
+        elif line.startswith("SHIP_ZONE="):
+            zone_set = True
+            zone = _atoi(line[10:])
+        elif line.startswith("COUPON="):
+            coup_set = True
+            coup = line[7:70]
+        elif line.startswith("ITEM "):
+            if len(items) < 1024:
+                parts = line[5:].split()
+                if len(parts) >= 3:
+                    cat = parts[0][:63]
+                    q = _parse_llong(parts[1])
+                    if q is not None:
+                        price_cents = parse_price(parts[2][:63])
+                        ext_cents = q * price_cents
+                        items.append([cat, q, price_cents, ext_cents, 0])
+
+    if not state_set:
+        raise ValueError("missing STATE")
+    if not type_set:
+        raise ValueError("missing TYPE")
+    if not pay_set:
+        raise ValueError("missing PAYMENT")
+    if not smeth_set:
+        raise ValueError("missing SHIP_METHOD")
+    if not zone_set:
+        raise ValueError("missing SHIP_ZONE")
+    if len(items) == 0:
+        raise ValueError("no items")
+    if state not in TAX_RATES:
+        raise ValueError("unknown state")
+    if ctype not in ("retail", "wholesale", "government"):
+        raise ValueError("unknown type")
+    if pay not in PAY_RATES:
+        raise ValueError("unknown payment method")
+    if smeth not in SHIP_TABLE:
+        raise ValueError("unknown shipping method")
+    if zone < 1 or zone > 5:
+        raise ValueError("invalid zone")
+    for item in items:
+        if item[1] < 0:
+            raise ValueError("negative quantity")
+    for item in items:
+        if item[2] < 0:
+            raise ValueError("negative price")
+
+    tqd = 0
+    for item in items:
+        q = item[1]
+        if q >= 50:
+            p = 10
+        elif q >= 10:
+            p = 5
+        else:
+            p = 0
+        qty_disc = rhaz(item[3], p, 100)
+        item[4] = qty_disc
+        tqd += qty_disc
+
+    sub = sum(item[3] for item in items)
+    pq = sub - tqd
+
+    ws = (ctype == "wholesale")
+    if ws:
+        if pq >= 50000:
+            bp = 5
+        elif pq >= 25000:
+            bp = 3
+        else:
+            bp = 0
+    else:
+        if pq >= 100000:
+            bp = 5
+        elif pq >= 50000:
+            bp = 3
+        else:
+            bp = 0
+    bd = rhaz(pq, bp, 100)
+    pb = pq - bd
+
+    cd = 0
+    fs = False
+    if coup_set and coup:
+        if coup == "SAVE10":
+            cd = rhaz(pb, 10, 100)
+        elif coup == "SAVE20":
+            if pb >= 10000:
+                cd = rhaz(pb, 20, 100)
+        elif coup == "DOLLAR5":
+            if pb >= 5000:
+                cd = 500
+        elif coup == "DOLLAR25":
+            if pb >= 20000:
+                cd = 2500
+        elif coup == "FREESHIP":
+            fs = True
+
+    ds = pb - cd
+
+    shp = SHIP_TABLE[smeth][zone - 1]
+    if fs:
+        shp = 0
+
+    fuel = rhaz(shp, 10, 100)
+    if fuel > 500:
+        fuel = 500
+
+    tq = sum(item[1] for item in items)
+    hdl = 200 + 50 * tq
+    if hdl > 1000:
+        hdl = 1000
+
+    gov = (ctype == "government")
+    sof = 0
+    if sub < 2500 and not gov:
+        sof = 500
+
+    exm = 0
+    for item in items:
+        cat = item[0]
+        ex = False
+        if cat == "food" and state in FOOD_EXEMPT_STATES:
+            ex = True
+        elif cat == "clothing" and state in CLOTHING_EXEMPT_STATES:
+            ex = True
+        elif cat == "medicine" and state != "WA":
+            ex = True
+        if ex:
+            exm += item[3] - item[4]
+
+    if gov or texempt:
+        txbl = 0
+        tax = 0
+    else:
+        txbl = ds - exm
+        if state in SHIP_TAXED_STATES:
+            txbl += shp
+        tax = rhaz(txbl, TAX_RATES[state], 10000)
+
+    pp = ds + tax + shp + fuel + hdl + sof
+    ps = rhaz(pp, PAY_RATES[pay], 10000)
+    tot = pp + ps
+
+    lines = [
+        f"SUBTOTAL={fmt(sub)}",
+        f"QTY_DISCOUNT={fmt(tqd)}",
+        f"BULK_DISCOUNT={fmt(bd)}",
+        f"COUPON_DISCOUNT={fmt(cd)}",
+        f"TAXABLE={fmt(txbl)}",
+        f"TAX={fmt(tax)}",
+        f"SHIPPING={fmt(shp)}",
+        f"FUEL={fmt(fuel)}",
+        f"HANDLING={fmt(hdl)}",
+        f"SMALL_ORDER_FEE={fmt(sof)}",
+        f"PAYMENT_SURCHARGE={fmt(ps)}",
+        f"TOTAL={fmt(tot)}",
+    ]
+    return '\n'.join(lines) + '\n'
+
+
+def main():
+    try:
+        text = sys.stdin.read()
+        output = calculate(text)
+        sys.stdout.write(output)
+    except ValueError as e:
+        sys.stderr.write(f"ERROR: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+PYEOF
+
+chmod +x /app/quotelib.py
+<<<END>>>
+
+<<<FILE tests/test_outputs.py>>>
+"""Test suite for the feecalc reverse-engineering task.
+
+Compiles the reference C source, hides the installed binary,
+then compares reference vs artifact output on sample and generated inputs.
+"""
+import subprocess
+import os
+import sys
+import pytest
+
+REFERENCE_SRC = "/tests/reference.c"
+ARTIFACT = "/app/quotelib.py"
+IMAGE_PYTHON = "/usr/bin/python3"
+SAMPLE_FILE = "/app/sample.txt"
+FEECALC_BIN = "/usr/local/bin/feecalc"
+FEECALC_HIDDEN = "/usr/local/bin/feecalc.hidden"
+
+
+def _run_cmd(args, input_text, env=None):
+    """Run a command with input, return (stdout, stderr, returncode)."""
+    kw = dict(input=input_text, capture_output=True, text=True, timeout=30)
+    if env is not None:
+        kw["env"] = env
+    r = subprocess.run(args, **kw)
+    return r.stdout, r.stderr, r.returncode
+
+
+def run_reference(bin_path, input_text):
+    """Run the compiled reference binary."""
+    return _run_cmd([bin_path], input_text)
+
+
+def run_artifact(input_text):
+    """Run the Python artifact with the image's Python interpreter."""
+    env = os.environ.copy()
+    env["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    env.pop("VIRTUAL_ENV", None)
+    return _run_cmd([IMAGE_PYTHON, ARTIFACT], input_text, env=env)
+
+
+def assert_match(ref_bin, input_text, context=""):
+    """Compare reference and artifact output; fail with diagnostic on mismatch."""
+    r_out, r_err, r_rc = run_reference(ref_bin, input_text)
+    a_out, a_err, a_rc = run_artifact(input_text)
+    parts = []
+    if r_out != a_out:
+        parts.append("STDOUT differs:\n  ref: " + repr(r_out) + "\n  art: " + repr(a_out))
+    if r_err != a_err:
+        parts.append("STDERR differs:\n  ref: " + repr(r_err) + "\n  art: " + repr(a_err))
+    if r_rc != a_rc:
+        parts.append("EXIT CODE differs: ref=" + str(r_rc) + " art=" + str(a_rc))
+    if parts:
+        msg = context + "\nInput:\n" + input_text + "\n" + "\n".join(parts)
+        pytest.fail(msg)
+
+
+@pytest.fixture(scope="session")
+def ref_bin(tmp_path_factory):
+    """Compile reference.c and return path to compiled binary."""
+    out = str(tmp_path_factory.mktemp("ref") / "feecalc_ref")
+    result = subprocess.run(
+        ["gcc", "-O2", "-std=c11", "-o", out, REFERENCE_SRC],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, "Reference compilation failed: " + result.stderr
+    assert os.path.exists(out), "Compiled binary not found at " + out
+    return out
+
+
+@pytest.fixture(scope="session", autouse=True)
+def hide_feecalc():
+    """Hide the original feecalc binary so the artifact cannot call it."""
+    hidden = False
+    if os.path.exists(FEECALC_BIN):
+        os.rename(FEECALC_BIN, FEECALC_HIDDEN)
+        hidden = True
+    assert not os.path.exists(FEECALC_BIN), "feecalc still visible at " + FEECALC_BIN
+    yield
+    if hidden and os.path.exists(FEECALC_HIDDEN):
+        os.rename(FEECALC_HIDDEN, FEECALC_BIN)
+
+
+def test_artifact_exists():
+    """The artifact file must exist."""
+    assert os.path.isfile(ARTIFACT), "Artifact not found at " + ARTIFACT
+
+
+def test_module_importable():
+    """The artifact must be importable and expose calculate()."""
+    env = os.environ.copy()
+    env["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    env.pop("VIRTUAL_ENV", None)
+    r = subprocess.run(
+        [IMAGE_PYTHON, "-c",
+         "import sys; sys.path.insert(0,'/app'); import quotelib; "
+         "assert hasattr(quotelib, 'calculate'), 'no calculate'"],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, "Import failed: " + r.stderr + "\n" + r.stdout
+
+
+def test_compiled_reference(ref_bin):
+    """The reference binary was compiled successfully (checked by fixture)."""
+    assert os.path.exists(ref_bin)
+
+
+def test_binary_hidden():
+    """The original feecalc binary must be hidden."""
+    assert not os.path.exists(FEECALC_BIN), "feecalc should be hidden"
+
+
+def test_sample_inputs(ref_bin):
+    """Run all sample orders through both programs and compare."""
+    assert os.path.isfile(SAMPLE_FILE), "Sample file not found at " + SAMPLE_FILE
+    data = open(SAMPLE_FILE).read()
+    blocks = data.split("===")
+    count = 0
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        count += 1
+        assert_match(ref_bin, block + "\n",
+                     context="Sample block #" + str(count))
+
+
+def test_generated_cases(ref_bin):
+    """Run all generated inputs through both programs and compare."""
+    sys.path.insert(0, "/tests")
+    from gen_cases import gen_cases
+    cases = gen_cases()
+    for i, (inp, desc) in enumerate(cases):
+        assert_match(ref_bin, inp,
+                     context="Generated case #" + str(i) + ": " + desc)
+
+
+def test_rounding_half_up(ref_bin):
+    """Specific tie-breaking inputs that require round-half-up."""
+    ties = [
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 2.00\n",
+         "CA $2.00 -> TAX=0.15"),
+        ("STATE=WA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 1.00\n",
+         "WA $1.00 -> TAX=0.07"),
+        ("STATE=TX\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 0.08\n",
+         "TX $0.08 -> TAX=0.01"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "CA $10.00 -> TAX=0.73"),
+        ("STATE=OH\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 6.00\n",
+         "OH $6.00 -> TAX=0.35"),
+    ]
+    for inp, desc ties:
+        assert_match(ref_bin, inp, context="Rounding tie: " + desc)
+
+
+def test_tax_exempt_taxable_zero(ref_bin):
+    """Government and tax_exempt must show TAXABLE=0.00 and TAX=0.00."""
+    cases_list = [
+        "STATE=CA\nTYPE=government\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00\n",
+        "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nTAX_EXEMPT=true\nITEM general 1 100.00\n",
+        "STATE=TX\nTYPE=government\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 5 50.00\n",
+    ]
+    for i, inp in enumerate(cases_list):
+        assert_match(ref_bin, inp, context="Tax exempt TAXABLE=0 case #" + str(i))
+
+
+def test_shipping_taxed(ref_bin):
+    """TX/FL/OH include shipping in TAXABLE; others do not."""
+    for s in ["TX", "FL", "OH"]:
+        inp = ("STATE=" + s + "\nTYPE=retail\nPAYMENT=cash\n"
+               "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00\n")
+        assert_match(ref_bin, inp, context="Shipping taxed in " + s)
+    for s in ["CA", "NY", "WA"]:
+        inp = ("STATE=" + s + "\nTYPE=retail\nPAYMENT=cash\n"
+               "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00\n")
+        assert_match(ref_bin, inp, context="Shipping not taxed in " + s)
+
+
+def test_category_exemptions_all_states(ref_bin):
+    """Food, clothing, medicine exemptions tested in all 10 states."""
+    states = ["CA", "TX", "NY", "FL", "WA", "OR", "MA", "IL", "PA", "OH"]
+    for s in states:
+        inp = ("STATE=" + s + "\nTYPE=retail\nPAYMENT=cash\n"
+               "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM food 1 10.00\n")
+        assert_match(ref_bin, inp, context="Food in " + s)
+    for s in states:
+        inp = ("STATE=" + s + "\nTYPE=retail\nPAYMENT=cash\n"
+               "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM clothing 1 10.00\n")
+        assert_match(ref_bin, inp, context="Clothing in " + s)
+    for s in states:
+        inp = ("STATE=" + s + "\nTYPE=retail\nPAYMENT=cash\n"
+               "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM medicine 1 10.00\n")
+        assert_match(ref_bin, inp, context="Medicine in " + s)
+
+
+def test_medicine_in_wa(ref_bin):
+    """WA state: medicine is NOT exempt (taxed). Other states: exempt."""
+    wa_inp = ("STATE=WA\nTYPE=retail\nPAYMENT=cash\n"
+              "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM medicine 1 10.00\n")
+    assert_match(ref_bin, wa_inp, context="Medicine in WA (taxed)")
+    ca_inp = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\n"
+              "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM medicine 1 10.00\n")
+    assert_match(ref_bin, ca_inp, context="Medicine in CA (exempt)")
+
+
+def test_quantity_discount_boundaries(ref_bin):
+    """Quantity boundaries: 9 (none), 10 (5%), 49 (5%), 50 (10%), 100 (10%)."""
+    for qty, desc in [(9, "no disc"), (10, "5pct"), (49, "5pct"), (50, "10pct"), (100, "10pct")]:
+        inp = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\n"
+               "SHIP_ZONE=1\nITEM general " + str(qty) + " 10.00\n")
+        assert_match(ref_bin, inp, context="Qty " + str(qty) + " " + desc)
+
+
+def test_bulk_discount_boundaries(ref_bin):
+    """Retail bulk boundaries on post-qty-discount subtotal."""
+    cases_list = [
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 499.99\n",
+         "$499.99 no bulk"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 500.00\n",
+         "$500.00 3pct bulk"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 999.99\n",
+         "$999.99 3pct bulk"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 1000.00\n",
+         "$1000.00 5pct bulk"),
+    ]
+    for inp, desc in cases_list:
+        assert_match(ref_bin, inp, context="Bulk boundary: " + desc)
+
+
+def test_wholesale_bulk_thresholds(ref_bin):
+    """Wholesale has halved bulk thresholds: $250 (3%), $500 (5%)."""
+    cases_list = [
+        ("STATE=CA\nTYPE=wholesale\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 249.99\n",
+         "$249.99 no bulk"),
+        ("STATE=CA\nTYPE=wholesale\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 250.00\n",
+         "$250.00 3pct bulk"),
+        ("STATE=CA\nTYPE=wholesale\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 499.99\n",
+         "$499.99 3pct bulk"),
+        ("STATE=CA\nTYPE=wholesale\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 500.00\n",
+         "$500.00 5pct bulk"),
+    ]
+    for inp, desc in cases_list:
+        assert_match(ref_bin, inp, context="Wholesale bulk: " + desc)
+
+
+def test_coupon_logic(ref_bin):
+    """Coupon codes and their minimums."""
+    cases_list = [
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=SAVE10\nITEM general 1 100.00\n",
+         "SAVE10 always applies"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=SAVE20\nITEM general 1 99.99\n",
+         "SAVE20 below $100 min"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=SAVE20\nITEM general 1 100.00\n",
+         "SAVE20 at $100 min"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=DOLLAR5\nITEM general 1 49.99\n",
+         "DOLLAR5 below $50 min"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=DOLLAR5\nITEM general 1 50.00\n",
+         "DOLLAR5 at $50 min"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=DOLLAR25\nITEM general 1 199.99\n",
+         "DOLLAR25 below $200 min"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=DOLLAR25\nITEM general 1 200.00\n",
+         "DOLLAR25 at $200 min"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=BOGUS\nITEM general 1 100.00\n",
+         "Invalid coupon no disc exit 0"),
+    ]
+    for inp, desc in cases_list:
+        assert_match(ref_bin, inp, context="Coupon: " + desc)
+
+
+def test_freeship_fuel(ref_bin):
+    """FREESHIP zeroes both SHIPPING and FUEL."""
+    inp = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=overnight\n"
+           "SHIP_ZONE=5\nCOUPON=FREESHIP\nITEM general 1 10.00\n")
+    assert_match(ref_bin, inp, context="FREESHIP overnight zone5")
+
+
+def test_fee_caps(ref_bin):
+    """Fuel cap at >$5.00; handling cap at >$10.00 (strict greater)."""
+    inp1 = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=overnight\n"
+            "SHIP_ZONE=5\nITEM general 1 10.00\n")
+    assert_match(ref_bin, inp1, context="Fuel cap: $60 ship")
+    inp2 = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\n"
+            "SHIP_ZONE=1\nITEM general 16 1.00\n")
+    assert_match(ref_bin, inp2, context="Handling cap: 16 items = $10.00 exactly")
+    inp3 = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\n"
+            "SHIP_ZONE=1\nITEM general 17 1.00\n")
+    assert_match(ref_bin, inp3, context="Handling cap: 17 items = $10.50 capped")
+
+
+def test_small_order_fee(ref_bin):
+    """Small order fee $5.00 when pre-discount subtotal < $25.00; waived for government."""
+    cases_list = [
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 24.99\n",
+         "$24.99 < $25 fee $5"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 25.00\n",
+         "$25.00 = $25 no fee"),
+        ("STATE=CA\nTYPE=government\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 20.00\n",
+         "Gov $20 < $25 waived"),
+    ]
+    for inp, desc in cases_list:
+        assert_match(ref_bin, inp, context="Small order: " + desc)
+
+
+def test_payment_methods(ref_bin):
+    """All payment methods including ACH (negative surcharge)."""
+    for p in ["credit_card", "debit", "ach", "cash", "gift_card"]:
+        inp = ("STATE=CA\nTYPE=retail\nPAYMENT=" + p + "\n"
+               "SHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 100.00\n")
+        assert_match(ref_bin, inp, context="Payment: " + p)
+
+
+def test_error_priority(ref_bin):
+    """First error in priority order is reported."""
+    inp1 = ("TYPE=retail\nPAYMENT=bitcoin\nSHIP_METHOD=standard\n"
+            "SHIP_ZONE=1\nITEM general -1 10.00\n")
+    assert_match(ref_bin, inp1, context="Error priority: missing STATE first")
+    inp2 = ("STATE=ZZ\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\n"
+            "SHIP_ZONE=1\n")
+    assert_match(ref_bin, inp2, context="Error priority: no items before unknown state")
+    inp3 = ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\n"
+            "SHIP_ZONE=1\nITEM general -1 -10.00\n")
+    assert_match(ref_bin, inp3, context="Error priority: neg qty before neg price")
+
+
+def test_error_cases(ref_bin):
+    """Specific validation errors with exact messages and exit codes."""
+    errors = [
+        ("TYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "missing STATE"),
+        ("STATE=CA\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "missing TYPE"),
+        ("STATE=CA\nTYPE=retail\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "missing PAYMENT"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "missing SHIP_METHOD"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nITEM general 1 10.00\n",
+         "missing SHIP_ZONE"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\n",
+         "no items"),
+        ("STATE=ZZ\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "unknown state"),
+        ("STATE=CA\nTYPE=business\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "unknown type"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=bitcoin\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "unknown payment"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=teleport\nSHIP_ZONE=1\nITEM general 1 10.00\n",
+         "unknown shipping"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=0\nITEM general 1 10.00\n",
+         "invalid zone 0"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=9\nITEM general 1 10.00\n",
+         "invalid zone 9"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general -1 10.00\n",
+         "negative quantity"),
+        ("STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 -10.00\n",
+         "negative price"),
+    ]
+    for inp, desc in errors:
+        assert_match(ref_bin, inp, context="Error: " + desc)
+<<<END>>>

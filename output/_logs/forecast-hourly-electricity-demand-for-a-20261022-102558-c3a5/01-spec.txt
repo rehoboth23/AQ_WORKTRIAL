@@ -1,0 +1,138 @@
+```json
+{
+  "name": "island-microgrid-demand-forecast",
+  "description": "Build a day-ahead hourly electricity demand forecasting model for an island microgrid that generalizes to held-out weeks containing holidays, cold-snaps, and ferry-day effects.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["forecasting", "machine-learning", "feature-engineering", "time-series", "energy"],
+  "expert_time_estimate_min": 50,
+  "junior_time_estimate_min": 140,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You are the newly hired data analyst for the St. Margaret's Island microgrid. The previous analyst left a basic forecasting script that averages demand by hour and day-of-week. The grid operator complains the forecasts are useless on holidays, cold days, and ferry Saturdays. You must rebuild the forecast model so it works reliably for day-ahead dispatch, including on days with conditions never seen in the training data.",
+  "environment_setup": "The Docker image is built from python:3.12-slim-bookworm with numpy, pandas, scikit-learn, and pytest installed via pip. A build-time script (deleted afterwards) generates: (1) demand_meter.csv — 10 weeks of raw hourly demand (kW) for Jan 8 – Mar 17, 2024, produced by a seeded simulator with temperature response, calendar effects, ferry schedule, and 4% noise; (2) demand_cleaned.csv — a spike-smoothed copy (3-sigma outliers replaced with rolling medians); (3) weather.csv — hourly temperature_c, humidity_pct, wind_speed_kmh for the full year (observations for the training period, forecasts afterwards), including a severe cold-snap during Mar 25–31 that drives temperatures well below any seen in training; (4) calendar.csv — daily rows for the full year with is_holiday, holiday_name, and is_ferry_day columns; (5) /app/notes/operator_notes.md describing load drivers; (6) /app/data/README.md documenting the timezone (US/Eastern local time with a Mar 10 DST spring-forward producing 23 records that day) and stating that demand_meter.csv is authoritative while demand_cleaned.csv is for trending only. The starter forecast.py loads the cleaned demand and produces a simple hour×day-of-week average forecast. Ferry days are every other Saturday starting Jan 13 2024. Holidays in the training period: Jan 15 (Founders' Day). Holidays in the held-out period: Mar 29 (Good Friday, adjacent to weekend), Apr 6 (Island Liberation Day, also a ferry Saturday).",
+  "instruction_summary": "Improve /app/forecast.py so that `python forecast.py --start YYYY-MM-DD --weeks N` writes /app/forecast.csv with columns timestamp (YYYY-MM-DD HH:MM:SS, US/Eastern local time) and demand_kw (float, rounded to 1 decimal), 168 rows per week, no gaps or NaN. The model must train on data in /app/data/, read the operator notes and README, and generalize to unseen periods — including holidays, temperatures well below the training range, and ferry Saturdays. The script must run offline in under 60 seconds on 1 CPU.",
+  "solution_outline": [
+    "Read /app/data/README.md and /app/notes/operator_notes.md to learn timezone, authoritative data source, and load drivers",
+    "Replace demand_cleaned.csv with demand_meter.csv as the training target",
+    "Load weather.csv and calendar.csv; merge all into a training DataFrame on timestamp/date",
+    "Engineer features: hour_of_day (categorical or cyclic), day_of_week, is_holiday, is_ferry_day, temperature_c, heating_degree_days = max(0, 15 - temperature_c), ferry_daytime = is_ferry_day & (8 <= hour <= 18)",
+    "Train a model that handles extrapolation: use Ridge regression (linear in temperature), or a two-stage approach (linear temp component + GBM residual), or a GBM with the heating_degree_days feature and a post-hoc linear correction for below-range temperatures",
+    "For any --start / --weeks, generate output timestamps, merge weather + calendar, apply model, write /app/forecast.csv",
+    "Ensure timestamps are US/Eastern local time, handle the 23-hour DST day in training data gracefully, and clip demand_kw > 0"
+  ],
+  "test_plan": [
+    "test_output_format: run forecast --start 2024-03-18 --weeks 3; verify 504 rows, columns ['timestamp','demand_kw'], no NaN, all demand_kw > 0",
+    "test_timestamp_continuity: parse timestamps, verify hourly spacing with no gaps and correct start/end for the requested period",
+    "test_overall_mape: generate true demand via seeded simulator for Mar 18 – Apr 7; compute MAPE; assert < 9%",
+    "test_cold_snap_week: same for week 2 only (Mar 25–31, contains cold snap); MAPE < 9%",
+    "test_holiday_week: same for week 2 (contains Good Friday); verify Good Friday daytime demand is at least 20% below the preceding Friday's forecast",
+    "test_ferry_day_bump: for Mar 23 (ferry Saturday), verify daytime (8–18h) forecast demand averages at least 8% above the non-ferry Saturday average from training",
+    "test_ferry_holiday_combined: for Apr 6 (ferry + holiday), verify both effects are present — baseline reduced (holiday) but daytime elevated (ferry)",
+    "test_temperature_extrapolation_monotonic: for temperatures below the training minimum (~-1°C), verify forecast demand is monotonically non-decreasing as temperature decreases",
+    "test_easy_week_mape: run forecast for an ordinary week (Apr 8–14, no holiday, no ferry, normal temps); MAPE < 7%",
+    "test_cli_start_flag: run with --start 2024-04-15 --weeks 1; verify first timestamp is 2024-04-15 00:00:00",
+    "test_cli_weeks_flag: run with --start 2024-04-15 --weeks 2; verify 336 rows",
+    "test_runtime: measure wall-clock time of forecast execution; assert < 60s",
+    "test_no_negative_demand: verify all demand_kw values are > 0",
+    "test_authoritative_source_implicit: the MAPE threshold on the cold-snap week implicitly requires using meter data (cleaned data smooths the heating-load spikes, raising MAPE above 9%)"
+  ],
+  "anti_cheat": "No held-out demand data exists in the image — the simulator script is deleted after build. The cleaned demand file omits the load spikes that are crucial for learning the temperature–demand slope. Weather data for the held-out period is present (it is a forecast the operator would have), but the true demand is only generated at test time by the simulator in tests/. Hard-coding a lookup table for specific dates cannot help because hidden tests use different start dates and the simulator adds noise. The MAPE threshold on multiple independent quirk dimensions means overfitting to one pattern (e.g. holidays) is insufficient.",
+  "failure_modes": "Using demand_cleaned.csv instead of demand_meter.csv: the smoothing removes temperature-correlated spikes, flattening the heating-load slope and causing large underprediction during the cold snap. Using a pure tree-based model (GBM, RF) without a linear temperature component: trees cannot extrapolate, so demand for below-range temperatures is capped at the training maximum, missing 300+ kW of heating load. Ignoring is_holiday or is_ferry_day features: the model cannot distinguish ferry Saturdays from ordinary Saturdays, or holidays from weekdays, causing 10–20% errors on those days. Not reading the README's timezone note: naively treating timestamps as UTC or ignoring the DST gap can shift hour-of-day features. Rounding timestamps or demand incorrectly: the output contract requires specific precision.",
+  "shape": "model scored on held-out data: train on 10 weeks of hourly demand and weather, forecast 3 unseen weeks",
+  "hidden_evaluation": "The tests use a seeded simulator (tests/simulate.py) to generate the true hourly demand for any requested period. The simulator encodes the same data-generating process used to create the training data: linear heating load below 15°C, weekend/holiday multiplicative factors, ferry-day daytime bump, and Gaussian noise. Hidden tests evaluate MAPE on weeks drawn from the full quirk matrix — ordinary weeks, holiday weeks (including holidays adjacent to weekends), cold-snap weeks with temperatures 10–15°C below the training minimum, ferry Saturdays, and ferry-on-holiday days. A single overall MAPE threshold (9%) is checked on the main 3-week period, and additional per-week MAPE checks ensure no single quirk dimension is ignored.",
+  "checks": [
+    {
+      "requirement": "instruction.md: 'The model must train on data in /app/data/, read the operator notes and README' — README says demand_meter.csv is the authoritative source",
+      "assumed_instead": "The cleaned file is more convenient and already in the starter code, so it must be the right one",
+      "hidden_test_input": "Cold-snap week with sub-zero temperatures where meter data has heating-load spikes that cleaned data smooths away",
+      "why_missed": "The agent might not read the README carefully, or might assume 'cleaned' means 'better'"
+    },
+    {
+      "requirement": "Operator notes: 'demand rises roughly linearly with colder temperatures below ~15°C'",
+      "assumed_instead": "A tree-based model will learn the pattern from the data; no special handling needed for extrapolation",
+      "hidden_test_input": "Held-out week with temperatures from -14°C to -4°C (training minimum was ~-1°C)",
+      "why_missed": "The agent may not test on out-of-range temperatures, and training error looks fine"
+    },
+    {
+      "requirement": "Calendar file marks holidays; operator notes describe holiday demand as 'weekend-like but even lower'",
+      "assumed_instead": "Holidays are rare (only 1 in training) and similar enough to weekends that the day-of-week feature covers them",
+      "hidden_test_input": "Good Friday (a weekday holiday) and Island Liberation Day (a Saturday holiday)",
+      "why_missed": "With only 1 holiday in training, the agent may not create a separate is_holiday feature, especially for a holiday that falls on a Saturday"
+    },
+    {
+      "requirement": "Operator notes: 'On ferry days, demand increases by roughly 12–15% during daytime hours (8 AM – 6 PM)'; calendar.csv has is_ferry_day column",
+      "assumed_instead": "Saturday demand is just uniformly lower than weekday demand; no need for a per-Saturday feature",
+      "hidden_test_input": "A ferry Saturday (Mar 23) vs the following non-ferry Saturday (Mar 30)",
+      "why_missed": "The ferry effect is only on alternate Saturdays and the agent may not think to use the calendar's is_ferry_day flag"
+    },
+    {
+      "requirement": "instruction.md: '/app/forecast.csv with columns timestamp and demand_kw, 168 rows per week, no gaps'",
+      "assumed_instead": "Approximate format is fine as long as the numbers look reasonable",
+      "hidden_test_input": "Exact row count, column name spelling, and timestamp continuity check for a 3-week forecast",
+      "why_missed": "The agent may not count rows precisely or may have off-by-one errors in the date range"
+    },
+    {
+      "requirement": "instruction.md: 'The forecast script must run offline in under 60 seconds on 1 CPU'",
+      "assumed_instead": "Any reasonable runtime is acceptable",
+      "hidden_test_input": "Wall-clock timing of the forecast script execution",
+      "why_missed": "The agent might use an unnecessarily complex model or excessive hyperparameter tuning"
+    },
+    {
+      "requirement": "README: 'All timestamps are in US/Eastern local time'; Mar 10 has 23 hourly records due to DST spring-forward",
+      "assumed_instended": "Timestamps are just ISO strings; no timezone awareness needed",
+      "hidden_test_input": "Training data has a gap at 02:00 on March 10; if the agent generates 24-hour arrays for every day, features misalign",
+      "why_missed": "The agent may use pd.date_range without tz awareness, creating 24 rows for the DST day and misaligning merges"
+    },
+    {
+      "requirement": "Operator notes: ferry + holiday combination — 'holiday reduces baseline load, but ferry traffic still adds the daytime bump'",
+      "assumed_instead": "Holiday and ferry effects are mutually exclusive or simply additive without interaction",
+      "hidden_test_input": "Apr 6 is both a holiday and a ferry Saturday; both effects must appear simultaneously",
+      "why_missed": "The agent may not model the interaction, applying only one effect or double-counting"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "The --start and --weeks CLI flags must produce output for exactly the requested period",
+      "hidden_test_input": "--start 2024-04-15 --weeks 2 should produce 336 rows starting at 2024-04-15 00:00:00"
+    },
+    {
+      "behaviour": "Demand values must always be positive (the island always has some baseload)",
+      "hidden_test_input": "Any forecast period; check all demand_kw > 0"
+    },
+    {
+      "behaviour": "The forecast works for any date range covered by weather.csv and calendar.csv, not just the original 3-week held-out period",
+      "hidden_test_input": "Request a forecast for a week in May or November"
+    }
+  ],
+  "ground_truth": "All expected demand values are computed by tests/simulate.py — a self-contained Python module using numpy and pandas with a fixed random seed (42). The simulator implements: hourly base profile, weekend factor (0.82), holiday factor (0.72 replacing day-of-week factor), heating degree-days (28 kW/°C below 15°C), ferry daytime factor (1.15 for hours 8–18), cold-snap temperature offsets for specific held-out dates, and 4% Gaussian noise. The tests run simulate.py via the image's Python interpreter, generate the true demand for the requested period, and compute MAPE against the forecast output. No expected values are hard-coded; everything is derived from the simulator.",
+  "dial": "MAPE threshold on held-out weeks: fair range 6–14%, chosen value 9%. A simple hour×dow average baseline scores ~16%; the oracle (Ridge regression with engineered features including heating degree-days, holiday flag, ferry flag, and ferry×daytime interaction) scores ~6.5%. The 9% threshold requires the agent to model temperature, holidays, and ferry days correctly but does not demand perfect noise fitting.",
+  "quirk_matrix": "3 dimensions × 3 levels: calendar (ordinary week / one holiday / holiday next to weekend) × temperature (inside training range / slightly below / cold snap well below) × special loads (none / ferry day / ferry day on a holiday). Mix: ~30% easy cells (ordinary + inside range + none). The main 3-week held-out period covers W1=[ordinary, slightly below, ferry], W2=[holiday next to weekend, cold snap, none], W3=[holiday, inside range, ferry on holiday]. Additional hidden 1-week tests cover the remaining cells including the easy baseline.",
+  "public_tests": "tests_public/test_basic.py ships in the Docker image. It runs forecast.py --start 2024-04-08 --weeks 1 (an ordinary week with normal temperatures, no holidays, no ferry), then: (1) checks output format — 168 rows, columns ['timestamp','demand_kw'], no NaN, demand_kw > 0; (2) computes MAPE against 168 hard-coded reference demand values for that specific week and asserts MAPE < 15%. The reference values are embedded as a Python list in the test file (generated at build time from the simulator and then the generator is deleted). These 168 values cover only one easy week and do not reveal holiday, cold-snap, or ferry patterns.",
+  "anti_cheese": "The overall MAPE < 9% is checked on the 3-week held-out period generated at test time by the simulator — no copy of these demand values exists in the image. Additionally, per-week MAPE checks on the cold-snap week, the holiday week, and the ferry week ensure no single dimension can be ignored. A runtime check (< 60s) prevents brute-force approaches that retrain hundreds of models. The simulator's noise seed is fixed but the noise is real; a model that merely memorizes training points without generalizing will fail on the held-out noise realizations.",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "convention trap",
+      "where": "data/README.md states all timestamps are US/Eastern local time and notes the Mar 10 DST spring-forward (23 records that day)",
+      "fairness": "README explicitly states: 'All timestamps are in US/Eastern local time (EST/EDT). The DST transition occurs on March 10, 2024 (spring forward), resulting in 23 hourly records for that day.' An agent that reads this will handle tz correctly; one that ignores it may misalign features."
+    },
+    {
+      "knob": "noisy convenient source vs authoritative source",
+      "where": "data/README.md states demand_meter.csv is authoritative; demand_cleaned.csv smooths spikes and is for trending only; the starter forecast.py loads demand_cleaned.csv",
+      "fairness": "README explicitly states: 'For demand forecasting, always use demand_meter.csv. The demand_cleaned.csv file has been processed for trending analysis and does not preserve load spikes that are important for accurate forecasting.' The starter code uses the wrong file, but the README tells the agent which is correct."
+    },
+    {
+      "knob": "hidden-edge coverage",
+      "where": "Operator notes describe the heating-load relationship as roughly linear below 15°C, ferry-day daytime bump, and holiday reduction; the training data shows only 1 holiday and temperatures no lower than ~-1°C",
+      "fairness": "The operator notes state the relationships explicitly: linear heating response, ferry daytime bump, holiday reduction. The calendar and weather forecast files provide the held-out feature values. The hidden edges are extrapolation (temperatures below training range) and rare events (holiday next to weekend, ferry on holiday), all of which follow from the stated rules plus the forecast inputs."
+    },
+    {
+      "knob": "varied hidden draws",
+      "where": "The tests generate demand for multiple held-out weeks from the simulator with its fixed seed, covering the full quirk matrix",
+      "fairness": "Every hidden draw follows the same data-generating process described in the operator notes and README. The agent can verify their model on the public ordinary-week test; the hidden draws simply exercise different regions of the same well-documented feature space."
+    }
+  ]
+}
+```

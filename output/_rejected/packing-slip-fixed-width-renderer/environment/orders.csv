@@ -1,0 +1,12 @@
+order_id,sku,quantity,unit_weight,description,ship_name,ship_street,ship_city,ship_region,ship_postal,ship_country,ship_date
+ORD-001,WIDGET-A,3,0.500,Standard widget A,Alice Smith,123 Main St,Springfield,IL,62701,US,2024-01-15
+ORD-001,WIDGET-B,2,0.750,Premium widget B,Alice Smith,123 Main St,Springfield,IL,62701,US,2024-01-15
+ORD-002,GADGET-1,1,1.200,Electronic gadget,Bob Jones,456 Oak Ave,Portland,OR,97201,US,2024-02-20
+ORD-002,GADGET-2,4,0.300,Mini gadget,Bob Jones,456 Oak Ave,Portland,OR,97201,US,2024-02-20
+ORD-003,THING-X,5,0.100,Basic thing,Carol White,789 Pine Rd,Austin,TX,78701,US,2024-03-10
+ORD-003,THING-Y,1,2.500,Deluxe thing,Carol White,789 Pine Rd,Austin,TX,78701,US,2024-03-10
+ORD-004,ITEM-01,2,0.400,Standard item,Dave Brown,321 Elm St,Denver,CO,80201,US,2024-04-05
+ORD-004,ITEM-02,3,0.600,Premium item,Dave Brown,321 Elm St,Denver,CO,80201,US,2024-04-05
+ORD-005,WIDGET-A,1,0.500,Standard widget A,Eve Green,654 Maple Ln,Seattle,WA,98101,US,2024-05-25
+ORD-005,WIDGET-C,6,0.200,Compact widget,Eve Green,654 Maple Ln,Seattle,WA,98101,US,2024-05-25
+ORD-006,PART-7,10,0.050,Small part,Frank Blue,987 Cedar Dr,Miami,FL,33101,US,2024-06-01

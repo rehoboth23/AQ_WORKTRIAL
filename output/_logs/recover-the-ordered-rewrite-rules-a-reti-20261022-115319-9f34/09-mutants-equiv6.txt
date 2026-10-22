@@ -1,0 +1,5 @@
+```json
+{"equivalent": true,
+ "distinguishing_case": "",
+ "reason": "The PO BOX-specific APT/UNIT rules and the general APT→#/UNIT→# rules produce identical output for all inputs: both replace 'APT' or 'UNIT' with '#' at the same position in the string. No rule between the PO BOX section and the unit designator section (only direction expansion) modifies APT/UNIT or their context, so the later general rules always produce the same final result as the earlier PO BOX-specific rules would have."}
+```

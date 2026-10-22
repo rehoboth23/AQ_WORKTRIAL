@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "After running solve.sh, 'stat -c %F /data/reports' returns 'directory' and the report persists across a reboot. After the mutant, 'stat -c %F /data/reports' returns 'symbolic link' (pointing to /tmp/reports), 'readlink /data/reports' returns '/tmp/reports', and the report would be lost if /tmp is cleared (e.g. on reboot since /tmp is often a tmpfs).",
+ "reason": "The mutant stores the report in /tmp via a symlink instead of a real directory at /data/reports, making the data volatile and changing the file type of /data/reports from directory to symbolic link, which violates the intent that /data/reports be a proper directory and the report be durable."}
+```

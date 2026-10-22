@@ -1,0 +1,47 @@
+{
+  "topic": "a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout",
+  "run_id": "a-timesheet-to-payroll-converter-with-st-20261022-020141-ec7a",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-timesheet-to-payroll-converter-with-st-20261022-020141-ec7a",
+  "task_dir": null,
+  "status": "failed",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md pastes 11 expected values from the tests (e.g. ['0.0', '0.25', '1806.25']); state the rule that produces them instead"
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md pastes 8 expected values from the tests (e.g. ['0.0', '0.25', '40.0']); state the rule that produces them instead"
+      ]
+    },
+    {
+      "round": 2,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md pastes 5 expected values from the tests (e.g. ['0.0', '5.0', 'FLAGGED ENTRIES:']); state the rule that produces them instead"
+      ]
+    },
+    {
+      "round": 3,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md pastes 4 expected values from the tests (e.g. ['0.0', '5.0', 'missing clock-in']); state the rule that produces them instead"
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 117664,
+    "completion_tokens": 439958,
+    "cost_usd": 0.36318052219999997
+  },
+  "seconds": 6604.6
+}

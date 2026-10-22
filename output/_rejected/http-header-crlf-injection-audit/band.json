@@ -1,0 +1,178 @@
+{
+  "name": "http-header-crlf-injection-audit",
+  "description": "Fix all CRLF injection vulnerabilities across a small URL-shortener HTTP service that sets headers through varied code paths and abstraction layers.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "genre": "judgement",
+  "run_id": "http-header-crlf-injection-audit-20261022-024633-e1fe",
+  "features": {
+    "env_lines": 285,
+    "solve_lines": 53,
+    "rules": 0,
+    "themes": 0,
+    "faults": 0,
+    "fault_layers": 0
+  },
+  "verdict": "learnable",
+  "confirmations": [
+    {
+      "verdict": "too_easy",
+      "passes": 4,
+      "n_valid": 5,
+      "cost_usd": 0.1613,
+      "seconds": 565.3,
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-confirm1-0"
+      ]
+    }
+  ],
+  "confirmed": false,
+  "lesson": "The task split 3/2 pass/fail because of a critical ambiguity: the instructions didn't clearly specify that CRLF must be stripped/sanitized rather than rejected with 400 errors, so one failing agent rejected requests entirely (breaking test_redirect_no_crlf, test_request_id_no_crlf) while another's sanitization crashed the server (breaking test_clean_redirect_still_works and others). All passing runs correctly stripped CRLF while preserving normal HTTP functionality across redirect, cookie, request-id, and display-name paths. Next design should add an explicit rule distinguishing 'sanitize by stripping' from 'reject with error' and keep the dual-property structure (security + functionality) since the mutation check killed all 5 faults.",
+  "postmortem": {
+    "lesson": "The task split 3/2 pass/fail because of a critical ambiguity: the instructions didn't clearly specify that CRLF must be stripped/sanitized rather than rejected with 400 errors, so one failing agent rejected requests entirely (breaking test_redirect_no_crlf, test_request_id_no_crlf) while another's sanitization crashed the server (breaking test_clean_redirect_still_works and others). All passing runs correctly stripped CRLF while preserving normal HTTP functionality across redirect, cookie, request-id, and display-name paths. Next design should add an explicit rule distinguishing 'sanitize by stripping' from 'reject with error' and keep the dual-property structure (security + functionality) since the mutation check killed all 5 faults.",
+    "held": [
+      "CRLF sanitization across all header injection points (redirect, cookie, request-id, display-name)",
+      "functionality preservation (clean redirect still works)"
+    ],
+    "failed": [
+      "strip-vs-reject ambiguity (agent chose 400 rejection instead of stripping CRLF)",
+      "sanitization breaking basic HTTP functionality (server crash on RemoteDisconnected)"
+    ]
+  },
+  "passes": 3,
+  "n_valid": 5,
+  "n_invalid": 0,
+  "decision": "rejected",
+  "why": "unfair: the test fixture deleted the database and silently queried the agent's orphaned server on port 8080 (the agent's code pa; the agent rejected CRLF input with a 400 instead of sanitising it; instruction.md never says which of the two valid fixe (re-triaged by hand; the pipeline's confirmation eval scored 4/4 too easy)",
+  "triage": [
+    {
+      "trial": "http-header-crlf-injection-audit__49UDMKj",
+      "fault": "task",
+      "category": "broken-env",
+      "reason": "the test fixture deleted the database and silently queried the agent's orphaned server on port 8080 (the agent's code passes all 6 tests when the port is free; reproduced in the task image)",
+      "evidence": [
+        "5 of 6 tests fail with http.client.RemoteDisconnected: Remote end closed connection without response",
+        "Only test_error_status_no_crlf passed; all other endpoints (login, shorten, redirect, dashboard) crash the server",
+        "The agent declared completion after manual curl tests but never ran the actual pytest suite to verify"
+      ],
+      "failed_requirements": [
+        "The fix must not break any legitimate functionality \u2014 redirects must still redirect, cookies must still be set, error responses must still indicate errors"
+      ],
+      "requirement_quote": ""
+    },
+    {
+      "trial": "http-header-crlf-injection-audit__Ke6ga76",
+      "fault": "task",
+      "category": "untested-requirement",
+      "reason": "the agent rejected CRLF input with a 400 instead of sanitising it; instruction.md never says which of the two valid fixes is required, and the tests pin 'sanitise' (header present, JSON body)",
+      "evidence": [
+        "test_redirect_no_crlf fails because the server returns '400 Invalid url parameter' (plain text) instead of a JSON response with a short link code \u2014 the agent's code rejects the CRLF-containing URL entirely",
+        "test_request_id_no_crlf fails because 'X-Request-Id header missing' \u2014 the agent's code rejects the request entirely when request_id contains CRLF, instead of stripping CRLF and setting the header",
+        "In step 8, the agent's runtime test shows: CRLF request_id request returns 400 with no X-Request-Id header",
+        "In step 9, the agent moved validation earlier but kept the rejection approach: 'if \\r in request_id or \\n in request_id: self._send_error(400, ...)'"
+      ],
+      "failed_requirements": [
+        "Redirects must still redirect (even when the original URL contained CRLF, the redirect should work with CRLF stripped from the Location header)",
+        "Headers that do not contain CRLF must be passed through unchanged, and headers containing CRLF should have the CRLF removed rather than the header being omitted"
+      ],
+      "requirement_quote": ""
+    }
+  ],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/http-header-crlf-injection-audit",
+    "verdict": "learnable",
+    "passes": 3,
+    "n_valid": 5,
+    "n_invalid": 0,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0/http-header-crlf-injection-audit__49UDMKj",
+        "outcome": "fail",
+        "detail": "",
+        "reward": 0.0,
+        "input_tokens": 61524,
+        "output_tokens": 14707,
+        "cost_usd": 0.009043191,
+        "episodes": 9,
+        "failed_tests": [
+          "test_redirect_no_crlf",
+          "test_cookie_no_crlf",
+          "test_request_id_no_crlf",
+          "test_display_name_no_crlf",
+          "test_clean_redirect_still_works"
+        ],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0/http-header-crlf-injection-audit__CuWqUQN",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 67183,
+        "output_tokens": 10892,
+        "cost_usd": 0.008845044,
+        "episodes": 9,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0/http-header-crlf-injection-audit__Jwnf9Hp",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 101188,
+        "output_tokens": 24492,
+        "cost_usd": 0.014936936000000001,
+        "episodes": 9,
+        "failed_tests": [],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0/http-header-crlf-injection-audit__Ke6ga76",
+        "outcome": "fail",
+        "detail": "",
+        "reward": 0.0,
+        "input_tokens": 90743,
+        "output_tokens": 21756,
+        "cost_usd": 0.013350657999999998,
+        "episodes": 10,
+        "failed_tests": [
+          "test_redirect_no_crlf",
+          "test_request_id_no_crlf"
+        ],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0/http-header-crlf-injection-audit__kr6AAoX",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 86072,
+        "output_tokens": 29519,
+        "cost_usd": 0.0144436,
+        "episodes": 9,
+        "failed_tests": [],
+        "found_step": 1
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-http-header-crlf-injection-audit-20261022-024633-e1fe-0"
+    ],
+    "tokens": {
+      "input": 406710,
+      "output": 101366
+    },
+    "cost_usd": 0.0606,
+    "median_steps": 9,
+    "median_found_step": 1,
+    "early_stop": false,
+    "seconds": 315.1,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/http-header-crlf-injection-audit",
+  "topic": "[judgement] a small HTTP service whose responses must never let a user-supplied value break out of a header, cookie or redirect, violated in several differently built places",
+  "stage": "eval",
+  "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-small-http-service-whose-responses-mus-20261022-015944-4181"
+}

@@ -1,0 +1,127 @@
+```json
+{
+  "name": "island-microgrid-demand-forecast",
+  "description": "Fix a broken demand forecasting pipeline for a small island microgrid so it meets an MAE threshold on held-out weeks containing a cold snap and island-specific holidays.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["forecasting", "feature-engineering", "bug-fixing", "machine-learning"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You are helping the Tropicana Island utility operator fix their hourly electricity demand forecast. The pipeline exists but produces forecasts that fail their accuracy standard on held-out evaluation periods. The training data covers January 2022 through November 2023; December 2023 weather forecasts are provided without demand. The current code has feature engineering bugs, uses the wrong holiday calendar, and relies on a model too simple for the nonlinear demand-weather relationships. A local validation script gives misleadingly optimistic scores.",
+  "environment_setup": "Dockerfile installs numpy==2.1.3, pandas==2.2.3, scikit-learn==1.5.2, scipy. A generate_data.py script (run at build, then deleted) creates data/training.csv (Jan 2022–Nov 2023, hourly, columns: timestamp, demand_mw, temperature_c, humidity_pct, wind_speed_ms, solar_irradiance_wm2) and data/eval_weather.csv (Dec 2023, same columns minus demand_mw). The demand follows a deterministic formula with seed 42: base 12 MW × hour/day-of-week/month multipliers + piecewise heating (max(0,15-T)×0.20) and cooling (max(0,T-22)×0.15) + holiday 30% multiplicative reduction + solar/humidity adjustments + N(0,0.4) noise. Dec 1–10 2023 has a 7°C cold-snap offset. Island holidays (Jan 1, Mar 15, May 1, Jun 21, Aug 15, Oct 12, Dec 13, Dec 25, Dec 26) with weekend-observance shifting. Starter files: features.py (4 bugs: uses USFederalHolidayCalendar, missing piecewise temperature features, computes rolling mean on demand instead of temperature, missing hour×holiday interaction), forecast.py (uses LinearRegression, sets demand_rolling_168 to training mean for eval), validate.py (computes MAE on weekday hours only). data/README.md documents all conventions and feature requirements.",
+  "instruction_summary": "Fix the forecasting pipeline at /app so that `python forecast.py` produces /app/forecasts/forecast.csv with columns timestamp,demand_forecast covering all 744 hours of December 2023 (UTC, hourly). The target is MAE < 1.2 MW per held-out evaluation week. Follow data/README.md conventions exactly — they override any other documentation or code comments. The specification in README.md wins over the local validation script if they disagree. Ensure all features used during training are correctly available and computed during evaluation.",
+  "solution_outline": [
+    "Replace features.py: implement island holiday calendar (9 dates with weekend observance rule) instead of USFederalHolidayCalendar",
+    "Add piecewise temperature features: heating_deg = max(0, 15 - temperature_c), cooling_deg = max(0, temperature_c - 22)",
+    "Replace demand rolling mean with temperature rolling mean: temp_rolling_168 = temperature_c.rolling(168, min_periods=1).mean()",
+    "Add hour×is_holiday interaction feature",
+    "Replace forecast.py model: GradientBoostingRegressor(n_estimators=200, max_depth=5, learning_rate=0.1, min_samples_leaf=10, subsample=0.8, random_state=42)",
+    "Handle eval rolling mean by concatenating last 168 hours of training temperature with eval temperature before computing rolling mean, then extract eval portion",
+    "Clip forecasts at 0 and save forecast.csv with correct columns",
+    "Run python forecast.py to produce output"
+  ],
+  "test_plan": [
+    "test_file_exists: /app/forecasts/forecast.csv exists",
+    "test_columns: CSV has exactly columns timestamp, demand_forecast",
+    "test_row_count: 744 rows (31 days × 24 hours)",
+    "test_no_nan: no NaN in demand_forecast",
+    "test_no_negative: all demand_forecast >= 0",
+    "test_reasonable_range: all demand_forecast between 2 and 30 MW",
+    "test_timestamps_utc_hourly: timestamps are UTC, on the hour, no duplicates, sorted",
+    "test_mae_cold_snap_week: MAE on Dec 4–10 < 1.2 MW (tests piecewise temperature features)",
+    "test_mae_st_elena_week: MAE on Dec 11–17 < 1.2 MW (tests island holiday calendar — Dec 13 is island-only)",
+    "test_mae_normal_week: MAE on Dec 18–24 < 1.2 MW (tests no demand-leakage features)",
+    "test_mae_christmas_week: MAE on Dec 25–31 < 1.2 MW (tests Dec 26 holiday not in US calendar)",
+    "test_holiday_effect_dec13: mean forecast on Dec 13 < 0.90 × mean of Dec 12 and Dec 14",
+    "test_holiday_effect_dec25_26: mean forecast on Dec 25+26 < 0.90 × mean forecast on Dec 27+28",
+    "test_weekend_lower: mean weekend forecast < 0.95 × mean weekday forecast"
+  ],
+  "anti_cheat": "The held-out demand values for December 2023 are never stored in the image — generate_data.py is deleted after build, and eval_weather.csv omits the demand column. The agent cannot see the ground truth. Hardcoding values is impossible because the agent does not know the true demand. The MAE threshold is tight enough that a naive constant prediction (mean demand ≈ 12 MW) yields MAE ≈ 2–3 MW, well above 1.2 MW. Overfitting to training data does not help because the test weeks contain patterns (cold snap, island-specific holidays) not prevalent in training.",
+  "failure_modes": "Agent trusts validate.py's weekday-only MAE and thinks the model is good enough. Agent fixes only the most obvious bug (demand rolling mean leakage) but misses the holiday calendar or piecewise temperature. Agent uses US holidays and does not notice Dec 13 or Dec 26 are missing. Agent keeps LinearRegression which cannot capture the multiplicative holiday effect or temperature nonlinearity even with correct features. Agent does not handle the temperature rolling mean correctly for the eval period (NaN or wrong values for first 168 eval hours). Agent does not read README.md carefully enough to learn the island holiday list or piecewise temperature breakpoints.",
+  "shape": "model estimation scored on held-out data with hidden edge-case weeks",
+  "hidden_evaluation": "The four held-out weeks each exercise a different bug: cold-snap week (piecewise temperature), St. Elena Day week (island-only holiday missing from US calendar), normal week (demand-rolling-mean leakage), and Christmas+Boxing Day week (Dec 26 not a US holiday). The agent cannot reproduce the held-out evaluation because true December demand is not in the image. The tests recompute ground truth from the same seeded generator used at build time, then compute per-week MAE and behavioral checks.",
+  "checks": [
+    {
+      "requirement": "README: 'piecewise temperature with breakpoints at 15°C (heating) and 22°C (cooling)'",
+      "assumed_instead": "agent uses raw temperature as a single linear feature, which works for moderate temps",
+      "hidden_test_input": "Cold-snap week (Dec 4–10) with temperatures 8–12°C, well below 15°C heating breakpoint",
+      "why_missed": "Agent may not add heating_deg/cooling_deg features; linear temperature fits moderate training temps but underpredicts heating demand at extremes"
+    },
+    {
+      "requirement": "README: island holiday list including Dec 13 (St. Elena Day) and Dec 26 (Day of Goodwill)",
+      "assumed_instead": "agent uses USFederalHolidayCalendar which lacks Dec 13 and Dec 26",
+      "hidden_test_input": "Dec 13 (Wednesday, island-only holiday) and Dec 26 (Tuesday, not a US federal holiday)",
+      "why_missed": "Agent may not replace the holiday calendar; US calendar overlaps on Christmas but misses island-specific dates"
+    },
+    {
+      "requirement": "README: '168-hour rolling mean of temperature, NOT demand, to ensure feature availability during evaluation'",
+      "assumed_instead": "agent keeps demand rolling mean because it seems like a valid autoregressive feature and improves training R²",
+      "hidden_test_input": "All December weeks: demand rolling mean is unavailable for eval, set to training mean, causing systematic bias",
+      "why_missed": "Agent may not notice the README specification vs the code's demand_rolling_168; training performance looks great but eval fails"
+    },
+    {
+      "requirement": "README: 'holidays reduce demand proportionally, with the effect varying by hour of day'",
+      "assumed_instead": "agent adds is_holiday but not the hour×holiday interaction, applying a constant holiday offset",
+      "hidden_test_input": "Holiday hours at peak times (evening) should show larger absolute reduction than off-peak (night)",
+      "why_missed": "Linear model with is_holiday alone learns an average offset; a tree model can partially compensate, but a linear model fails on holiday weeks"
+    },
+    {
+      "requirement": "instruction.md: 'the current model may not capture this' + README describes nonlinear demand-temperature and multiplicative holiday effects",
+      "assumed_instead": "agent fixes features but keeps LinearRegression, which cannot model multiplicative interactions",
+      "hidden_test_input": "Holiday weeks where the multiplicative 30% reduction creates hour-dependent absolute errors that a linear model cannot represent",
+      "why_missed": "Agent may think correct features are sufficient for any model; LinearRegression with piecewise features still misses interactions"
+    },
+    {
+      "requirement": "README: 'evaluate on all hours including weekends and holidays'",
+      "assumed_instead": "agent trusts validate.py's weekday-only MAE of ~0.8 MW and thinks the model passes",
+      "hidden_test_input": "Weekend and holiday hours have different patterns; excluding them from validation hides large errors",
+      "why_missed": "Agent runs validate.py, sees good score, and stops improving; the actual held-out MAE on weekends/holidays exceeds threshold"
+    },
+    {
+      "requirement": "instruction.md: 'Ensure all features used during training are correctly available and computed during evaluation'",
+      "assumed_instead": "agent computes temperature rolling mean only on eval data, leaving first 168 hours with partial/NaN values",
+      "hidden_test_input": "First week of December where rolling mean is computed from only a few hours of eval data instead of the full 168-hour window",
+      "why_missed": "Agent may not concatenate training temperature tail with eval temperature before computing the rolling mean"
+    },
+    {
+      "requirement": "README: 'When a holiday falls on Saturday, preceding Friday observed; Sunday → following Monday'",
+      "assumed_instead": "agent adds island holiday dates without implementing the observance shifting rule",
+      "hidden_test_input": "In 2022, Jan 1 is Saturday so Dec 31 2021 (Friday) would be observed; the shifting changes which dates are holidays",
+      "why_missed": "Agent may list the raw dates without the observance rule, causing wrong is_holiday labels for shifted holidays"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Running python forecast.py produces the complete forecast CSV at forecasts/forecast.csv for all December 2023 hours",
+      "hidden_test_input": "Execute python forecast.py in a clean state and verify the output file is created with 744 rows"
+    }
+  ],
+  "ground_truth": "The tests embed the same demand generation formula (seed 42, base 12 MW, hour/dow/month multipliers, piecewise heating/cooling, 30% holiday reduction, solar/humidity terms, N(0,0.4) noise, cold-snap offset of -7°C for Dec 1–10) and use np.random.default_rng(42) to reproduce the exact December 2023 demand values. The test file computes ground truth inline using numpy and pandas (installed as verifier_packages with pinned versions matching the image).",
+  "verifier_packages": ["numpy==2.1.3", "pandas==2.2.3"],
+  "verifier_apt": [],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "Hidden-edge coverage",
+      "where": "Held-out December weeks each contain a different edge case: cold-snap temperatures (week 1), island-only holiday (week 2), normal conditions that expose demand-leakage (week 3), Boxing Day not in US calendar (week 4)",
+      "fairness": "README documents the piecewise temperature breakpoints, the island holiday list, and the rolling-mean specification; instruction.md states the MAE threshold applies to held-out evaluation periods"
+    },
+    {
+      "knob": "Convention traps",
+      "where": "README specifies UTC timestamps, Celsius temperatures, island holiday calendar with observance shifting, piecewise breakpoints at 15°C and 22°C, temperature rolling mean (not demand), and evaluation on all hours",
+      "fairness": "All conventions are documented in data/README.md; instruction.md says 'Follow data/README.md conventions exactly — they override any other documentation or code comments'"
+    },
+    {
+      "knob": "Stale local tests",
+      "where": "validate.py computes MAE on weekday hours only, giving misleadingly optimistic scores (e.g., 0.8 MW when true all-hours MAE is 1.5+ MW)",
+      "fairness": "instruction.md states 'The specification in README.md wins over the local validation script if they disagree' and README says 'evaluate on all hours including weekends and holidays'"
+    },
+    {
+      "knob": "Contradicting sources with stated precedence",
+      "where": "features.py comments reference USFederalHolidayCalendar and demand rolling mean; README specifies island holidays and temperature rolling mean",
+      "fairness": "instruction.md explicitly states: 'Follow data/README.md conventions exactly — they override any other documentation or code comments'"
+    }
+  ]
+}
+```

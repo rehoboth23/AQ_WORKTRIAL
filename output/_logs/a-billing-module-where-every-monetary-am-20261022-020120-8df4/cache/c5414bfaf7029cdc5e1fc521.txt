@@ -1,0 +1,209 @@
+<<<MANIFEST>>>
+environment/billing_lib/__init__.py
+environment/billing_lib/__main__.py
+environment/billing_lib/cli.py
+environment/billing_lib/calculator.py
+environment/billing_lib/rounding.py
+environment/billing_lib/tax.py
+environment/billing_lib/discount.py
+environment/billing_lib/fees.py
+environment/billing_lib/currency.py
+<<<END>>>
+<<<FILE environment/billing_lib/__init__.py>>>
+"""Billing library for invoice calculations."""
+
+from .calculator import calculate_invoice
+from .rounding import round_money
+<<<END>>>
+<<<FILE environment/billing_lib/__main__.py>>>
+from .cli import main
+
+main()
+<<<END>>>
+<<<FILE environment/billing_lib/cli.py>>>
+"""Command-line interface for the billing library."""
+
+import json
+import sys
+from decimal import Decimal
+
+from .calculator import calculate_invoice
+
+
+class DecimalEncoder(json.JSONEncoder):
+    """JSON encoder that handles Decimal values."""
+
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
+
+
+def main():
+    """Run the billing calculator on an invoice JSON file."""
+    if len(sys.argv) < 2:
+        print("Usage: python3 -m billing_lib <invoice.json>", file=sys.stderr)
+        sys.exit(1)
+
+    invoice_path = sys.argv[1]
+
+    with open(invoice_path, "r") as f:
+        data = json.load(f)
+
+    items = data.get("items", [])
+
+    result = calculate_invoice(
+        items=items,
+        tax_rate=data.get("tax_rate", 0),
+        discount_rate=data.get("discount_rate", 0),
+        processing_fee_rate=data.get("processing_fee_rate", 0),
+        exchange_rate=data.get("exchange_rate", 1),
+        late_penalty_rate=data.get("late_penalty_rate", 0),
+    )
+
+    print(json.dumps(result, cls=DecimalEncoder, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/billing_lib/calculator.py>>>
+"""Invoice calculation module."""
+
+from decimal import Decimal
+
+from .rounding import round_money
+from .tax import calculate_tax
+from .discount import calculate_discount
+from .fees import calculate_processing_fee
+from .currency import convert_currency
+
+
+def calculate_invoice(
+    items,
+    tax_rate=0,
+    discount_rate=0,
+    processing_fee_rate=0,
+    exchange_rate=1,
+    late_penalty_rate=0,
+):
+    """Calculate a complete invoice from items and rates."""
+    # Subtotal
+    subtotal = Decimal("0")
+    for item in items:
+        price = Decimal(str(item.get("price", 0)))
+        qty = Decimal(str(item.get("qty", 1)))
+        subtotal += price * qty
+    subtotal = round_money(subtotal)
+
+    # Discount
+    discount = calculate_discount(subtotal, discount_rate)
+
+    # After discount
+    after_discount = subtotal - discount
+
+    # Tax
+    tax = calculate_tax(after_discount, tax_rate)
+
+    # Processing fee
+    processing_fee = calculate_processing_fee(after_discount, processing_fee_rate)
+
+    # Pre-conversion total
+    pre_conversion_total = after_discount + tax + processing_fee
+
+    # Currency conversion
+    currency_adjusted = convert_currency(pre_conversion_total, exchange_rate)
+
+    # Late penalty
+    if late_penalty_rate:
+        late_penalty = round_money(
+            currency_adjusted * Decimal(str(late_penalty_rate))
+        )
+    else:
+        late_penalty = Decimal("0.00")
+
+    # Total
+    total = currency_adjusted + late_penalty
+
+    return {
+        "subtotal": subtotal,
+        "discount": discount,
+        "after_discount": after_discount,
+        "tax": tax,
+        "processing_fee": processing_fee,
+        "pre_conversion_total": pre_conversion_total,
+        "currency_adjusted": currency_adjusted,
+        "late_penalty": late_penalty,
+        "total": total,
+    }
+<<<END>>>
+<<<FILE environment/billing_lib/rounding.py>>>
+"""Monetary rounding utilities for the billing library."""
+
+from decimal import Decimal, ROUND_HALF_EVEN
+
+TWO_PLACES = Decimal("0.01")
+
+
+def round_money(value):
+    """Round a monetary value to 2 decimal places."""
+    if not isinstance(value, Decimal):
+        value = Decimal(str(value))
+    return value.quantize(TWO_PLACES, rounding=ROUND_HALF_EVEN)
+<<<END>>>
+<<<FILE environment/billing_lib/tax.py>>>
+"""Tax calculation module."""
+
+from decimal import Decimal
+
+
+def calculate_tax(taxable_amount, tax_rate):
+    """Calculate tax on a taxable amount."""
+    if not tax_rate:
+        return Decimal("0.00")
+    tax = float(taxable_amount) * float(tax_rate)
+    return Decimal(str(round(tax, 2)))
+<<<END>>>
+<<<FILE environment/billing_lib/discount.py>>>
+"""Discount calculation module."""
+
+import math
+from decimal import Decimal
+
+
+def calculate_discount(subtotal, discount_rate):
+    """Calculate discount amount from subtotal."""
+    if not discount_rate:
+        return Decimal("0.00")
+    discount = float(subtotal) * float(discount_rate)
+    return Decimal(str(math.trunc(discount * 100) / 100))
+<<<END>>>
+<<<FILE environment/billing_lib/fees.py>>>
+"""Processing fee calculation module."""
+
+import math
+from decimal import Decimal
+
+
+def calculate_processing_fee(base_amount, fee_rate):
+    """Calculate processing fee on a base amount."""
+    if not fee_rate:
+        return Decimal("0.00")
+    fee = float(base_amount) * float(fee_rate)
+    return Decimal(str(math.ceil(fee * 100) / 100))
+<<<END>>>
+<<<FILE environment/billing_lib/currency.py>>>
+"""Currency conversion module."""
+
+from decimal import Decimal
+
+
+def convert_currency(amount, exchange_rate):
+    """Convert an amount using an exchange rate."""
+    if not exchange_rate or exchange_rate == 1:
+        if isinstance(amount, Decimal):
+            return amount
+        return Decimal(str(amount))
+    converted = Decimal(str(amount)) * Decimal(str(exchange_rate))
+    return Decimal(f"{converted:.2f}")
+<<<END>>>

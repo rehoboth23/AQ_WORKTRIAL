@@ -1,0 +1,18 @@
+{"time": "2026-10-22T14:30:40", "pid": 76945, "event": "batch_start", "batch": "wave1-143037", "topics": 4, "waves": [4], "control": false}
+{"time": "2026-10-22T14:30:40", "pid": 76945, "event": "stage", "topic": "@seeds/microgrid-forecast.yaml", "key": "c825920969", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T14:30:42", "pid": 76965, "event": "batch_start", "batch": "wave1-143037", "topics": 4, "waves": [4], "control": false}
+{"time": "2026-10-22T14:30:42", "pid": 76965, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T14:30:42", "pid": 76965, "event": "stage", "topic": "@seeds/reaction-kinetics.yaml", "key": "0a7019b9c5", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T14:30:44", "pid": 77016, "event": "batch_start", "batch": "wave1-143037", "topics": 4, "waves": [4], "control": false}
+{"time": "2026-10-22T14:30:44", "pid": 77016, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T14:30:44", "pid": 77016, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T14:30:44", "pid": 77016, "event": "stage", "topic": "@seeds/variable-stars.yaml", "key": "177e09b0c2", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T14:30:46", "pid": 77068, "event": "batch_start", "batch": "wave1-143037", "topics": 4, "waves": [4], "control": false}
+{"time": "2026-10-22T14:30:46", "pid": 77068, "event": "skipped_locked", "topic": "@seeds/microgrid-forecast.yaml"}
+{"time": "2026-10-22T14:30:46", "pid": 77068, "event": "skipped_locked", "topic": "@seeds/reaction-kinetics.yaml"}
+{"time": "2026-10-22T14:30:46", "pid": 77068, "event": "skipped_locked", "topic": "@seeds/variable-stars.yaml"}
+{"time": "2026-10-22T14:30:46", "pid": 77068, "event": "stage", "topic": "@seeds/excise-return.yaml", "key": "9d01066dab", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T14:34:45", "pid": 76945, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T14:34:45", "pid": 77068, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T14:34:45", "pid": 76965, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T14:34:45", "pid": 77016, "event": "killed", "signal": "SIGTERM", "children": []}

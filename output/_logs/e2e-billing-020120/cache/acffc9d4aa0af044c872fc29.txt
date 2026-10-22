@@ -1,0 +1,7 @@
+```json
+{
+  "lesson": "The billing-rounding-consistency task was well-tested (all 11 mutations killed) but too easy for agents, who passed in only 8–10 steps; the 'invalid' outcomes were environment issues rather than difficulty. The next design should keep the strong mutation-killing test coverage but add more independent rules around new billing edge cases (e.g., currency conversion rounding, tax-tier boundaries, multi-item discount interactions) to increase task depth and require more than a quick fix.",
+  "held": ["all 11 mutation faults (0-10) were consistently killed, indicating the test suite thoroughly validates rounding-consistency properties"],
+  "failed": ["no faults caused agent failures—the task was solved too quickly, suggesting insufficient complexity or too few independent rules"]
+}
+```

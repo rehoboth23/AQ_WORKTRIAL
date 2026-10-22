@@ -1,0 +1,5 @@
+recover the ordered rewrite rules a retired address-normalisation engine applied, from about 900 before/after address pairs, so that held-out addresses normalise identically
+infer the rules a retired intrusion-detection system used (thresholds, port ranges, time windows, order of checks) from a labelled log of flows it flagged or passed, and reproduce its decisions on held-out flows
+forecast hourly electricity demand for a small island microgrid from weather and calendar drivers, scored on held-out weeks against an error threshold
+fit the rate constants of a three-step reaction network using the lab's existing Fortran 77 integrator (built offline with gfortran), so that predictions for unseen starting conditions stay within tolerance
+given the source of an in-house stream cipher and a few known plaintext/ciphertext pairs made under the same parameters, write a script that recovers the plaintext of new ciphertexts in general

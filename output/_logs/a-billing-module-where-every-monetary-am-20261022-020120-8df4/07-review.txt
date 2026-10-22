@@ -1,0 +1,41 @@
+VERDICT: leaks
+- "A customer reported that tax on an item was off by a cent — a value exactly halfway between two possible cent amounts was rounded down when it should have rounded up." -> reveals WHERE the problem is (tax) and gives a numbered symptom, fault types 1 and 2
+- "never to the nearest even cent" -> reveals the crux that banker's rounding is the wrong mechanism, fault type 9
+- "Several monetary amounts in the output are being rounded incorrectly" -> reveals the number of problems is more than one, fault type 3
+<<<FILE instruction.md>>>
+# Billing Library Rounding Fix
+
+The billing library at `/app/billing_lib/` calculates invoices. Monetary amounts in the output are being rounded incorrectly.
+
+## Rule
+
+**Every monetary amount in the output must be rounded using round-half-up to 2 decimal places.** Values exactly halfway between two cents must always round up. For example, $2.345 must round to $2.35, not $2.34.
+
+## How to Run
+
+```
+python3 -m billing_lib invoice.json
+```
+
+## Input JSON Format
+
+```json
+{
+  "items": [{"name": "Widget", "price": 27.50, "qty": 2}],
+  "tax_rate": 0.0725,
+  "discount_rate": 0.15,
+  "processing_fee_rate": 0.035,
+  "exchange_rate": 1,
+  "late_penalty_rate": 0.02
+}
+```
+
+- `items` (required): array of objects with `name`, `price`, and `qty`
+- All rates are optional and default to zero (`exchange_rate` defaults to 1)
+
+## Output JSON Fields
+
+`subtotal`, `discount`, `after_discount`, `tax`, `processing_fee`, `pre_conversion_total`, `currency_adjusted`, `late_penalty`, `total`
+
+Every one of these must follow round-half-up.
+<<<END>>>

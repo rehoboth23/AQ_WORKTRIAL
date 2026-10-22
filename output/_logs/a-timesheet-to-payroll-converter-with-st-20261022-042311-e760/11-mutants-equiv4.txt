@@ -1,0 +1,14 @@
+Looking at this carefully, the key difference is:
+
+- **Correct**: `if rounded < Decimal('0.25'): continue`
+- **Mutant**: `if rounded <= Decimal('0'): continue`
+
+The `quarter_hour_round` function always produces values that are multiples of 0.25 (0.00, 0.25, 0.50, 0.75, ...). For any positive raw duration, the rounded result is either 0.00 or ≥ 0.25. So `rounded < Decimal('0.25')` is true only when `rounded == Decimal('0.00')`, which is exactly when `rounded <= Decimal('0')` is true (since the ShiftMatcher already filters out non-positive durations).
+
+The two conditions are behaviorally equivalent given the constraints of the quarter-hour rounding system.
+
+```json
+{"equivalent": true,
+ "distinguishing_case": "",
+ "reason": "quarter_hour_round always returns multiples of 0.25 (0.00, 0.25, 0.50, ...), so for any positive shift duration, 'rounded < 0.25' is true iff 'rounded == 0.00', which is exactly when 'rounded <= 0' is true. The conditions are equivalent."}
+```

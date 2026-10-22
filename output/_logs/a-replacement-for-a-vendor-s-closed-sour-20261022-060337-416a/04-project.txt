@@ -1,0 +1,424 @@
+<<<MANIFEST>>>
+environment/reference.c
+environment/generate_sample.py
+<<<END>>>
+<<<FILE environment/reference.c>>>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_ITEMS 1024
+#define MAX_LINE 4096
+
+typedef struct {
+    char category[64];
+    long long quantity;
+    long long price_cents;
+    long long ext_cents;
+    long long qty_disc_cents;
+} Item;
+
+static long long rhaz(long long a, long long b, long long d) {
+    if (d == 0) return 0;
+    long long prod = a * b;
+    long long q = prod / d;
+    long long r = prod % d;
+    if (prod >= 0) {
+        if (2 * r >= d) q++;
+    } else {
+        if (2 * r <= -d) q--;
+    }
+    return q;
+}
+
+static long long parse_price(const char *s) {
+    int neg = 0;
+    const char *p = s;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '-') { neg = 1; p++; }
+    long long whole = 0;
+    while (*p >= '0' && *p <= '9') {
+        whole = whole * 10 + (*p - '0');
+        p++;
+    }
+    long long frac = 0;
+    int fd = 0;
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9' && fd < 2) {
+            frac = frac * 10 + (*p - '0');
+            fd++;
+            p++;
+        }
+    }
+    long long cents = whole * 100 + (fd == 1 ? frac * 10 : frac);
+    if (neg) cents = -cents;
+    return cents;
+}
+
+static int tax_rate_bp(const char *s) {
+    if (strcmp(s, "CA") == 0) return 725;
+    if (strcmp(s, "TX") == 0) return 625;
+    if (strcmp(s, "NY") == 0) return 800;
+    if (strcmp(s, "FL") == 0) return 600;
+    if (strcmp(s, "WA") == 0) return 650;
+    if (strcmp(s, "OR") == 0) return 0;
+    if (strcmp(s, "MA") == 0) return 625;
+    if (strcmp(s, "IL") == 0) return 625;
+    if (strcmp(s, "PA") == 0) return 600;
+    if (strcmp(s, "OH") == 0) return 575;
+    return -1;
+}
+
+static int ship_idx(const char *s) {
+    if (strcmp(s, "standard") == 0) return 0;
+    if (strcmp(s, "express") == 0) return 1;
+    if (strcmp(s, "overnight") == 0) return 2;
+    return -1;
+}
+
+static const long long ship_tbl[3][5] = {
+    {500, 850, 1200, 1550, 2000},
+    {1000, 1500, 2000, 2500, 3200},
+    {2000, 2800, 3800, 4800, 6000}
+};
+
+static int pay_bp(const char *s) {
+    if (strcmp(s, "credit_card") == 0) return 250;
+    if (strcmp(s, "debit") == 0) return 0;
+    if (strcmp(s, "ach") == 0) return -50;
+    if (strcmp(s, "cash") == 0) return 0;
+    if (strcmp(s, "gift_card") == 0) return 100;
+    return -1;
+}
+
+static int food_ex(const char *s) {
+    return strcmp(s, "CA") == 0 || strcmp(s, "NY") == 0 ||
+           strcmp(s, "MA") == 0 || strcmp(s, "PA") == 0;
+}
+
+static int cloth_ex(const char *s) {
+    return strcmp(s, "PA") == 0;
+}
+
+static int med_ex(const char *s) {
+    return strcmp(s, "WA") != 0;
+}
+
+static int ship_taxed(const char *s) {
+    return strcmp(s, "TX") == 0 || strcmp(s, "FL") == 0 || strcmp(s, "OH") == 0;
+}
+
+static void fmt(long long c, char *buf) {
+    int neg = c < 0;
+    if (neg) c = -c;
+    if (neg)
+        sprintf(buf, "-%lld.%02lld", c / 100, c % 100);
+    else
+        sprintf(buf, "%lld.%02lld", c / 100, c % 100);
+}
+
+int main(void) {
+    char state[64] = ""; int state_set = 0;
+    char type[64] = ""; int type_set = 0;
+    int texempt = 0, texempt_set = 0;
+    char pay[64] = ""; int pay_set = 0;
+    char smeth[64] = ""; int smeth_set = 0;
+    int zone = 0, zone_set = 0;
+    char coup[64] = ""; int coup_set = 0;
+    Item items[MAX_ITEMS];
+    int ni = 0;
+    char line[MAX_LINE];
+
+    while (fgets(line, sizeof(line), stdin)) {
+        int len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+            line[--len] = '\0';
+        if (len == 0) continue;
+
+        if (strncmp(line, "STATE=", 6) == 0) {
+            state_set = 1;
+            strncpy(state, line + 6, 63); state[63] = '\0';
+        } else if (strncmp(line, "TYPE=", 5) == 0) {
+            type_set = 1;
+            strncpy(type, line + 5, 63); type[63] = '\0';
+        } else if (strncmp(line, "TAX_EXEMPT=", 11) == 0) {
+            texempt_set = 1;
+            texempt = (strcmp(line + 11, "true") == 0);
+        } else if (strncmp(line, "PAYMENT=", 8) == 0) {
+            pay_set = 1;
+            strncpy(pay, line + 8, 63); pay[63] = '\0';
+        } else if (strncmp(line, "SHIP_METHOD=", 12) == 0) {
+            smeth_set = 1;
+            strncpy(smeth, line + 12, 63); smeth[63] = '\0';
+        } else if (strncmp(line, "SHIP_ZONE=", 10) == 0) {
+            zone_set = 1;
+            zone = atoi(line + 10);
+        } else if (strncmp(line, "COUPON=", 7) == 0) {
+            coup_set = 1;
+            strncpy(coup, line + 7, 63); coup[63] = '\0';
+        } else if (strncmp(line, "ITEM ", 5) == 0) {
+            if (ni < MAX_ITEMS) {
+                char cat[64], ps[64];
+                long long q;
+                if (sscanf(line + 5, "%63s %lld %63s", cat, &q, ps) == 3) {
+                    strncpy(items[ni].category, cat, 63);
+                    items[ni].category[63] = '\0';
+                    items[ni].quantity = q;
+                    items[ni].price_cents = parse_price(ps);
+                    items[ni].ext_cents = items[ni].quantity * items[ni].price_cents;
+                    items[ni].qty_disc_cents = 0;
+                    ni++;
+                }
+            }
+        }
+    }
+
+    if (!state_set) { fprintf(stderr, "ERROR: missing STATE\n"); return 1; }
+    if (!type_set) { fprintf(stderr, "ERROR: missing TYPE\n"); return 1; }
+    if (!pay_set) { fprintf(stderr, "ERROR: missing PAYMENT\n"); return 1; }
+    if (!smeth_set) { fprintf(stderr, "ERROR: missing SHIP_METHOD\n"); return 1; }
+    if (!zone_set) { fprintf(stderr, "ERROR: missing SHIP_ZONE\n"); return 1; }
+    if (ni == 0) { fprintf(stderr, "ERROR: no items\n"); return 1; }
+    if (tax_rate_bp(state) < 0) { fprintf(stderr, "ERROR: unknown state\n"); return 1; }
+    if (strcmp(type, "retail") != 0 && strcmp(type, "wholesale") != 0 &&
+        strcmp(type, "government") != 0) {
+        fprintf(stderr, "ERROR: unknown type\n"); return 1;
+    }
+    if (pay_bp(pay) < 0) { fprintf(stderr, "ERROR: unknown payment method\n"); return 1; }
+    if (ship_idx(smeth) < 0) { fprintf(stderr, "ERROR: unknown shipping method\n"); return 1; }
+    if (zone < 1 || zone > 5) { fprintf(stderr, "ERROR: invalid zone\n"); return 1; }
+    for (int i = 0; i < ni; i++)
+        if (items[i].quantity < 0) { fprintf(stderr, "ERROR: negative quantity\n"); return 1; }
+    for (int i = 0; i < ni; i++)
+        if (items[i].price_cents < 0) { fprintf(stderr, "ERROR: negative price\n"); return 1; }
+
+    long long tqd = 0;
+    for (int i = 0; i < ni; i++) {
+        int p = 0;
+        if (items[i].quantity >= 50) p = 10;
+        else if (items[i].quantity >= 10) p = 5;
+        items[i].qty_disc_cents = rhaz(items[i].ext_cents, p, 100);
+        tqd += items[i].qty_disc_cents;
+    }
+
+    long long sub = 0;
+    for (int i = 0; i < ni; i++) sub += items[i].ext_cents;
+
+    long long pq = sub - tqd;
+
+    int bp = 0;
+    int ws = (strcmp(type, "wholesale") == 0);
+    if (ws) {
+        if (pq >= 50000) bp = 5;
+        else if (pq >= 25000) bp = 3;
+    } else {
+        if (pq >= 100000) bp = 5;
+        else if (pq >= 50000) bp = 3;
+    }
+    long long bd = rhaz(pq, bp, 100);
+
+    long long pb = pq - bd;
+
+    long long cd = 0;
+    int fs = 0;
+    if (coup_set && coup[0] != '\0') {
+        if (strcmp(coup, "SAVE10") == 0) {
+            cd = rhaz(pb, 10, 100);
+        } else if (strcmp(coup, "SAVE20") == 0) {
+            if (pb >= 10000) cd = rhaz(pb, 20, 100);
+        } else if (strcmp(coup, "DOLLAR5") == 0) {
+            if (pb >= 5000) cd = 500;
+        } else if (strcmp(coup, "DOLLAR25") == 0) {
+            if (pb >= 20000) cd = 2500;
+        } else if (strcmp(coup, "FREESHIP") == 0) {
+            fs = 1;
+        }
+    }
+
+    long long ds = pb - cd;
+
+    int si = ship_idx(smeth);
+    long long shp = ship_tbl[si][zone - 1];
+    if (fs) shp = 0;
+
+    long long fuel = rhaz(shp, 10, 100);
+    if (fuel > 500) fuel = 500;
+
+    long long tq = 0;
+    for (int i = 0; i < ni; i++) tq += items[i].quantity;
+    long long hdl = 200 + 50 * tq;
+    if (hdl > 1000) hdl = 1000;
+
+    int gov = (strcmp(type, "government") == 0);
+    long long sof = 0;
+    if (sub < 2500 && !gov) sof = 500;
+
+    long long exm = 0;
+    for (int i = 0; i < ni; i++) {
+        int ex = 0;
+        if (strcmp(items[i].category, "food") == 0 && food_ex(state)) ex = 1;
+        if (strcmp(items[i].category, "clothing") == 0 && cloth_ex(state)) ex = 1;
+        if (strcmp(items[i].category, "medicine") == 0 && med_ex(state)) ex = 1;
+        if (ex) exm += items[i].ext_cents - items[i].qty_disc_cents;
+    }
+
+    long long txbl = 0, tax = 0;
+    if (gov || texempt) {
+        txbl = 0; tax = 0;
+    } else {
+        txbl = ds - exm;
+        if (ship_taxed(state)) txbl += shp;
+        tax = rhaz(txbl, tax_rate_bp(state), 10000);
+    }
+
+    long long pp = ds + tax + shp + fuel + hdl + sof;
+    long long ps = rhaz(pp, pay_bp(pay), 10000);
+
+    long long tot = pp + ps;
+
+    char buf[64];
+    fmt(sub, buf); printf("SUBTOTAL=%s\n", buf);
+    fmt(tqd, buf); printf("QTY_DISCOUNT=%s\n", buf);
+    fmt(bd, buf); printf("BULK_DISCOUNT=%s\n", buf);
+    fmt(cd, buf); printf("COUPON_DISCOUNT=%s\n", buf);
+    fmt(txbl, buf); printf("TAXABLE=%s\n", buf);
+    fmt(tax, buf); printf("TAX=%s\n", buf);
+    fmt(shp, buf); printf("SHIPPING=%s\n", buf);
+    fmt(fuel, buf); printf("FUEL=%s\n", buf);
+    fmt(hdl, buf); printf("HANDLING=%s\n", buf);
+    fmt(sof, buf); printf("SMALL_ORDER_FEE=%s\n", buf);
+    fmt(ps, buf); printf("PAYMENT_SURCHARGE=%s\n", buf);
+    fmt(tot, buf); printf("TOTAL=%s\n", buf);
+
+    return 0;
+}
+<<<END>>>
+<<<FILE environment/generate_sample.py>>>
+#!/usr/bin/env python3
+"""Generate sample.txt for the feecalc reverse-engineering task.
+
+Run as: python3 generate_sample.py > /app/sample.txt
+"""
+
+orders = [
+    # 1. CA retail cash standard zone1 general - basic order
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 5 20.00",
+
+    # 2. TX retail credit_card express zone2 food - food taxed in TX
+    "STATE=TX\nTYPE=retail\nPAYMENT=credit_card\nSHIP_METHOD=express\nSHIP_ZONE=2\nITEM food 15 10.00",
+
+    # 3. NY retail debit overnight zone3 clothing - clothing taxed in NY
+    "STATE=NY\nTYPE=retail\nPAYMENT=debit\nSHIP_METHOD=overnight\nSHIP_ZONE=3\nITEM clothing 5 50.00",
+
+    # 4. FL retail ach standard zone4 general - qty 60 gets 10% qty disc, FL taxes shipping
+    "STATE=FL\nTYPE=retail\nPAYMENT=ach\nSHIP_METHOD=standard\nSHIP_ZONE=4\nITEM general 60 5.00",
+
+    # 5. WA retail gift_card express zone5 general - qty 10 gets 5% qty disc
+    "STATE=WA\nTYPE=retail\nPAYMENT=gift_card\nSHIP_METHOD=express\nSHIP_ZONE=5\nITEM general 10 30.00",
+
+    # 6. OR retail cash standard zone1 general - OR has 0% tax
+    "STATE=OR\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 5 50.00",
+
+    # 7. MA retail debit standard zone2 medicine - medicine exempt in MA, qty 5 no qty disc
+    "STATE=MA\nTYPE=retail\nPAYMENT=debit\nSHIP_METHOD=standard\nSHIP_ZONE=2\nITEM medicine 5 30.00",
+
+    # 8. IL retail credit_card express zone3 general - qty 15 gets 5% qty disc
+    "STATE=IL\nTYPE=retail\nPAYMENT=credit_card\nSHIP_METHOD=express\nSHIP_ZONE=3\nITEM general 15 20.00",
+
+    # 9. PA retail cash standard zone4 general - basic PA order
+    "STATE=PA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=4\nITEM general 5 60.00",
+
+    # 10. OH retail ach overnight zone5 general - bulk disc 3% (subtotal $900, qty disc 5%)
+    "STATE=OH\nTYPE=retail\nPAYMENT=ach\nSHIP_METHOD=overnight\nSHIP_ZONE=5\nITEM general 10 90.00",
+
+    # 11. CA wholesale cash standard zone1 - subtotal $150 (below $250, no bulk)
+    "STATE=CA\nTYPE=wholesale\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 5 30.00",
+
+    # 12. TX wholesale credit_card standard zone2 - subtotal $150 (below $250)
+    "STATE=TX\nTYPE=wholesale\nPAYMENT=credit_card\nSHIP_METHOD=standard\nSHIP_ZONE=2\nITEM general 3 50.00",
+
+    # 13. CA government cash standard zone1 - subtotal $150 (above $25)
+    "STATE=CA\nTYPE=government\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 5 30.00",
+
+    # 14. TX government debit express zone3 - subtotal $200 (above $25)
+    "STATE=TX\nTYPE=government\nPAYMENT=debit\nSHIP_METHOD=express\nSHIP_ZONE=3\nITEM general 2 100.00",
+
+    # 15. CA retail tax_exempt cash standard zone1
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nTAX_EXEMPT=true\nITEM general 5 50.00",
+
+    # 16. Coupon SAVE10 - 10% off, no minimum
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=SAVE10\nITEM general 5 20.00",
+
+    # 17. Coupon SAVE20 - 20% off, min $100 post-qty-bulk (subtotal $150, qty disc $7.50, post_qty=$142.50, post_bulk=$142.50 >= $100)
+    "STATE=TX\nTYPE=retail\nPAYMENT=credit_card\nSHIP_METHOD=express\nSHIP_ZONE=2\nCOUPON=SAVE20\nITEM general 15 10.00",
+
+    # 18. Coupon DOLLAR5 - $5 off, min $50 (subtotal $75, qty disc $3.75, post_qty=$71.25 >= $50)
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=DOLLAR5\nITEM general 5 15.00",
+
+    # 19. Coupon DOLLAR25 - $25 off, min $200 (subtotal $250, qty disc $12.50, post_qty=$237.50 >= $200)
+    "STATE=CA\nTYPE=retail\nPAYMENT=debit\nSHIP_METHOD=standard\nSHIP_ZONE=2\nCOUPON=DOLLAR25\nITEM general 10 25.00",
+
+    # 20. Coupon FREESHIP - zeroes shipping and fuel
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=overnight\nSHIP_ZONE=5\nCOUPON=FREESHIP\nITEM general 1 10.00",
+
+    # 21. Invalid coupon - no discount, no error
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nCOUPON=BOGUS\nITEM general 1 10.00",
+
+    # 22. Small order - subtotal $10 < $25, small order fee applies
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 23. No discounts at all - subtotal $250, qty 5 < 10, below $500 bulk
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 5 50.00",
+
+    # 24. Multi-item order with food in CA (food exempt in CA), small order
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 3 10.00\nITEM food 2 15.00",
+
+    # --- Error cases ---
+
+    # 25. Unknown state
+    "STATE=ZZ\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 26. Missing STATE
+    "TYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 27. Negative quantity
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general -1 10.00",
+
+    # 28. Negative price
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 -10.00",
+
+    # 29. Unknown payment method
+    "STATE=CA\nTYPE=retail\nPAYMENT=bitcoin\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 30. Unknown shipping method
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=teleport\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 31. Invalid zone (0)
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=0\nITEM general 1 10.00",
+
+    # 32. No items
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1",
+
+    # 33. Unknown type
+    "STATE=CA\nTYPE=business\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 34. Missing TYPE
+    "STATE=CA\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 35. Missing PAYMENT
+    "STATE=CA\nTYPE=retail\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 36. Missing SHIP_METHOD
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_ZONE=1\nITEM general 1 10.00",
+
+    # 37. Missing SHIP_ZONE
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nITEM general 1 10.00",
+
+    # 38. Invalid zone (9)
+    "STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=9\nITEM general 1 10.00",
+]
+
+print("===\n".join(orders))
+print("\n===\n".join([""]))  # trailing newline
+<<<END>>>

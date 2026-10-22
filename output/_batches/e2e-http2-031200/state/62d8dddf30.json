@@ -1,0 +1,311 @@
+{
+  "topic": "[judgement] a small HTTP service whose responses must never let a user-supplied value break out of a header, cookie or redirect, violated in several differently built places",
+  "key": "62d8dddf30",
+  "stage": "done",
+  "calibration": "Calibration: recent tasks under these rules and how often the reference agent solved them (target: 1-3 of 5 runs).\nPer kind: judgement/property_completeness: 1 task(s), 3/5\n- http-header-crlf-injection-audit [property_completeness]: 3/5 -> learnable (The task split 3/2 pass/fail because of a critical ambiguity: the instructions didn't clearly specify that CRLF must be stripped/sanitized rather than rejected with 400 errors, so one failing agent rejected requests entirely (breaking test_redirect_no_crlf, test_request_id_no_crlf) while another's sanitization crashed the server (breaking test_clean_redirect_still_works and others). All passing runs correctly stripped CRLF while preserving normal HTTP functionality across redirect, cookie, request-id, and display-name paths. Next design should add an explicit rule distinguishing 'sanitize by stripping' from 'reject with error' and keep the dual-property structure (security + functionality) since the mutation check killed all 5 faults.). Fix all CRLF injection vulnerabilities across a small URL-shortener HTTP service that sets headers through varied code paths and abstraction layers.\nTasks solved too often had few rules, rules on one theme, or an oracle to compare against. Make this design harder with more independent, precisely stated rules on more themes and sharper hidden inputs; never by hiding rules. Make it easier than the too_hard ones.",
+  "arm": "treatment",
+  "genre": "judgement",
+  "updated": "2026-10-22T04:21:07",
+  "started": "2026-10-22T03:12:00",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-small-http-service-whose-responses-mus-20261022-031200-8e90",
+  "gen": {
+    "status": "ok",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/docvault-header-cookie-redirect-fix",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-small-http-service-whose-responses-mus-20261022-031200-8e90",
+    "run_id": "a-small-http-service-whose-responses-mus-20261022-031200-8e90",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040131-oracle",
+            "seconds": 22.1,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040131-oracle/docvault-header-cookie-redirect__JAuXbTz",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040131-nop",
+            "seconds": 22.2,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040131-nop/docvault-header-cookie-redirect__sMQrnVB",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant1"
+          },
+          {
+            "fault": 10,
+            "wrong_fix": "fix every other site but leave this one as it is",
+            "verdict": "killed",
+            "failed_tests": 5,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant10"
+          },
+          {
+            "fault": 11,
+            "wrong_fix": "fix every other site but leave this one as it is",
+            "verdict": "killed",
+            "failed_tests": 3,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant11"
+          },
+          {
+            "fault": 12,
+            "wrong_fix": "fix every other site but leave this one as it is",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant12"
+          },
+          {
+            "fault": 13,
+            "wrong_fix": "fix every other site but leave this one as it is",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant13"
+          },
+          {
+            "fault": 2,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant2"
+          },
+          {
+            "fault": 3,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant3"
+          },
+          {
+            "fault": 4,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant4"
+          },
+          {
+            "fault": 5,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant5"
+          },
+          {
+            "fault": 6,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant6"
+          },
+          {
+            "fault": 7,
+            "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the rules alone)",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant7"
+          },
+          {
+            "fault": 8,
+            "wrong_fix": "fix every other site but leave this one as it is",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant8"
+          },
+          {
+            "fault": 9,
+            "wrong_fix": "fix every other site but leave this one as it is",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 20,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-small-http-service-whose-responses-mus-20261022-031200-8e90-r0-040215-mutant9"
+          }
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 33151,
+      "completion_tokens": 165222,
+      "cost_usd": 0.42569178
+    },
+    "seconds": 3972.3,
+    "task_name": "afterquery/docvault-header-cookie-redirect-fix"
+  },
+  "run_id": "docvault-header-cookie-redirect-fix-20261022-041813-a752",
+  "harbor_pid": null,
+  "record": {
+    "name": "docvault-header-cookie-redirect-fix",
+    "description": "Fix header injection, open redirect, and cookie injection vulnerabilities across a small HTTP document management service with varied code paths, abstraction layers, and data flows spanning multiple modules.",
+    "difficulty": "hard",
+    "arm": "treatment",
+    "genre": "judgement",
+    "run_id": "docvault-header-cookie-redirect-fix-20261022-041813-a752",
+    "features": {
+      "env_lines": 230,
+      "solve_lines": 147,
+      "rules": 0,
+      "themes": 0,
+      "faults": 0,
+      "fault_layers": 0
+    },
+    "verdict": "too_easy",
+    "confirmations": [],
+    "confirmed": false,
+    "lesson": "All 14 mutation faults (0-13) covering header, cookie, and redirect behaviors were killed by the test suite, confirming strong mutation coverage, and 3 of 5 agents passed by correctly implementing the full set of fixes in 6-10 steps. The 2 invalid runs produced no failed tests, meaning the solutions were structurally rejected before evaluation (likely format or file-targeting issues) rather than functionally wrong. The next design should keep the comprehensive mutation-tested rule set but add a clearer solution contract or scaffold to reduce invalid outcomes, and could branch into independent rules on new themes like authentication flows or response caching.",
+    "postmortem": {
+      "lesson": "All 14 mutation faults (0-13) covering header, cookie, and redirect behaviors were killed by the test suite, confirming strong mutation coverage, and 3 of 5 agents passed by correctly implementing the full set of fixes in 6-10 steps. The 2 invalid runs produced no failed tests, meaning the solutions were structurally rejected before evaluation (likely format or file-targeting issues) rather than functionally wrong. The next design should keep the comprehensive mutation-tested rule set but add a clearer solution contract or scaffold to reduce invalid outcomes, and could branch into independent rules on new themes like authentication flows or response caching.",
+      "held": [
+        "header validation/fixing",
+        "cookie handling",
+        "redirect logic",
+        "all 14 mutation faults killed by tests"
+      ],
+      "failed": [
+        "solution format/structure validity (2 invalid runs with no test failures)"
+      ]
+    },
+    "passes": 3,
+    "n_valid": 3,
+    "n_invalid": 2,
+    "decision": "rejected",
+    "why": "too_easy (stopped early: 3 passes, no failure yet; EARLY_STOP_PASSES=3)",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/docvault-header-cookie-redirect-fix",
+      "verdict": "too_easy",
+      "passes": 3,
+      "n_valid": 3,
+      "n_invalid": 2,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__DHx4qwm",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 65434,
+          "output_tokens": 13815,
+          "cost_usd": 0.007559622,
+          "episodes": 8,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__RannKfN",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 52084,
+          "output_tokens": 9373,
+          "cost_usd": 0.005693091,
+          "episodes": 7,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__VqrJVRp",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 33565,
+          "output_tokens": 9579,
+          "cost_usd": 0.004376365,
+          "episodes": 6,
+          "failed_tests": [],
+          "found_step": 2
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__bE2GJ6e",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 44902,
+          "output_tokens": 7978,
+          "cost_usd": 0.004886335,
+          "episodes": 6,
+          "failed_tests": [],
+          "found_step": 2
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__eji3qwg",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 69826,
+          "output_tokens": 9116,
+          "cost_usd": 0.006933123,
+          "episodes": 10,
+          "failed_tests": [],
+          "found_step": 1
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0"
+      ],
+      "tokens": {
+        "input": 265811,
+        "output": 49861
+      },
+      "cost_usd": 0.0294,
+      "median_steps": 7,
+      "median_found_step": 1,
+      "early_stop": true,
+      "seconds": 160.2,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/docvault-header-cookie-redirect-fix",
+    "topic": "[judgement] a small HTTP service whose responses must never let a user-supplied value break out of a header, cookie or redirect, violated in several differently built places",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-small-http-service-whose-responses-mus-20261022-031200-8e90"
+  }
+}

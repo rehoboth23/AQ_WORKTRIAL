@@ -1,0 +1,184 @@
+<<<FILE instruction.md>>>
+# Billing Library Rounding Fix
+
+The billing library at `/app/billing_lib/` calculates invoices including subtotals, discounts, tax, processing fees, currency conversion, and late penalties.
+
+## Rule
+
+**Every monetary amount in the output must be rounded using round-half-up to 2 decimal places.** Values exactly halfway between two cents must always round up, never to the nearest even cent. For example, $0.125 must round to $0.13, not $0.12.
+
+## Reported Issue
+
+A customer reports that a $1.00 item with a 12.5% tax rate shows a tax of $0.12 instead of $0.13. This violates the round-half-up rule.
+
+## Task
+
+Audit the entire billing module and fix every place where a monetary amount is rounded incorrectly. The library has a central rounding utility in `rounding.py` — make sure all modules are consistent with it.
+
+## How to Run
+
+```
+python3 -m billing_lib invoice.json
+```
+
+## Input JSON Format
+
+```json
+{
+  "items": [{"name": "Widget", "price": 10.00, "qty": 2}],
+  "tax_rate": 0.10,
+  "discount_rate": 0.05,
+  "processing_fee_rate": 0.03,
+  "exchange_rate": 1.0,
+  "late_penalty_rate": 0.02
+}
+```
+
+- `items` (required): array of objects with `name`, `price`, and `qty`
+- All rates are optional and default to zero (`exchange_rate` defaults to 1)
+
+## Output JSON Fields
+
+`subtotal`, `discount`, `after_discount`, `tax`, `processing_fee`, `pre_conversion_total`, `currency_adjusted`, `late_penalty`, `total`
+
+Every one of these must follow round-half-up.
+<<<END>>>
+<<<FILE environment/Dockerfile>>>
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+COPY billing_lib/ /app/billing_lib/
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+/usr/local/bin/python3 << 'PYEOF'
+import pathlib
+
+def fix_file(path, replacements):
+    content = pathlib.Path(path).read_text()
+    for old, new in replacements:
+        content = content.replace(old, new)
+    pathlib.Path(path).write_text(content)
+
+# Fix rounding.py: ROUND_HALF_EVEN -> ROUND_HALF_UP
+fix_file('/app/billing_lib/rounding.py', [
+    ('ROUND_HALF_EVEN', 'ROUND_HALF_UP'),
+])
+
+# Fix tax.py: use round_money instead of Python built-in round()
+fix_file('/app/billing_lib/tax.py', [
+    ('from decimal import Decimal', 'from decimal import Decimal\nfrom .rounding import round_money'),
+    ('return Decimal(str(round(tax, 2)))', 'return round_money(Decimal(str(tax)))'),
+])
+
+# Fix discount.py: use round_money instead of math.trunc
+fix_file('/app/billing_lib/discount.py', [
+    ('import math\n', ''),
+    ('from decimal import Decimal', 'from decimal import Decimal\nfrom .rounding import round_money'),
+    ('return Decimal(str(math.trunc(discount * 100) / 100))', 'return round_money(Decimal(str(discount)))'),
+])
+
+# Fix fees.py: use round_money instead of math.ceil
+fix_file('/app/billing_lib/fees.py', [
+    ('import math\n', ''),
+    ('from decimal import Decimal', 'from decimal import Decimal\nfrom .rounding import round_money'),
+    ('return Decimal(str(math.ceil(fee * 100) / 100))', 'return round_money(Decimal(str(fee)))'),
+])
+
+# Fix currency.py: use round_money instead of f-string formatting
+fix_file('/app/billing_lib/currency.py', [
+    ('from decimal import Decimal', 'from decimal import Decimal\nfrom .rounding import round_money'),
+    ('return Decimal(f"{converted:.2f}")', 'return round_money(converted)'),
+])
+PYEOF
+<<<END>>>
+<<<FILE tests/test_outputs.py>>>
+import json
+import os
+import subprocess
+import tempfile
+from decimal import Decimal, ROUND_HALF_UP
+
+
+PYTHON = "/usr/local/bin/python3"
+TWO_PLACES = Decimal("0.01")
+
+
+def round_half_up(value_str):
+    """Compute expected rounding independently using Decimal ROUND_HALF_UP."""
+    return Decimal(value_str).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
+def run_billing(invoice_data):
+    """Run the billing CLI and return parsed output."""
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(invoice_data, f)
+        result = subprocess.run(
+            [PYTHON, "-m", "billing_lib", path],
+            capture_output=True,
+            text=True,
+            cwd="/app",
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"CLI failed (rc={result.returncode}): {result.stderr}")
+        return json.loads(result.stdout)
+    finally:
+        os.unlink(path)
+
+
+def check_field(output, field, expected):
+    """Compare an output field to an expected Decimal value."""
+    actual = Decimal(str(output[field]))
+    assert actual == expected, (
+        f"{field}: got {output[field]}, expected {expected}"
+    )
+
+
+def test_subtotal_rounding_half_up():
+    """Subtotal 4.5 * 0.25 = 1.125 must round up to 1.13, not 1.12."""
+    result = run_billing({
+        "items": [{"name": "part", "price": 4.5, "qty": 0.25}],
+    })
+    check_field(result, "subtotal", round_half_up("1.125"))
+
+
+def test_tax_rounding_half_up():
+    """Tax 1.00 * 0.125 = 0.125 must round up to 0.13, not 0.12."""
+    result = run_billing({
+        "items": [{"name": "item", "price": 1.0, "qty": 1}],
+        "tax_rate": 0.125,
+    })
+    check_field(result, "tax", round_half_up("0.125"))
+
+
+def test_discount_rounding_half_up():
+    """Discount 3.00 * 0.025 = 0.075 must round up to 0.08, not 0.07."""
+    result = run_billing({
+        "items": [{"name": "item", "price": 3.0, "qty": 1}],
+        "discount_rate": 0.025,
+    })
+    check_field(result, "discount", round_half_up("0.075"))
+
+
+def test_processing_fee_rounding_half_up():
+    """Processing fee 1.33 * 0.01 = 0.0133 must round to 0.01, not 0.02."""
+    result = run_billing({
+        "items": [{"name": "item", "price": 1.33, "qty": 1}],
+        "processing_fee_rate": 0.01,
+    })
+    check_field(result, "processing_fee", round_half_up("0.0133"))
+
+
+def test_currency_conversion_rounding_half_up():
+    """Currency conversion 50.9 * 0.05 = 2.545 must round up to 2.55, not 2.54."""
+    result = run_billing({
+        "items": [{"name": "item", "price": 50.9, "qty": 1}],
+        "exchange_rate": 0.05,
+    })
+    check_field(result, "currency_adjusted", round_half_up("2.545"))
+<<<END>>>

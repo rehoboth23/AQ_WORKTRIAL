@@ -1,0 +1,4 @@
+{"time": "2026-10-22T02:01:41", "pid": 80060, "event": "batch_start", "batch": "e2e-payroll-020140", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T02:01:41", "pid": 80060, "event": "stage", "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout", "key": "6c18ad97a3", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T03:51:45", "pid": 80060, "event": "stage", "topic": "[spec] a timesheet-to-payroll converter with strict rules for week boundaries, overtime, rounding, time zones, missing entries and output layout", "key": "6c18ad97a3", "frm": "generating", "to": "gen_failed", "why": "failed generation: Part 1 checks"}
+{"time": "2026-10-22T03:51:45", "pid": 80060, "event": "batch_end", "batch": "e2e-payroll-020140", "skipped_locked": 0, "stopped": ""}

@@ -1,0 +1,34 @@
+[
+  {
+    "topic": "a bond cash-flow scheduler that reproduces a legacy desk tool's accrual fractions and adjusted payment dates exactly for any trade",
+    "stage": "gen_failed",
+    "spec_ok": true,
+    "files_written": true,
+    "structural": false,
+    "correct": false,
+    "evaluated": false,
+    "learnable": false,
+    "kept": false,
+    "confirmed": false,
+    "review": false,
+    "critic": "6 flag(s), revised",
+    "gen_cost": {
+      "input": 107528,
+      "output": 572922,
+      "cost_usd": 2.0546,
+      "cost_source": "gateway"
+    },
+    "eval_cost_usd": 0.0,
+    "gen_seconds": 8486.0,
+    "eval_seconds": 0.0,
+    "record": {
+      "topic": "a bond cash-flow scheduler that reproduces a legacy desk tool's accrual fractions and adjusted payment dates exactly for any trade",
+      "arm": "treatment",
+      "stage": "generate",
+      "verdict": "gen_failed",
+      "decision": "rejected",
+      "why": "failed generation: Part 1 checks",
+      "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-bond-cash-flow-scheduler-that-reproduc-20261022-060418-de3b"
+    }
+  }
+]

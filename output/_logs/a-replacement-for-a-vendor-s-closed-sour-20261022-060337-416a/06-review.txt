@@ -1,0 +1,111 @@
+VERDICT: leaks
+- "fee caps, rounding behavior" in the category list → reveals decision points 8 and 0 (non-obvious rules not derivable from the interface)
+- "quantities at tier boundaries, subtotals at discount thresholds, coupons with subtotals just above and below minimums, Test exact boundary values" in probing advice → reveals that boundary-sensitive decision points exist for discounts and coupons (decision points 4, 5, 6)
+
+<<<FILE instruction.md>>>
+# Vendor Fee Calculator Replacement
+
+A vendor's closed-source tax-and-fee calculator binary (`feecalc`) is installed at `/usr/local/bin/feecalc`. The procurement team needs an open Python replacement before the vendor contract expires. No source code or documentation is available — only the binary and a folder of sample orders.
+
+## Goal
+
+Create `/app/quotelib.py` that behaves identically to `feecalc` for any order input. Specifically, for any input of the kinds shown in `/app/sample.txt`, your program must produce **exactly the same stdout, stderr, and exit status** as `/usr/local/bin/feecalc`.
+
+## Input Format
+
+The program reads text lines from stdin:
+
+- `STATE=<2-letter code>` — US state code
+- `TYPE=<retail|wholesale|government>` — customer type
+- `TAX_EXEMPT=<true|false>` — optional, tax-exempt flag
+- `PAYMENT=<credit_card|debit|ach|cash|gift_card>` — payment method
+- `SHIP_METHOD=<standard|express|overnight>` — shipping method
+- `SHIP_ZONE=<1-5>` — shipping zone
+- `COUPON=<code>` — optional, coupon code
+- `ITEM <category> <quantity> <unit_price>` — one or more item lines
+
+Categories: `general`, `food`, `clothing`, `medicine`. Prices are in dollars with optional cents (e.g., `10.00`, `5`, `3.50`).
+
+Blank lines and unrecognized lines are ignored.
+
+## Output Format
+
+On success (exit 0), write exactly 12 lines to stdout, each as `KEY=<amount>` with amounts formatted to exactly 2 decimal places (e.g., `100.00`, `-0.55`, `0.00`):
+
+```
+SUBTOTAL=<amount>
+QTY_DISCOUNT=<amount>
+BULK_DISCOUNT=<amount>
+COUPON_DISCOUNT=<amount>
+TAXABLE=<amount>
+TAX=<amount>
+SHIPPING=<amount>
+FUEL=<amount>
+HANDLING=<amount>
+SMALL_ORDER_FEE=<amount>
+PAYMENT_SURCHARGE=<amount>
+TOTAL=<amount>
+```
+
+On validation error (exit 1), write `ERROR: <message>` to stderr and **nothing** to stdout.
+
+## Module Interface
+
+The program must also be importable as a Python module:
+
+```python
+from quotelib import calculate
+output = calculate(text: str) -> str  # returns the 12-line output string
+# raises ValueError with the error message on invalid input
+```
+
+When run as a script (`python3 /app/quotelib.py`), it reads from stdin and writes to stdout/stderr with the same contract as `feecalc`.
+
+## Sample File
+
+`/app/sample.txt` contains example orders separated by lines containing only `===`. Each block is a complete order that should be fed individually to `feecalc`. The sample covers every kind of input your program must handle, but does **not** exhaust every edge case — you must probe the binary to discover all rules.
+
+## Rules
+
+1. Your program must **not** call `feecalc` or any external program.
+2. The `feecalc` binary will **not** be available when your program is checked.
+3. Probe the binary systematically to discover every rule: tax rates by state, category exemptions by state, quantity discount tiers, bulk discount tiers, coupon codes and their logic, shipping rates, fuel surcharge, handling fees, small order fees, payment surcharges, and error handling.
+4. Every rule that affects output is observable by running the binary on inputs you can construct.
+5. The comparison is byte-for-byte: stdout, stderr, and exit code must all match exactly.
+
+## How to Probe
+
+Feed individual order blocks to the binary:
+
+```bash
+printf 'STATE=CA\nTYPE=retail\nPAYMENT=cash\nSHIP_METHOD=standard\nSHIP_ZONE=1\nITEM general 1 10.00\n' | /usr/local/bin/feecalc
+```
+
+Split the sample file on `===` lines and feed each block individually:
+
+```bash
+awk 'BEGIN{RS="==="} NF{print}' /app/sample.txt | while IFS= read -r line; do
+  printf '%s' "$line" | /usr/local/bin/feecalc
+  echo "exit: $?"
+done
+```
+
+Or more reliably:
+
+```bash
+python3 -c "
+data = open('/app/sample.txt').read()
+for block in data.split('==='):
+    block = block.strip()
+    if block:
+        import subprocess
+        r = subprocess.run(['/usr/local/bin/feecalc'], input=block, capture_output=True, text=True)
+        print(repr(block[:40]), 'rc=', r.returncode)
+        print(r.stdout, end='')
+        if r.stderr: print('STDERR:', r.stderr, end='')
+        print('---')
+"
+```
+
+Vary inputs systematically: change states, customer types, quantities, subtotals, categories, coupons, payment methods, shipping methods, and zones. Test a wide range of values and combinations the sample doesn't cover.
+<<<END>>>

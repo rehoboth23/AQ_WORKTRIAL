@@ -1,0 +1,165 @@
+<<<MANIFEST>>>
+environment/payroll.py
+environment/timesheet.csv
+<<<END>>>
+<<<FILE environment/payroll.py>>>
+import csv
+import sys
+from datetime import datetime, timedelta
+
+
+REGULAR_RATE = 25.00
+DAILY_OT_RATE = 37.50
+WEEKLY_OT_RATE = 50.00
+DAILY_OT_HOURS = 8.0
+
+
+def parse_time(time_str):
+    h, m = time_str.split(':')
+    return int(h), int(m)
+
+
+def calc_hours(clock_in, clock_out):
+    in_h, in_m = parse_time(clock_in)
+    out_h, out_m = parse_time(clock_out)
+    if out_h * 60 + out_m <= in_h * 60 + in_m:
+        return None
+    total_min = out_h * 60 + out_m - in_h * 60 - in_m
+    return round(total_min / 60.0, 2)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: payroll.py <csv_path>", file=sys.stderr)
+        sys.exit(1)
+
+    csv_path = sys.argv[1]
+
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            rows = list(reader)
+    except FileNotFoundError:
+        print(f"Error: file not found: {csv_path}", file=sys.stderr)
+        return
+
+    employees = {}
+
+    for row in rows:
+        if len(row) < 6:
+            continue
+
+        emp_id = row[0].strip()
+        name = row[1].strip()
+        date = row[2].strip()
+        clock_in = row[3].strip()
+        clock_out = row[4].strip()
+
+        if not clock_in:
+            if emp_id not in employees:
+                employees[emp_id] = {'name': name, 'shifts': []}
+            continue
+
+        if not clock_out:
+            if emp_id not in employees:
+                employees[emp_id] = {'name': name, 'shifts': []}
+            continue
+
+        hours = calc_hours(clock_in, clock_out)
+        if hours is None:
+            continue
+
+        if hours > DAILY_OT_HOURS:
+            reg = DAILY_OT_HOURS
+            dot = round(hours - DAILY_OT_HOURS, 2)
+        else:
+            reg = hours
+            dot = 0.0
+
+        if emp_id not in employees:
+            employees[emp_id] = {'name': name, 'shifts': []}
+
+        employees[emp_id]['shifts'].append({
+            'date': date,
+            'reg': reg,
+            'dot': dot,
+            'wot': 0.0,
+        })
+
+    sorted_ids = sorted(employees.keys())
+
+    lines = []
+    grand_reg = 0.0
+    grand_dot = 0.0
+    grand_wot = 0.0
+    grand_pay = 0.0
+
+    for emp_id in sorted_ids:
+        emp = employees[emp_id]
+        shifts = emp['shifts']
+
+        lines.append(f"EMPLOYEE: {emp_id} ({emp['name']})")
+
+        total_reg = sum(s['reg'] for s in shifts)
+        total_dot = sum(s['dot'] for s in shifts)
+        total_wot = sum(s['wot'] for s in shifts)
+
+        for shift in shifts:
+            lines.append(
+                f"  {shift['date']}  {shift['reg']:>6.2f}h reg  "
+                f"{shift['dot']:>6.2f}h dot  {shift['wot']:>6.2f}h wot"
+            )
+
+        pay = round(
+            total_reg * REGULAR_RATE
+            + total_dot * DAILY_OT_RATE
+            + total_wot * WEEKLY_OT_RATE,
+            2,
+        )
+        lines.append(
+            f"  TOTAL  {total_reg:>6.2f}h reg  {total_dot:>6.2f}h dot  "
+            f"{total_wot:>6.2f}h wot  ${pay:>9.2f}"
+        )
+
+        grand_reg += total_reg
+        grand_dot += total_dot
+        grand_wot += total_wot
+        grand_pay += pay
+
+    lines.append("")
+    lines.append("FLAGGED ENTRIES:")
+    lines.append("")
+    lines.append(
+        f"GRAND TOTAL  {grand_reg:>6.2f}h reg  {grand_dot:>6.2f}h dot  "
+        f"{grand_wot:>6.2f}h wot  ${grand_pay:>9.2f}"
+    )
+
+    sys.stdout.write('\n'.join(lines) + '\n')
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE environment/timesheet.csv>>>
+employee_id,name,date,clock_in,clock_out,timezone
+1001,Alice Johnson,2024-01-08,08:00,17:30,America/New_York
+1001,Alice Johnson,2024-01-09,08:00,18:00,America/New_York
+1001,Alice Johnson,2024-01-10,08:00,17:00,America/New_York
+1001,Alice Johnson,2024-01-11,08:00,16:30,America/New_York
+1001,Alice Johnson,2024-01-12,08:00,16:00,America/New_York
+1001,Alice Johnson,2024-01-13,08:00,12:00,America/New_York
+1001,Alice Johnson,2024-01-15,08:00,16:00,America/New_York
+1001,Alice Johnson,2024-01-16,08:00,16:30,America/New_York
+1002,Bob Williams,2024-01-08,08:00,17:30,America/Chicago
+1002,Bob Williams,2024-01-09,08:00,18:00,America/Chicago
+1002,Bob Williams,2024-01-10,08:00,17:30,America/Chicago
+1002,Bob Williams,2024-01-11,08:00,,America/Chicago
+1002,Bob Williams,2024-01-12,08:00,12:00,America/Chicago
+1003,Carol Davis,2024-01-15,,17:00,America/Los_Angeles
+1003,Carol Davis,2024-01-16,08:00,17:00,America/Los_Angeles
+1003,Carol Davis,2024-01-17,20:00,04:00,America/Los_Angeles
+1003,Carol Davis,2024-01-18,08:00,16:30,America/Los_Angeles
+1003,Carol Davis,2024-01-19,08:00,17:00,America/Los_Angeles
+1003,Carol Davis,2024-01-20,08:00,16:00,America/Los_Angeles
+<<<END>>>

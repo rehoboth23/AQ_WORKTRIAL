@@ -1,0 +1,170 @@
+```json
+{
+  "name": "ids-rule-recovery-from-logs",
+  "description": "Infer the decision rules of a retired IDS from a labelled flow log and reproduce its exact classifications on held-out boundary and precedence flows",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["ids", "rule-induction", "thresholds", "precedence", "classification"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A company retired its custom intrusion-detection system last quarter but must reproduce its decision logic for compliance audits. The only surviving artefact is a CSV log of ~180 network flows, each labelled with the IDS's original decision (PASS or FLAG with a reason). Your job is to study the patterns in that log, reverse-engineer the ordered rule chain the IDS used — including exact numeric thresholds, port ranges, time windows, and rule precedence — and implement a classifier that reproduces those decisions on new flows.",
+  "environment_setup": "The Dockerfile builds a Python 3.12 image. A generation script creates /app/data/flows_training.csv (~180 rows with columns flow_id, timestamp, src_port, dst_port, protocol, duration_seconds, bytes_sent, bytes_received, packets_per_second, decision) using the true IDS rules, then the script is deleted. A stub /app/ids_classifier.py is provided that always outputs PASS. A short /app/data/ids_notes.md describes the retired IDS at a high level. No reference implementation, expected outputs, or rule definitions remain in the image.",
+  "instruction_summary": "Create /app/ids_classifier.py that, when run as `python3 /app/ids_classifier.py <input_csv>`, reads a CSV with the same columns as the training log minus 'decision', and prints one line per flow in the format `flow_id,decision` where decision is PASS or FLAG:<reason>. The classifier must exactly reproduce the original IDS's decisions on any input flow. The training log is at /app/data/flows_training.csv and notes at /app/data/ids_notes.md.",
+  "solution_outline": [
+    "Read /app/data/flows_training.csv and group flows by decision label",
+    "Identify that FLAG:brute_force flows all have dst_port=22 and duration_seconds > 300, with PASS flows on port 22 at durations 280 and below",
+    "Identify that FLAG:suspicious_port flows all have dst_port in [135,136,137,138,139], with PASS at 134 and 140",
+    "Identify that FLAG:exfiltration flows all have dst_port=443 and bytes_sent > 10000000, with PASS on port 443 at 9500000 and PASS on port 80 at 20000000",
+    "Identify that FLAG:scan flows (not already caught by earlier rules) have packets_per_second > 500, with PASS at 480 and FLAG at 520",
+    "Identify that FLAG:night_transfer flows have timestamp hour in {2,3,4} and bytes_received > 5000000, with PASS at hour 1 and 5 and at 4800000 bytes_received",
+    "Determine rule precedence from multi-match examples in the log (brute_force before scan, exfiltration before scan, suspicious_port before night_transfer)",
+    "Write /app/ids_classifier.py implementing the ordered rule chain with strict > comparisons",
+    "Test the classifier against the training log to verify all decisions match"
+  ],
+  "test_plan": [
+    "Check 1 (rule 1 threshold boundary): flow with dst_port=22, duration_seconds=300 → PASS (strict > means 300 does not trigger)",
+    "Check 2 (rule 2 range upper bound): flow with dst_port=139 → FLAG:suspicious_port (139 is included)",
+    "Check 3 (rule 2 range upper+1): flow with dst_port=140, otherwise benign → PASS (140 is excluded)",
+    "Check 4 (rule 3 threshold boundary): flow with dst_port=443, bytes_sent=10000000 → PASS (strict > at exfil threshold)",
+    "Check 5 (rule 4 threshold boundary): flow with packets_per_second=500.0, otherwise benign → PASS (strict > at scan threshold)",
+    "Check 6 (rule 5 window start): flow at hour 2 with bytes_received=8000000 → FLAG:night_transfer (hour 2 is in window)",
+    "Check 7 (rule 5 window end): flow at hour 5 with bytes_received=8000000 → PASS (hour 5 is excluded, half-open window)",
+    "Check 8 (rule 5 bytes boundary): flow at hour 3 with bytes_received=5000000 → PASS (strict > at night threshold)",
+    "Check 9 (precedence rule1>rule4): flow with dst_port=22, duration=400, rate=600 → FLAG:brute_force (SSH rule fires before scan rule)",
+    "Check 10 (precedence rule3>rule4): flow with dst_port=443, bytes_sent=12M, rate=600 → FLAG:exfiltration (exfil rule fires before scan rule)",
+    "Check 11 (precedence rule2>rule5): flow with dst_port=135, hour=3, bytes_received=8M → FLAG:suspicious_port (NetBIOS rule fires before night rule)",
+    "Check 12 (rule 3 port-specificity): flow with dst_port=80, bytes_sent=12000000 → PASS (exfil rule only applies to port 443)",
+    "Check 13 (rule 1 port-specificity): flow with dst_port=8080, duration=400 → PASS (SSH rule only applies to port 22)",
+    "Check 14 (rule 5 port-non-specificity): flow with dst_port=993, hour=3, bytes_received=8000000 → FLAG:night_transfer (night rule applies to any port)",
+    "Check 15 (default pass): completely benign flow on port=80 at hour=14 with low values → PASS"
+  ],
+  "anti_cheat": "The training data generation script is deleted from the image after build. No reference implementation, rule definitions, or expected outputs exist in any file. The exact thresholds (300, 500, 10000000, 5000000) must be inferred from gaps in the training data, not looked up. Held-out test flows are constructed inside the test script at verification time; they are never written to disk in the image. An agent cannot hard-code the training answers because the tests use novel flows at boundary values not present in the training log.",
+  "failure_modes": "An agent might infer a threshold slightly off (e.g., 310 instead of 300) from the data gap between 280 and 320, failing boundary checks. It might use >= instead of > despite instruction.md stating strict greater-than. It might get rule precedence wrong by ordering rules by specificity rather than the actual order shown in the data. It might assume the exfiltration or brute-force rules apply to all ports rather than only 443 or 22. It might assume the night-transfer rule is port-specific. It might miss a rule entirely if the flagged examples are sparse.",
+  "shape": "rule induction from labelled examples with boundary and precedence evaluation on held-out flows",
+  "hidden_evaluation": "The tests construct 15 held-out flows at exact threshold boundaries, at port-range edges, at time-window edges, with overlapping rule conditions, and with port-specificity probes. Each flow tests a distinct property of the inferred rule set. The agent cannot fully verify their classifier against these flows because they are generated only at test time and probe edge cases absent from the training log (e.g., duration exactly 300, rate exactly 500.0, hour exactly 5, port 139 vs 140, multi-rule overlaps).",
+  "checks": [
+    {
+      "requirement": "instruction.md states 'Every numeric threshold uses strict greater-than (>) comparison'; training data shows SSH flows pass at duration 280 and flag at 320, implying threshold 300",
+      "assumed_instead": "Agent uses >= comparison or infers threshold as 310 or 320",
+      "hidden_test_input": "Flow with dst_port=22, duration_seconds=300, packets_per_second=10, bytes_sent=1000, bytes_received=1000, hour=10",
+      "why_missed": "Training data has no flow at exactly duration=300; agent must infer the round threshold and apply strict >"
+    },
+    {
+      "requirement": "Training data shows FLAG:suspicious_port for ports 135-139 and PASS for 134 and 140, defining the exact range",
+      "assumed_instead": "Agent includes port 140 in the range or excludes port 139",
+      "hidden_test_input": "Flow with dst_port=139, all other fields benign",
+      "why_missed": "Agent might infer range as [135,140) instead of [135,139] if not checking both boundaries"
+    },
+    {
+      "requirement": "Training data shows PASS at port 140, confirming NetBIOS range ends at 139",
+      "assumed_instead": "Agent includes port 140 in the suspicious range",
+      "hidden_test_input": "Flow with dst_port=140, all other fields benign",
+      "why_missed": "Agent might round the range to 135-140 as a convenient block"
+    },
+    {
+      "requirement": "instruction.md states strict >; training data shows exfil FLAG at bytes_sent 10500000 on port 443 and PASS at 9500000, implying threshold 10000000",
+      "assumed_instead": "Agent uses >= or infers threshold as 9500000 or 10500000",
+      "hidden_test_input": "Flow with dst_port=443, bytes_sent=10000000, packets_per_second=10, hour=10",
+      "why_missed": "No training flow has bytes_sent exactly at 10000000; agent must round to the threshold and use strict >"
+    },
+    {
+      "requirement": "instruction.md states strict >; training data shows scan FLAG at rate 520 and PASS at 480, implying threshold 500",
+      "assumed_instead": "Agent uses >= or infers threshold as 480 or 520",
+      "hidden_test_input": "Flow with packets_per_second=500.0, dst_port=80, hour=10, duration=10, bytes_sent=1000, bytes_received=1000",
+      "why_missed": "No training flow has rate exactly 500.0; agent must infer the round threshold and apply strict >"
+    },
+    {
+      "requirement": "Training data shows night_transfer FLAG at hour 2 with high bytes_received, confirming hour 2 is in the time window",
+      "assumed_instead": "Agent starts the night window at hour 3 instead of 2",
+      "hidden_test_input": "Flow at timestamp hour 2, bytes_received=8000000, dst_port=80",
+      "why_missed": "Agent might think the window starts at 3 if the hour-2 example is overlooked among many flows"
+    },
+    {
+      "requirement": "instruction.md states 'Time-of-day windows are half-open [start, end)'; training data shows PASS at hour 5 with high bytes_received",
+      "assumed_instead": "Agent includes hour 5 in the night window (closed interval [2,5] instead of [2,5))",
+      "hidden_test_input": "Flow at timestamp hour 5, bytes_received=8000000, dst_port=80",
+      "why_missed": "Agent might use a closed interval despite instruction.md stating half-open"
+    },
+    {
+      "requirement": "instruction.md states strict >; training data shows night_transfer PASS at bytes_received=4800000 and FLAG at 5200000, implying threshold 5000000",
+      "assumed_instead": "Agent uses >= or infers threshold as 4800000 or 5200000",
+      "hidden_test_input": "Flow at hour 3, bytes_received=5000000, dst_port=80",
+      "why_missed": "No training flow has bytes_received exactly 5000000; agent must round and apply strict >"
+    },
+    {
+      "requirement": "instruction.md states 'first matching rule determines the outcome'; training data shows port 22 + duration 400 + rate 600 → FLAG:brute_force, proving rule 1 fires before rule 4",
+      "assumed_instead": "Agent orders scan rule before SSH rule, producing FLAG:scan instead",
+      "hidden_test_input": "Flow with dst_port=22, duration=400, packets_per_second=600, bytes_sent=1000, bytes_received=1000, hour=10",
+      "why_missed": "Agent might order rules by perceived severity or generality instead of the order shown in the data"
+    },
+    {
+      "requirement": "Training data shows port 443 + bytes_sent=12M + rate=600 → FLAG:exfiltration, proving rule 3 fires before rule 4",
+      "assumed_instead": "Agent orders scan rule before exfil rule, producing FLAG:scan instead",
+      "hidden_test_input": "Flow with dst_port=443, bytes_sent=12000000, packets_per_second=600, duration=10, bytes_received=1000, hour=10",
+      "why_missed": "Agent might not notice the precedence example among many flows and order by rule type"
+    },
+    {
+      "requirement": "Training data shows port 135 + hour 3 + bytes_received=8M → FLAG:suspicious_port, proving rule 2 fires before rule 5",
+      "assumed_instead": "Agent orders night rule before NetBIOS rule, producing FLAG:night_transfer instead",
+      "hidden_test_input": "Flow with dst_port=135, hour=3, bytes_received=8000000, duration=10, bytes_sent=1000, packets_per_second=10",
+      "why_missed": "Agent might order by condition count or specificity rather than the observed precedence"
+    },
+    {
+      "requirement": "Training data shows port 80 with bytes_sent=20M → PASS, proving the exfiltration rule applies only to port 443",
+      "assumed_instead": "Agent makes exfil rule port-agnostic, flagging any high bytes_sent flow",
+      "hidden_test_input": "Flow with dst_port=80, bytes_sent=12000000, duration=10, packets_per_second=10, bytes_received=1000, hour=10",
+      "why_missed": "Agent might not test non-443 ports with high bytes_sent after inferring the threshold"
+    },
+    {
+      "requirement": "Training data shows port 80 with duration=500 → PASS, proving the brute-force rule applies only to port 22",
+      "assumed_instead": "Agent makes brute-force rule port-agnostic, flagging any high-duration flow",
+      "hidden_test_input": "Flow with dst_port=8080, duration=400, bytes_sent=1000, packets_per_second=10, bytes_received=1000, hour=10",
+      "why_missed": "Agent might not test non-22 ports with high duration after inferring the threshold"
+    },
+    {
+      "requirement": "Training data shows night_transfer FLAG on port 80 at hour 3 with high bytes_received, proving the night rule is not port-specific",
+      "assumed_instead": "Agent adds a port condition to the night rule (e.g., only port 80 or only non-privileged ports)",
+      "hidden_test_input": "Flow with dst_port=993, hour=3, bytes_received=8000000, duration=10, bytes_sent=1000, packets_per_second=10",
+      "why_missed": "Agent might assume night rule only applies to common ports seen in night examples"
+    },
+    {
+      "requirement": "instruction.md states 'if no rule matches, the flow is passed'; the default behaviour must be preserved",
+      "assumed_instead": "Agent adds an extra catch-all rule or misconfigures default to FLAG",
+      "hidden_test_input": "Flow with dst_port=80, hour=14, duration=10, bytes_sent=1000, bytes_received=1000, packets_per_second=10",
+      "why_missed": "Agent might add a conservative default rule that flags unfamiliar traffic patterns"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Flows matching no rule must produce PASS (the IDS default)",
+      "hidden_test_input": "Benign flow on port 80 at hour 14 with all low values"
+    },
+    {
+      "behaviour": "Flag labels must exactly match the original IDS labels (brute_force, suspicious_port, exfiltration, scan, night_transfer)",
+      "hidden_test_input": "Flow triggering each rule individually; test checks exact label text"
+    }
+  ],
+  "ground_truth": "The test script contains a classify_reference() function implementing the five ordered rules with exact thresholds (duration>300, ports 135-139, bytes_sent>10000000 on port 443, rate>500, hour in {2,3,4} with bytes_received>5000000). For each held-out flow, the test runs the agent's classifier via subprocess and compares the output against classify_reference().",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "Hidden-edge coverage",
+      "where": "The 15 held-out test flows sit exactly at threshold boundaries (duration=300, rate=500.0, bytes_sent=10000000, bytes_received=5000000), port-range edges (139 vs 140), and time-window edges (hour 2 included, hour 5 excluded) — none of which appear in the training log",
+      "fairness": "instruction.md states 'Every numeric threshold uses strict greater-than (>) comparison' and 'Time-of-day windows are half-open [start, end)', giving the agent the comparison semantics; the agent must still infer the exact threshold values from data gaps"
+    },
+    {
+      "knob": "Convention traps",
+      "where": "Thresholds are round decimal numbers (300, 500, 10000000, 5000000) that must be inferred from gaps in the training data (e.g., SSH passes at 280 and flags at 320, so the threshold is 300, not 310)",
+      "fairness": "The training data places values close enough to boundaries (within 20 units or 5%) that a careful analyst can identify the round number; instruction.md states all thresholds are integers where applicable"
+    },
+    {
+      "knob": "Preservation constraints",
+      "where": "Two rules are port-specific (brute_force only on port 22, exfiltration only on port 443) while one rule is not (night_transfer applies to any port); the agent must preserve these specificity properties exactly",
+      "fairness": "The training data includes explicit counter-examples (port 80 with high duration → PASS, port 80 with high bytes_sent → PASS, port 80 at night with high bytes_received → FLAG) that demonstrate each specificity property"
+    }
+  ]
+}
+```

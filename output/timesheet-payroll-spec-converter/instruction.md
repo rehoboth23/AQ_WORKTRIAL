@@ -1,0 +1,81 @@
+# Task: Update Timesheet-to-Payroll Converter
+
+## Goal
+
+Update `/app/converter.py` so it follows every rule in the payroll specification at `/app/docs/PAYROLL_SPEC.md`. The spec is the authoritative source — where it differs from the current code, the spec wins.
+
+## Interface
+
+```
+python3 /app/converter.py <input_csv> [--summary] [--verbose]
+```
+
+- **Input**: a CSV file with columns `Employee ID`, `Clock In`, `Clock Out`.
+- **Output** (stdout): a pipe-delimited payroll report.
+- **`--summary`**: append a one-line summary after the report.
+- **`--verbose`**: print per-shift processing details to stderr.
+
+A sample CSV is at `/app/data/sample.csv`.
+
+## What to do
+
+1. Read `/app/docs/PAYROLL_SPEC.md` thoroughly. It defines ~20 rules across 8 themes: timezone handling, rounding, overtime tiers, shift splitting, duplicate/incomplete entry handling, output format, exit codes, and input tolerance.
+2. Update `/app/converter.py` to follow every rule. The current code works for simple cases but violates the spec in many ways — naive datetimes, banker's rounding, no daily overtime, no week-boundary splitting, comma output, wrong sorting, CRLF endings, wrong exit codes, and more.
+3. Keep all existing features working: `--summary`, `--verbose`, blank-line skipping, and whitespace trimming.
+
+## `--summary` Flag
+
+When `--summary` is given, after the main pipe-delimited report, print exactly one additional line to stdout in this format:
+
+```
+TOTAL: X employees, Y regular hours, Z overtime hours, $W total pay
+```
+
+Where:
+- **X** is the number of distinct employees with at least one output row, formatted as an integer (no decimal).
+- **Y** is the sum of all Reg hours across every output row, formatted with exactly two decimal places (e.g., `80.00`).
+- **Z** is the sum of all Daily OT + Weekly OT hours across every output row, formatted with exactly two decimal places (e.g., `10.00`).
+- **$W** is the sum of all Gross pay across every output row. A literal `$` sign is followed by the amount formatted with exactly two decimal places and **no thousands-separator comma** (e.g., `$2150.00`, not `$2,150.00`).
+
+## `--verbose` Flag
+
+When `--verbose` is given, for each shift that is actually processed (after deduplication and before any rounding or splitting), print exactly one line to stderr in this format:
+
+```
+Processing shift: <employee_id> <clock_in> - <clock_out>
+```
+
+Where `<employee_id>` is the trimmed employee ID, and `<clock_in>` and `<clock_out>` are the original timestamps in `YYYY-MM-DDTHH:MM:SS` format (America/Chicago time, as read from the input).
+
+## Checklist
+
+Use this to track your progress through the spec document:
+
+1. Timezone: America/Chicago for all timestamps
+2. Work week: Monday–Sunday in Chicago
+3. Cross-week shift splitting at Monday 00:00 Chicago
+4. Quarter-hour rounding (0.25 increments)
+5. Round-half-up (not Python's round())
+6. Minimum shift duration (discard < 0.25h)
+7. Daily overtime (per calendar day, 8h threshold)
+8. Weekly overtime (regular hours only, 40h threshold)
+9. Duplicate clock-in (keep first)
+10. Duplicate clock-out (keep last)
+11. Missing clock-out warning
+12. Output: pipe-delimited, exact header
+13. Week start: MM/DD zero-padded
+14. Hours: N.NN two decimals
+15. Gross pay: $N,NNN.NN with comma ≥ $1000
+16. LF line endings only
+17. Sort: Employee ID (string), then Week Start (chronological)
+18. Empty weeks omitted
+19. Gross pay rounding: round-half-up to cents
+20. Exit codes: 0/1/2
+21. Blank lines skipped, whitespace trimmed
+22. --summary and --verbose preserved
+
+## Notes
+
+- The spec is written as prose with sections. Read it fully; rules are spread across multiple sections (e.g., cross-week splitting is in "Work Week Definition", gross pay rounding is in "Compensation").
+- Pay special attention to the rounding rules — the spec explicitly warns about Python's `round()` using banker's rounding.
+- The `--summary` format differs from the main output format (no thousands comma in the summary, and the pay amount is prefixed with `$` but has no comma separator).

@@ -1,0 +1,23 @@
+Looking at the error, the checker flags that instruction.md lists specific field/rate names that map directly to the 5 test sites (e.g., `currency_adjusted`, `discount_rate`, `exchange_rate`), making it too easy. I need to remove those explicit mappings and let the rule speak for itself—the agent can discover the interface by reading the code or running the CLI.
+
+<<<FILE instruction.md>>>
+# Billing Library Rounding Fix
+
+The billing library at `/app/billing_lib/` calculates invoices. Monetary amounts in the output are being rounded incorrectly.
+
+## Rule
+
+**Every monetary amount produced by the billing pipeline must be rounded using round-half-up to 2 decimal places.** Values exactly halfway between two cents must always round up. For example, $2.345 must round to $2.35, not $2.34.
+
+## How to Run
+
+```
+python3 -m billing_lib invoice.json
+```
+
+The CLI reads a JSON file with an `items` array (each item has `name`, `price`, and `qty`) and optional rate parameters. It outputs a JSON object with the calculated invoice amounts. Every numeric value in that output must follow the round-half-up rule.
+
+## Reported Issue
+
+A customer reports that a $1.00 item with a 12.5% tax rate shows $0.12 tax instead of $0.13.
+<<<END>>>

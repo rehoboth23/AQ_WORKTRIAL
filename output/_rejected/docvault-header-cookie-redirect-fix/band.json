@@ -1,0 +1,122 @@
+{
+  "name": "docvault-header-cookie-redirect-fix",
+  "description": "Fix header injection, open redirect, and cookie injection vulnerabilities across a small HTTP document management service with varied code paths, abstraction layers, and data flows spanning multiple modules.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "genre": "judgement",
+  "run_id": "docvault-header-cookie-redirect-fix-20261022-041813-a752",
+  "features": {
+    "env_lines": 230,
+    "solve_lines": 147,
+    "rules": 0,
+    "themes": 0,
+    "faults": 0,
+    "fault_layers": 0
+  },
+  "verdict": "too_easy",
+  "confirmations": [],
+  "confirmed": false,
+  "lesson": "All 14 mutation faults (0-13) covering header, cookie, and redirect behaviors were killed by the test suite, confirming strong mutation coverage, and 3 of 5 agents passed by correctly implementing the full set of fixes in 6-10 steps. The 2 invalid runs produced no failed tests, meaning the solutions were structurally rejected before evaluation (likely format or file-targeting issues) rather than functionally wrong. The next design should keep the comprehensive mutation-tested rule set but add a clearer solution contract or scaffold to reduce invalid outcomes, and could branch into independent rules on new themes like authentication flows or response caching.",
+  "postmortem": {
+    "lesson": "All 14 mutation faults (0-13) covering header, cookie, and redirect behaviors were killed by the test suite, confirming strong mutation coverage, and 3 of 5 agents passed by correctly implementing the full set of fixes in 6-10 steps. The 2 invalid runs produced no failed tests, meaning the solutions were structurally rejected before evaluation (likely format or file-targeting issues) rather than functionally wrong. The next design should keep the comprehensive mutation-tested rule set but add a clearer solution contract or scaffold to reduce invalid outcomes, and could branch into independent rules on new themes like authentication flows or response caching.",
+    "held": [
+      "header validation/fixing",
+      "cookie handling",
+      "redirect logic",
+      "all 14 mutation faults killed by tests"
+    ],
+    "failed": [
+      "solution format/structure validity (2 invalid runs with no test failures)"
+    ]
+  },
+  "passes": 3,
+  "n_valid": 3,
+  "n_invalid": 2,
+  "decision": "rejected",
+  "why": "too_easy (stopped early: 3 passes, no failure yet; EARLY_STOP_PASSES=3)",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/docvault-header-cookie-redirect-fix",
+    "verdict": "too_easy",
+    "passes": 3,
+    "n_valid": 3,
+    "n_invalid": 2,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__DHx4qwm",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 65434,
+        "output_tokens": 13815,
+        "cost_usd": 0.007559622,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__RannKfN",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 52084,
+        "output_tokens": 9373,
+        "cost_usd": 0.005693091,
+        "episodes": 7,
+        "failed_tests": [],
+        "found_step": 1
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__VqrJVRp",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 33565,
+        "output_tokens": 9579,
+        "cost_usd": 0.004376365,
+        "episodes": 6,
+        "failed_tests": [],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__bE2GJ6e",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 44902,
+        "output_tokens": 7978,
+        "cost_usd": 0.004886335,
+        "episodes": 6,
+        "failed_tests": [],
+        "found_step": 2
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0/docvault-header-cookie-redirect__eji3qwg",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 69826,
+        "output_tokens": 9116,
+        "cost_usd": 0.006933123,
+        "episodes": 10,
+        "failed_tests": [],
+        "found_step": 1
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-docvault-header-cookie-redirect-fix-20261022-041813-a752-0"
+    ],
+    "tokens": {
+      "input": 265811,
+      "output": 49861
+    },
+    "cost_usd": 0.0294,
+    "median_steps": 7,
+    "median_found_step": 1,
+    "early_stop": true,
+    "seconds": 160.2,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

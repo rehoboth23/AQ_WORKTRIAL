@@ -1,0 +1,45 @@
+Looking at the issue, the instruction.md contains specific numeric values that match test inputs (like 0.125, 0.05, 1.0), making the task too easy. I need to state the rule that produces the expected values instead of pasting them.
+
+Let me also verify the example JSON doesn't use any test values.
+
+<<<FILE instruction.md>>>
+# Billing Library Rounding Fix
+
+The billing library at `/app/billing_lib/` calculates invoices including subtotals, discounts, tax, processing fees, currency conversion, and late penalties.
+
+## Rule
+
+**Every monetary amount in the output must be rounded using round-half-up to 2 decimal places.** Values exactly halfway between two cents must always round up, never to the nearest even cent. For example, $2.345 must round to $2.35, not $2.34.
+
+## Problem
+
+A customer reported that tax on an item was off by a cent — a value exactly halfway between two possible cent amounts was rounded down when it should have rounded up. Several monetary amounts in the output are being rounded incorrectly, violating the round-half-up rule. Audit the entire billing module and fix every place where a monetary amount is rounded so that all output follows the rule consistently.
+
+## How to Run
+
+```
+python3 -m billing_lib invoice.json
+```
+
+## Input JSON Format
+
+```json
+{
+  "items": [{"name": "Widget", "price": 27.50, "qty": 2}],
+  "tax_rate": 0.0725,
+  "discount_rate": 0.15,
+  "processing_fee_rate": 0.035,
+  "exchange_rate": 1,
+  "late_penalty_rate": 0.02
+}
+```
+
+- `items` (required): array of objects with `name`, `price`, and `qty`
+- All rates are optional and default to zero (`exchange_rate` defaults to 1)
+
+## Output JSON Fields
+
+`subtotal`, `discount`, `after_discount`, `tax`, `processing_fee`, `pre_conversion_total`, `currency_adjusted`, `late_penalty`, `total`
+
+Every one of these must follow round-half-up.
+<<<END>>>

@@ -1,0 +1,18 @@
+```json
+{
+  "fault": "model",
+  "category": "incomplete-fix",
+  "reason": "The agent chose to reject requests containing CRLF with 400 errors instead of sanitizing (stripping) CRLF characters, breaking legitimate functionality: redirects for URLs with CRLF fail instead of redirecting with sanitized Location, and X-Request-Id headers are omitted instead of being present with CRLF removed.",
+  "evidence": [
+    "test_redirect_no_crlf fails because the server returns '400 Invalid url parameter' (plain text) instead of a JSON response with a short link code — the agent's code rejects the CRLF-containing URL entirely",
+    "test_request_id_no_crlf fails because 'X-Request-Id header missing' — the agent's code rejects the request entirely when request_id contains CRLF, instead of stripping CRLF and setting the header",
+    "In step 8, the agent's runtime test shows: CRLF request_id request returns 400 with no X-Request-Id header",
+    "In step 9, the agent moved validation earlier but kept the rejection approach: 'if \\r in request_id or \\n in request_id: self._send_error(400, ...)'"
+  ],
+  "failed_requirements": [
+    "Redirects must still redirect (even when the original URL contained CRLF, the redirect should work with CRLF stripped from the Location header)",
+    "Headers that do not contain CRLF must be passed through unchanged, and headers containing CRLF should have the CRLF removed rather than the header being omitted"
+  ],
+  "requirement_quote": "The fix must not break any legitimate functionality — redirects must still redirect, cookies must still be set, error responses must still indicate errors, and headers that do not contain CRLF must be passed through unchanged."
+}
+```

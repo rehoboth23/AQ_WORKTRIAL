@@ -1,0 +1,195 @@
+```json
+{
+  "name": "address-norm-rule-recovery",
+  "description": "Recover the ordered rewrite rules of a retired address-normalisation engine from 900 before/after pairs so that held-out addresses normalise identically.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["rule-induction", "address-normalization", "regex", "data-analysis"],
+  "expert_time_estimate_min": 120,
+  "junior_time_estimate_min": 360,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A company retired their US street-address normalisation engine. The only artifacts left are 900 before/after address pairs in /app/pairs.csv and brief engine notes in /app/engine_notes.txt. Your job is to reverse-engineer the engine's ordered rewrite rules and implement an equivalent normaliser in Python.",
+  "environment_setup": "The Dockerfile copies a Python generator script (generate.py) into /app, runs it to produce /app/pairs.csv (900 rows, columns 'before' and 'after', CSV with quoting), then deletes generate.py and any __pycache__. /app/engine_notes.txt is copied in separately. The generator defines a reference normalize() function that applies 14 ordered phases of regex-based rewrites and uses random.seed(12345) to produce diverse addresses. Approximately: 380 simple addresses, 80 single-letter directional, 20 two-letter directional, 70 unit-designator addresses, 50 PO BOX (mixed formats), 25 SAINT-prefix addresses, 25 hash/pound addresses, 10 leading-zero addresses, 15 less-common abbreviation addresses (AV, DRV, SU, TRL, STR, FWY, TERR), and ~225 mixed/complex addresses with varied casing, spacing, and punctuation.",
+  "instruction_summary": "Study /app/pairs.csv (columns: before, after) and /app/engine_notes.txt. Create /app/normalize.py defining `def normalize(address: str) -> str:` that produces output identical to the retired engine for any input address. Import only from the Python standard library. The engine applied a fixed ordered sequence of rewrite rules; rule order matters. The canonical form is UPPERCASE with single spaces, no periods or commas, and full unabbreviated words.",
+  "solution_outline": [
+    "Create /app/normalize.py with the normalize function",
+    "Phase 1: s = address.strip()",
+    "Phase 2: s = re.sub(r'\\s+', ' ', s)  — collapse whitespace",
+    "Phase 3: s = s.upper()",
+    "Phase 4: s = re.sub(r'[.,]', '', s)  — remove periods and commas",
+    "Phase 5: s = re.sub(r'\\b0+(\\d+)\\b', r'\\1', s)  — strip leading zeros from standalone numbers",
+    "Phase 6: s = re.sub(r'#+\\s*', '# ', s)  — normalise hash/pound to '# '",
+    "Phase 7: s = re.sub(r'(\\d+)\\s+ST\\s+(?=[A-Z])', r'\\1 SAINT ', s)  — SAINT disambiguation",
+    "Phase 8: s = re.sub(r'\\bP\\s*O\\s+BOX\\b', 'PO BOX', s); s = re.sub(r'\\bPOST\\s+OFFICE\\s+BOX\\b', 'PO BOX', s)",
+    "Phase 9: Expand directionals — NE→NORTHEAST, NW→NORTHWEST, SE→SOUTHEAST, SW→SOUTHWEST (two-letter first), then N→NORTH, S→SOUTH, E→EAST, W→WEST",
+    "Phase 10: Expand street types — longer abbreviations first: PKWY→PARKWAY, BLVD→BOULEVARD, STR→STREET, TERR→TERRACE, DRV→DRIVE, CIR→CIRCLE, HWY→HIGHWAY, FWY→FREEWAY, TRL→TRAIL, AVE→AVENUE, TER→TERRACE, AV→AVENUE, ST→STREET, DR→DRIVE, RD→ROAD, LN→LANE, CT→COURT, PL→PLACE, SQ→SQUARE",
+    "Phase 11: Expand units — BLDG→BUILDING, APT→APARTMENT, STE→SUITE, SU→SUITE, FL→FLOOR, RM→ROOM",
+    "Phase 12: s = re.sub(r'\\s+', ' ', s); s = s.strip()  — final whitespace cleanup",
+    "Return s"
+  ],
+  "test_plan": [
+    "test_basic_whitespace_and_case: '  123   main   st.  ' → reference output (tests strip, collapse, uppercase, period removal, ST→STREET)",
+    "test_comma_and_ave: '456 oak AVE,' → reference output (tests comma removal, AVE→AVENUE)",
+    "test_leading_zeros_simple: '007 Main St' → reference output (tests leading-zero stripping)",
+    "test_leading_zeros_large: '00100 Oak Ave' → reference output (tests leading-zero stripping on larger number)",
+    "test_hash_with_space: '123 Main St #4B' → reference output (tests # → '# ')",
+    "test_hash_no_space: '456 Oak Ave#12' → reference output",
+    "test_hash_extra_spaces: '789 Elm Dr#  3A' → reference output",
+    "test_saint_john: '123 St John St' → reference output (tests SAINT disambiguation)",
+    "test_saint_clair: '555 St Clair Ave' → reference output",
+    "test_saint_andrews: '1 St Andrews Blvd' → reference output",
+    "test_st_without_number: '456 E St' → reference output (ST after non-digit stays STREET)",
+    "test_po_box_spaced_periods: 'P. O. Box 123' → reference output (tests period removal before PO BOX matching)",
+    "test_po_box_no_periods: 'P O Box 456' → reference output",
+    "test_post_office_box: 'Post Office Box 789' → reference output",
+    "test_two_letter_directional: '789 NE Main St' → reference output",
+    "test_nw_directional: '321 NW Oak Ave' → reference output",
+    "test_double_single_directional: '101 N W Elm Dr' → reference output",
+    "test_av_abbreviation: '456 Av Of Americas' → reference output",
+    "test_drv_abbreviation: '123 Memorial Drv' → reference output",
+    "test_su_abbreviation: '789 Main St Su 5' → reference output",
+    "test_trl_abbreviation: '321 Forest Trl' → reference output",
+    "test_str_abbreviation: '654 Main Str' → reference output",
+    "test_fwy_abbreviation: '1 Harbor Fwy' → reference output",
+    "test_ter_abbreviation: '555 Maple Ter' → reference output",
+    "test_terr_abbreviation: '666 Birch Terr' → reference output",
+    "test_complex_multi_rule: '  007  St  Andrews  Blvd  Apt  3B  ' → reference output (tests leading zeros + SAINT + BLVD + APT + whitespace all at once)",
+    "test_bldg_fl_rm: '100 Main St Bldg 7 Fl 3 Rm 12' → reference output",
+    "test_sq_abbreviation: '400 Central Sq' → reference output",
+    "test_pkww_abbreviation: '500 Lakeshore Pkwy' → reference output"
+  ],
+  "anti_cheat": "The generator script (generate.py) is deleted in the same RUN step that creates pairs.csv, so it is not recoverable from Docker layers. The CSV contains only before/after strings, never the rules. No reference implementation exists in the image. A lookup table of 900 entries would fail on all held-out test addresses, which are hardcoded in the test file and not derivable from the training data without inferring the correct general rules.",
+  "failure_modes": "Agent assumes ST always means STREET and misses the SAINT disambiguation pattern (only ~25 of 900 pairs show it). Agent omits leading-zero stripping (only ~10 pairs). Agent implements PO BOX matching before period removal, breaking on 'P. O. Box 123' (only ~3 pairs). Agent misses rare abbreviations AV, DRV, SU, TRL, STR, FWY (3-5 pairs each). Agent normalises hash to '#123' instead of '# 123'. Agent expands directionals in wrong order so NE is partially consumed by N→NORTH first. Agent skips final whitespace cleanup, leaving double spaces after SAINT expansion.",
+  "shape": "rule induction from examples",
+  "hidden_evaluation": "18 held-out addresses are hardcoded in the parametrised pytest. Each stresses a specific rule or ordering interaction. The agent can fully validate against the 900 training pairs but cannot see the held-out inputs. A normaliser that passes all 900 training pairs can still fail multiple held-out checks if it missed a rare rule, applied rules in the wrong order, or used an inexact regex.",
+  "checks": [
+    {
+      "requirement": "engine_notes.txt: 'Disambiguation of ST (STREET vs SAINT) based on context — ST immediately after a house number and before another word is SAINT'",
+      "assumed_instead": "ST always means STREET; expand all ST → STREET",
+      "hidden_test_input": "'123 St John St'",
+      "why_missed": "Only ~25 of 900 training pairs contain a SAINT pattern; agent may not notice the contextual rule"
+    },
+    {
+      "requirement": "engine_notes.txt: 'Certain numeric normalizations for house numbers (e.g., stripping unnecessary leading zeros)'",
+      "assumed_instead": "House numbers are left as-is; no leading-zero stripping",
+      "hidden_test_input": "'007 Main St'",
+      "why_missed": "Only ~10 training pairs have leading zeros; easy to overlook"
+    },
+    {
+      "requirement": "Rule ordering: periods are removed (phase 4) before PO BOX matching (phase 8)",
+      "assumed_instead": "PO BOX regex is applied first, then periods removed later",
+      "hidden_test_input": "'P. O. Box 123'",
+      "why_missed": "Only ~3 training pairs have spaced periods inside PO BOX; agent may not test this variant"
+    },
+    {
+      "requirement": "engine_notes.txt: 'PO BOX normalization (covering PO BOX, P.O. Box, P O Box, and POST OFFICE BOX)'",
+      "assumed_instead": "Only 'PO BOX' and 'P.O. Box' are handled, not the full phrase 'POST OFFICE BOX'",
+      "hidden_test_input": "'Post Office Box 789'",
+      "why_missed": "May appear only 2-3 times in training data"
+    },
+    {
+      "requirement": "Hash normalisation: #+ followed by optional spaces is replaced with '# ' (hash-space)",
+      "assumed_instead": "'#' is left as-is or becomes '#' without a trailing space, or '#123' with no space before the number",
+      "hidden_test_input": "'123 Main St #4B'",
+      "why_missed": "Agent may not test the exact spacing rule carefully"
+    },
+    {
+      "requirement": "Directional expansion order: two-letter codes (NE, NW, SE, SW) must be expanded before single-letter (N, S, E, W) to prevent partial matches",
+      "assumed_instead": "All directionals expanded in a single pass or single-letter first",
+      "hidden_test_input": "'789 NE Main St'",
+      "why_missed": "With word boundaries N does not match inside NE, but a naive implementation without \\b might break it"
+    },
+    {
+      "requirement": "engine_notes.txt: street type list includes 'and others'; AV → AVENUE is one such expansion",
+      "assumed_instead": "Only the most common abbreviations (ST, AVE, RD, DR, LN, CT, PL) are handled",
+      "hidden_test_input": "'456 Av Of Americas'",
+      "why_missed": "AV appears only ~5 times in 900 pairs"
+    },
+    {
+      "requirement": "DRV → DRIVE is another less-common street type expansion",
+      "assumed_instead": "DR is the only abbreviation for DRIVE",
+      "hidden_test_input": "'123 Memorial Drv'",
+      "why_missed": "DRV appears only ~5 times"
+    },
+    {
+      "requirement": "SU → SUITE is a less-common unit designator expansion",
+      "assumed_instead": "STE is the only abbreviation for SUITE",
+      "hidden_test_input": "'789 Main St Su 5'",
+      "why_missed": "SU appears only ~5 times"
+    },
+    {
+      "requirement": "TRL → TRAIL is a less-common street type expansion",
+      "assumed_instead": "Agent does not infer TRL from sparse examples",
+      "hidden_test_input": "'321 Forest Trl'",
+      "why_missed": "TRL appears only ~5 times"
+    },
+    {
+      "requirement": "STR → STREET is a less-common street type expansion (distinct from ST)",
+      "assumed_instead": "Agent handles only ST for STREET",
+      "hidden_test_input": "'654 Main Str'",
+      "why_missed": "STR appears only ~5 times"
+    },
+    {
+      "requirement": "FWY → FREEWAY is a less-common street type expansion",
+      "assumed_instead": "Agent does not infer FWY",
+      "hidden_test_input": "'1 Harbor Fwy'",
+      "why_missed": "FWY appears only ~5 times"
+    },
+    {
+      "requirement": "SAINT disambiguation only fires when ST follows a digit; ST after a non-digit word stays STREET",
+      "assumed_instead": "Agent applies SAINT rule too broadly, e.g. after any word",
+      "hidden_test_input": "'456 E St'",
+      "why_missed": "Agent may test SAINT cases but not verify the non-digit guard"
+    },
+    {
+      "requirement": "Leading-zero regex \\b0+(\\d+)\\b requires at least one digit after the zeros; standalone '0' is preserved",
+      "assumed_instead": "Agent strips all zeros, turning '0' into empty string, or uses a different regex boundary",
+      "hidden_test_input": "'0 Main St'",
+      "why_missed": "Edge case of house number 0 may not appear in training data"
+    },
+    {
+      "requirement": "TER → TERRACE and TERR → TERRACE must both work; TERR must be tried before TER to avoid partial match",
+      "assumed_instead": "Only TER is handled, or TERR matches first incorrectly",
+      "hidden_test_input": "'666 Birch Terr'",
+      "why_missed": "TERR appears only ~5 times; agent may handle only TER"
+    },
+    {
+      "requirement": "Complex address requiring correct ordering of all phases simultaneously",
+      "assumed_instead": "Agent tests rules individually but not their combined interaction",
+      "hidden_test_input": "'  007  St  Andrews  Blvd  Apt  3B  '",
+      "why_missed": "Agent's own testing may not combine all rules in one input"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Common simple addresses must still normalise correctly",
+      "hidden_test_input": "'123 Main St'"
+    },
+    {
+      "behaviour": "Common unit addresses with APT and STE must still normalise correctly",
+      "hidden_test_input": "'456 Oak Ave Apt 3'"
+    }
+  ],
+  "ground_truth": "The reference normalize() function is included verbatim in tests/test_outputs.py. Every expected output is computed by calling this function on the test input. The function uses only the re module (stdlib), so it runs under the verifier's Python without any extra packages.",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "Hidden-edge coverage",
+      "where": "900 training pairs heavily exercise common rules (ST→STREET, AVE→AVENUE, APT→APARTMENT) but rare rules (SAINT disambiguation, leading-zero stripping, AV/DRV/SU/TRL/STR/FWY abbreviations, spaced-period PO BOX) appear only 3-25 times each",
+      "fairness": "engine_notes.txt explicitly mentions disambiguation of ST, numeric normalizations, PO BOX normalization, and 'and others' for abbreviations, telling the agent these rare behaviors exist"
+    },
+    {
+      "knob": "Convention traps",
+      "where": "SAINT disambiguation (ST after digit → SAINT, else STREET), leading-zero removal from house numbers, hash spacing (# → '# '), and expansion order (two-letter directionals before single-letter, longer abbreviations before shorter)",
+      "fairness": "engine_notes.txt names each convention: disambiguation 'based on context', 'stripping unnecessary leading zeros', and the canonical form description implies the spacing and expansion rules"
+    },
+    {
+      "knob": "Varied hidden draws",
+      "where": "18 held-out addresses are fixed in the test file, each chosen to stress a different rule or ordering interaction; no single rule accounts for more than 2 of the 18 checks",
+      "fairness": "every held-out address tests a rule that is observable in the 900 training pairs; the agent just cannot see which specific inputs the tests will use"
+    }
+  ]
+}
+```

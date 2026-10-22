@@ -1,0 +1,164 @@
+{
+  "topic": "a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and totals",
+  "run_id": "a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/packing-slip-fixed-width-renderer",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md names shipped source/config files (/app/orders.csv); which points the agent at the fault; describe the symptom and goal instead and let the agent find the location",
+        "instruction.md pastes 3 expected values from the tests (e.g. ['ERROR: invalid CSV', 'ERROR: no orders', 'INVALID DATE']); state the rule that produces them instead",
+        "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/slipgen.py:119: states the rule a fault breaks: quantity: Number of units ordered (must be non-negative).; environment/slipgen.py:128: states the rule a fault breaks: ship_date: Date the order should ship.; environment/slipgen.py:293: states the rule a fault breaks: Exits with an error if any required header is missing."
+      ]
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [],
+      "difficulty_gate": [
+        "instruction.md pastes 3 expected values from the tests (e.g. ['ERROR: invalid CSV', 'ERROR: no orders', 'INVALID DATE']); state the rule that produces them instead"
+      ]
+    },
+    {
+      "round": 2,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": false,
+          "reward": 0.0,
+          "error": "Oracle check failed: running solution/solve.sh then the tests gave reward 0.0 (expected 1).\n\nVerifier / pytest output:\n============================= test session starts ==============================\nplatform linux -- Python 3.12.15, pytest-8.4.1, pluggy-1.7.0\nrootdir: /tests\nplugins: json-ctrf-0.3.5\ncollected 25 items\n\n../tests/test_outputs.py .F.........F.............                       [100%]\n\n=================================== FAILURES ===================================\n______________________________ test_r2_separator _______________________________\n\n    def test_r2_separator():\n        csv = HDR + \"\\n\" + \"\\n\".join(\n            f\"ORD-{i},SKU{i},1,0.1,Item,Name{i},{i} St,City,ST,{i},US\" for i in range(1, 5)\n        ) + \"\\n\"\n        rc, out, _ = run(['generate'], csv)\n        assert rc == 0\n        lns = lines(out)\n        found = False\n        for i, ln in enumerate(lns):\n            if ln.startswith('\\u2550' * 10) and i + 1 < len(lns) and 'Slip ' in lns[i + 1]:\n                found = True\n                assert vw(ln) == 72\n                assert ln[:10] == '\\u2550' * 10\n                rest = ln[10:]\n                assert all(c == ' ' for c in rest)\n>               assert vw(rest) == 52\nE               AssertionError: assert 62 == 52\nE                +  where 62 = vw('                                                              ')\n\n/tests/test_outputs.py:83: AssertionError\n_____________________________ test_r12_exit_codes ______________________________\n\n    def test_r12_exit_codes():\n        csv_bad = \"order_id,sku,quantity,unit_weight,ship_name,ship_street,ship_city,ship_region,ship_postal\\nORD-1,A,1,0.1,John,1 St,City,ST,1\\n\"\n        rc, _, err = run(['generate'], csv_bad)\n        assert rc == 2\n        # Error message follows the format: \"ERROR: \" + lowercase reason phrase\n        err_line = err.strip().split('\\n')[-1] if err.strip() else ''\n        assert err_line.startswith('ERROR: ')\n        reason = err_line[len('ERROR: '):]\n>       assert reason == reason.lower(), f\"Reason phrase must be lowercase: {reason!r}\"\nE       AssertionError: Reason phrase must be lowercase: 'invalid CSV'\nE       assert 'invalid CSV' == 'invalid csv'\nE         \nE         - invalid csv\nE         + invalid CSV\n\n/tests/test_outputs.py:234: AssertionError\n==================================== PASSES ====================================\n=========================== short test summary info ============================\nPASSED ../tests/test_outputs.py::test_r1_line_width\nPASSED ../tests/test_outputs.py::test_r3_sku_sort\nPASSED ../tests/test_outputs.py::test_r4_multi_address\nPASSED ../tests/test_outputs.py::test_r5_round_half_up\nPASSED ../tests/test_outputs.py::test_r6_pagination\nPASSED ../tests/test_outputs.py::test_r7_address_block\nPASSED ../tests/test_outputs.py::test_r8_unicode_width\nPASSED ../tests/test_outputs.py::test_r9_slip_numbering\nPASSED ../tests/test_outputs.py::test_r10_order_id_format\nPASSED ../tests/test_outputs.py::test_r11_totals_format\nPASSED ../tests/test_outputs.py::test_r13_negative_qty\nPASSED ../tests/test_outputs.py::test_r14_item_limit\nPASSED ../tests/test_outputs.py::test_r15_date_format\nPASSED ../tests/test_outputs.py::test_r16_column_widths\nPASSED ../tests/test_outputs.py::test_r16_desc_boundary\nPASSED ../tests/test_outputs.py::test_r17_total_weight\nPASSED ../tests/test_outputs.py::test_r18_whitespace\nPASSED ../tests/test_outputs.py::test_r19_slip_ordering\nPASSED ../tests/test_outputs.py::test_preserved_stats\nPASSED ../tests/test_outputs.py::test_preserved_dry_run\nPASSED ../tests/test_outputs.py::test_preserved_company\nPASSED ../tests/test_outputs.py::test_preserved_verbose\nPASSED ../tests/test_outputs.py::test_preserved_output\nFAILED ../tests/test_outputs.py::test_r2_separator - AssertionError: assert 6...\nFAILED ../tests/test_outputs.py::test_r12_exit_codes - AssertionError: Reason...\n========================= 2 failed, 23 passed in 0.44s =========================\n",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r2-045645-oracle",
+          "seconds": 22.1,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r2-045645-oracle/packing-slip-fixed-width-rendere__pNWLTta",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": []
+    },
+    {
+      "round": 3,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-oracle",
+          "seconds": 24.1,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-oracle/packing-slip-fixed-width-rendere__Yxd773B",
+            "exception": null
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-nop",
+          "seconds": 22.1,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-nop/packing-slip-fixed-width-rendere__JohfbS4",
+            "exception": null
+          }
+        }
+      ],
+      "difficulty_gate": [],
+      "mutation": [
+        {
+          "fault": 0,
+          "wrong_fix": "produce the default behaviour instead: Lines are variable width, trimmed, joined with \\n",
+          "verdict": "killed",
+          "failed_tests": 6,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant0"
+        },
+        {
+          "fault": 1,
+          "wrong_fix": "produce the default behaviour instead: Separator is '----------' (10 ASCII dashes)",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant1"
+        },
+        {
+          "fault": 2,
+          "wrong_fix": "produce the default behaviour instead: Items appear in CSV row order",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant2"
+        },
+        {
+          "fault": 3,
+          "wrong_fix": "produce the default behaviour instead: All items with same order_id go to one slip using first item's address",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant3"
+        },
+        {
+          "fault": 4,
+          "wrong_fix": "produce the default behaviour instead: Python's built-in round() (banker's rounding / round-half-to-even)",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant4"
+        },
+        {
+          "fault": 5,
+          "wrong_fix": "produce the default behaviour instead: No pagination; all items on one page",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant5"
+        },
+        {
+          "fault": 6,
+          "wrong_fix": "produce the default behaviour instead: Address has variable lines, empty fields are blank, country is not uppercased, no blank 6th line",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 25,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant6"
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 158902,
+    "completion_tokens": 377189,
+    "cost_usd": 1.6927348003999998
+  },
+  "seconds": 5309.0,
+  "task_name": "afterquery/packing-slip-fixed-width-renderer"
+}

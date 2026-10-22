@@ -1,0 +1,119 @@
+{
+  "name": "billing-rounding-consistency",
+  "description": "Fix a billing module where several code paths round monetary amounts using different methods, violating the round-half-up business rule.",
+  "difficulty": "hard",
+  "arm": "treatment",
+  "genre": "judgement",
+  "run_id": "billing-rounding-consistency-20261022-031707-c2cf",
+  "features": {
+    "env_lines": 493,
+    "solve_lines": 38,
+    "rules": 0,
+    "themes": 0,
+    "faults": 0,
+    "fault_layers": 0
+  },
+  "verdict": "too_easy",
+  "confirmations": [],
+  "confirmed": false,
+  "lesson": "The billing-rounding-consistency task was well-tested (all 11 mutations killed) but too easy for agents, who passed in only 8\u201310 steps; the 'invalid' outcomes were environment issues rather than difficulty. The next design should keep the strong mutation-killing test coverage but add more independent rules around new billing edge cases (e.g., currency conversion rounding, tax-tier boundaries, multi-item discount interactions) to increase task depth and require more than a quick fix.",
+  "postmortem": {
+    "lesson": "The billing-rounding-consistency task was well-tested (all 11 mutations killed) but too easy for agents, who passed in only 8\u201310 steps; the 'invalid' outcomes were environment issues rather than difficulty. The next design should keep the strong mutation-killing test coverage but add more independent rules around new billing edge cases (e.g., currency conversion rounding, tax-tier boundaries, multi-item discount interactions) to increase task depth and require more than a quick fix.",
+    "held": [
+      "all 11 mutation faults (0-10) were consistently killed, indicating the test suite thoroughly validates rounding-consistency properties"
+    ],
+    "failed": [
+      "no faults caused agent failures\u2014the task was solved too quickly, suggesting insufficient complexity or too few independent rules"
+    ]
+  },
+  "passes": 3,
+  "n_valid": 3,
+  "n_invalid": 2,
+  "decision": "rejected",
+  "why": "too_easy (stopped early: 3 passes, no failure yet; EARLY_STOP_PASSES=3)",
+  "triage": [],
+  "band": {
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/billing-rounding-consistency",
+    "verdict": "too_easy",
+    "passes": 3,
+    "n_valid": 3,
+    "n_invalid": 2,
+    "trials": [
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-billing-rounding-consistency-20261022-031707-c2cf-0/billing-rounding-consistency__ChW9Gk6",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 83101,
+        "output_tokens": 4887,
+        "cost_usd": 0.009226454,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-billing-rounding-consistency-20261022-031707-c2cf-0/billing-rounding-consistency__dfWieUQ",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 61711,
+        "output_tokens": 6232,
+        "cost_usd": 0.007370429,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-billing-rounding-consistency-20261022-031707-c2cf-0/billing-rounding-consistency__gzG5dxu",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 85926,
+        "output_tokens": 5931,
+        "cost_usd": 0.009711527999999999,
+        "episodes": 8,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-billing-rounding-consistency-20261022-031707-c2cf-0/billing-rounding-consistency__kg2FDpY",
+        "outcome": "pass",
+        "detail": "",
+        "reward": 1.0,
+        "input_tokens": 118841,
+        "output_tokens": 7536,
+        "cost_usd": 0.013297637000000001,
+        "episodes": 10,
+        "failed_tests": [],
+        "found_step": 3
+      },
+      {
+        "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-billing-rounding-consistency-20261022-031707-c2cf-0/billing-rounding-consistency__mGMKSj6",
+        "outcome": "invalid",
+        "detail": "CancelledError",
+        "reward": null,
+        "input_tokens": 86150,
+        "output_tokens": 9023,
+        "cost_usd": 0.010365489,
+        "episodes": 9,
+        "failed_tests": [],
+        "found_step": 2
+      }
+    ],
+    "jobs": [
+      "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-billing-rounding-consistency-20261022-031707-c2cf-0"
+    ],
+    "tokens": {
+      "input": 435729,
+      "output": 33609
+    },
+    "cost_usd": 0.05,
+    "median_steps": 8,
+    "median_found_step": 3,
+    "early_stop": true,
+    "seconds": 100.1,
+    "error": ""
+  },
+  "eval_model": "openrouter/z-ai/glm-5.3-flash",
+  "reasoning_effort": "high"
+}

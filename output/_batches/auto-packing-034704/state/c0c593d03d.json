@@ -1,0 +1,307 @@
+{
+  "topic": "[spec] a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and totals",
+  "key": "c0c593d03d",
+  "stage": "done",
+  "calibration": "Calibration: recent tasks under these rules and how often the reference agent solved them (target: 1-3 of 5 runs).\nPer kind: judgement/property_completeness: 2 task(s), 3/5, 3/5\n- http-header-crlf-injection-audit [property_completeness]: 3/5 -> learnable (The task split 3/2 pass/fail because of a critical ambiguity: the instructions didn't clearly specify that CRLF must be stripped/sanitized rather than rejected with 400 errors, so one failing agent rejected requests entirely (breaking test_redirect_no_crlf, test_request_id_no_crlf) while another's sanitization crashed the server (breaking test_clean_redirect_still_works and others). All passing runs correctly stripped CRLF while preserving normal HTTP functionality across redirect, cookie, request-id, and display-name paths. Next design should add an explicit rule distinguishing 'sanitize by stripping' from 'reject with error' and keep the dual-property structure (security + functionality) since the mutation check killed all 5 faults.). Fix all CRLF injection vulnerabilities across a small URL-shortener HTTP service that sets headers through varied code paths and abstraction layers.\n- billing-rounding-consistency [property_completeness]: 3/5 -> too_easy (The billing-rounding-consistency task was well-tested (all 11 mutations killed) but too easy for agents, who passed in only 8\u201310 steps; the 'invalid' outcomes were environment issues rather than difficulty. The next design should keep the strong mutation-killing test coverage but add more independent rules around new billing edge cases (e.g., currency conversion rounding, tax-tier boundaries, multi-item discount interactions) to increase task depth and require more than a quick fix.). Fix a billing module where several code paths round monetary amounts using different methods, violating the round-half-up business rule.\nTasks solved too often had few rules, rules on one theme, or an oracle to compare against. Make this design harder with more independent, precisely stated rules on more themes and sharper hidden inputs; never by hiding rules. Make it easier than the too_hard ones.",
+  "arm": "treatment",
+  "genre": "spec",
+  "updated": "2026-10-22T05:27:39",
+  "started": "2026-10-22T03:47:05",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7",
+  "gen": {
+    "status": "ok",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/packing-slip-fixed-width-renderer",
+    "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7",
+    "run_id": "a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7",
+    "rounds": [
+      {
+        "round": 0,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md names shipped source/config files (/app/orders.csv); which points the agent at the fault; describe the symptom and goal instead and let the agent find the location",
+          "instruction.md pastes 3 expected values from the tests (e.g. ['ERROR: invalid CSV', 'ERROR: no orders', 'INVALID DATE']); state the rule that produces them instead",
+          "comments or docs in environment/ give the answer away; describe what the code does, never the rule it breaks, and never label code unused/legacy/a workaround: environment/slipgen.py:119: states the rule a fault breaks: quantity: Number of units ordered (must be non-negative).; environment/slipgen.py:128: states the rule a fault breaks: ship_date: Date the order should ship.; environment/slipgen.py:293: states the rule a fault breaks: Exits with an error if any required header is missing."
+        ]
+      },
+      {
+        "round": 1,
+        "dropped_paths": [],
+        "checks": [],
+        "difficulty_gate": [
+          "instruction.md pastes 3 expected values from the tests (e.g. ['ERROR: invalid CSV', 'ERROR: no orders', 'INVALID DATE']); state the rule that produces them instead"
+        ]
+      },
+      {
+        "round": 2,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": false,
+            "reward": 0.0,
+            "error": "Oracle check failed: running solution/solve.sh then the tests gave reward 0.0 (expected 1).\n\nVerifier / pytest output:\n============================= test session starts ==============================\nplatform linux -- Python 3.12.15, pytest-8.4.1, pluggy-1.7.0\nrootdir: /tests\nplugins: json-ctrf-0.3.5\ncollected 25 items\n\n../tests/test_outputs.py .F.........F.............                       [100%]\n\n=================================== FAILURES ===================================\n______________________________ test_r2_separator _______________________________\n\n    def test_r2_separator():\n        csv = HDR + \"\\n\" + \"\\n\".join(\n            f\"ORD-{i},SKU{i},1,0.1,Item,Name{i},{i} St,City,ST,{i},US\" for i in range(1, 5)\n        ) + \"\\n\"\n        rc, out, _ = run(['generate'], csv)\n        assert rc == 0\n        lns = lines(out)\n        found = False\n        for i, ln in enumerate(lns):\n            if ln.startswith('\\u2550' * 10) and i + 1 < len(lns) and 'Slip ' in lns[i + 1]:\n                found = True\n                assert vw(ln) == 72\n                assert ln[:10] == '\\u2550' * 10\n                rest = ln[10:]\n                assert all(c == ' ' for c in rest)\n>               assert vw(rest) == 52\nE               AssertionError: assert 62 == 52\nE                +  where 62 = vw('                                                              ')\n\n/tests/test_outputs.py:83: AssertionError\n_____________________________ test_r12_exit_codes ______________________________\n\n    def test_r12_exit_codes():\n        csv_bad = \"order_id,sku,quantity,unit_weight,ship_name,ship_street,ship_city,ship_region,ship_postal\\nORD-1,A,1,0.1,John,1 St,City,ST,1\\n\"\n        rc, _, err = run(['generate'], csv_bad)\n        assert rc == 2\n        # Error message follows the format: \"ERROR: \" + lowercase reason phrase\n        err_line = err.strip().split('\\n')[-1] if err.strip() else ''\n        assert err_line.startswith('ERROR: ')\n        reason = err_line[len('ERROR: '):]\n>       assert reason == reason.lower(), f\"Reason phrase must be lowercase: {reason!r}\"\nE       AssertionError: Reason phrase must be lowercase: 'invalid CSV'\nE       assert 'invalid CSV' == 'invalid csv'\nE         \nE         - invalid csv\nE         + invalid CSV\n\n/tests/test_outputs.py:234: AssertionError\n==================================== PASSES ====================================\n=========================== short test summary info ============================\nPASSED ../tests/test_outputs.py::test_r1_line_width\nPASSED ../tests/test_outputs.py::test_r3_sku_sort\nPASSED ../tests/test_outputs.py::test_r4_multi_address\nPASSED ../tests/test_outputs.py::test_r5_round_half_up\nPASSED ../tests/test_outputs.py::test_r6_pagination\nPASSED ../tests/test_outputs.py::test_r7_address_block\nPASSED ../tests/test_outputs.py::test_r8_unicode_width\nPASSED ../tests/test_outputs.py::test_r9_slip_numbering\nPASSED ../tests/test_outputs.py::test_r10_order_id_format\nPASSED ../tests/test_outputs.py::test_r11_totals_format\nPASSED ../tests/test_outputs.py::test_r13_negative_qty\nPASSED ../tests/test_outputs.py::test_r14_item_limit\nPASSED ../tests/test_outputs.py::test_r15_date_format\nPASSED ../tests/test_outputs.py::test_r16_column_widths\nPASSED ../tests/test_outputs.py::test_r16_desc_boundary\nPASSED ../tests/test_outputs.py::test_r17_total_weight\nPASSED ../tests/test_outputs.py::test_r18_whitespace\nPASSED ../tests/test_outputs.py::test_r19_slip_ordering\nPASSED ../tests/test_outputs.py::test_preserved_stats\nPASSED ../tests/test_outputs.py::test_preserved_dry_run\nPASSED ../tests/test_outputs.py::test_preserved_company\nPASSED ../tests/test_outputs.py::test_preserved_verbose\nPASSED ../tests/test_outputs.py::test_preserved_output\nFAILED ../tests/test_outputs.py::test_r2_separator - AssertionError: assert 6...\nFAILED ../tests/test_outputs.py::test_r12_exit_codes - AssertionError: Reason...\n========================= 2 failed, 23 passed in 0.44s =========================\n",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r2-045645-oracle",
+            "seconds": 22.1,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r2-045645-oracle/packing-slip-fixed-width-rendere__pNWLTta",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": []
+      },
+      {
+        "round": 3,
+        "dropped_paths": [],
+        "checks": [
+          {
+            "name": "validator",
+            "passed": true,
+            "reward": null,
+            "error": "",
+            "job_dir": null,
+            "seconds": 0.1,
+            "details": {
+              "output": "PASSED: All structural checks passed."
+            }
+          },
+          {
+            "name": "oracle",
+            "passed": true,
+            "reward": 1.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-oracle",
+            "seconds": 24.1,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-oracle/packing-slip-fixed-width-rendere__Yxd773B",
+              "exception": null
+            }
+          },
+          {
+            "name": "nop",
+            "passed": true,
+            "reward": 0.0,
+            "error": "",
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-nop",
+            "seconds": 22.1,
+            "details": {
+              "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050009-nop/packing-slip-fixed-width-rendere__JohfbS4",
+              "exception": null
+            }
+          }
+        ],
+        "difficulty_gate": [],
+        "mutation": [
+          {
+            "fault": 0,
+            "wrong_fix": "produce the default behaviour instead: Lines are variable width, trimmed, joined with \\n",
+            "verdict": "killed",
+            "failed_tests": 6,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant0"
+          },
+          {
+            "fault": 1,
+            "wrong_fix": "produce the default behaviour instead: Separator is '----------' (10 ASCII dashes)",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant1"
+          },
+          {
+            "fault": 2,
+            "wrong_fix": "produce the default behaviour instead: Items appear in CSV row order",
+            "verdict": "killed",
+            "failed_tests": 1,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant2"
+          },
+          {
+            "fault": 3,
+            "wrong_fix": "produce the default behaviour instead: All items with same order_id go to one slip using first item's address",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant3"
+          },
+          {
+            "fault": 4,
+            "wrong_fix": "produce the default behaviour instead: Python's built-in round() (banker's rounding / round-half-to-even)",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant4"
+          },
+          {
+            "fault": 5,
+            "wrong_fix": "produce the default behaviour instead: No pagination; all items on one page",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant5"
+          },
+          {
+            "fault": 6,
+            "wrong_fix": "produce the default behaviour instead: Address has variable lines, empty fields are blank, country is not uppercased, no blank 6th line",
+            "verdict": "killed",
+            "failed_tests": 2,
+            "total_tests": 25,
+            "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7-r3-050055-mutant6"
+          }
+        ]
+      }
+    ],
+    "error": null,
+    "tokens": {
+      "prompt_tokens": 158902,
+      "completion_tokens": 377189,
+      "cost_usd": 1.6927348003999998
+    },
+    "seconds": 5309.0,
+    "task_name": "afterquery/packing-slip-fixed-width-renderer"
+  },
+  "run_id": "packing-slip-fixed-width-renderer-20261022-051534-5a28",
+  "harbor_pid": null,
+  "record": {
+    "name": "packing-slip-fixed-width-renderer",
+    "description": "Build a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks, slip ordering, whitespace handling, and totals.",
+    "difficulty": "hard",
+    "arm": "treatment",
+    "genre": "spec",
+    "run_id": "packing-slip-fixed-width-renderer-20261022-051534-5a28",
+    "features": {
+      "env_lines": 532,
+      "solve_lines": 412,
+      "rules": 19,
+      "themes": 8,
+      "faults": 0,
+      "fault_layers": 0
+    },
+    "verdict": "too_easy",
+    "confirmations": [],
+    "confirmed": false,
+    "lesson": "The task's 19 rules achieved full mutation kill and good separation (2 invalid, 3 pass), but the rules are heavily skewed toward formatting/column-width specifications (R1, R2, R7, R8, R9, R10, R11, R16), making success depend on tedious visual-column arithmetic rather than algorithmic insight. The unicode-width rule (R8) pervasively interacting with all padding rules was the strongest hidden complexity, while pagination (R6) and overflow (R14) added structural difficulty. Next design should keep the multi-rule combinatorial approach but rebalance toward more diverse themes\u2014fewer pure formatting rules, more arithmetic/conditional/edge-input rules\u2014and introduce sharper hidden inputs that can't be caught by eyeballing column positions.",
+    "postmortem": {
+      "lesson": "The task's 19 rules achieved full mutation kill and good separation (2 invalid, 3 pass), but the rules are heavily skewed toward formatting/column-width specifications (R1, R2, R7, R8, R9, R10, R11, R16), making success depend on tedious visual-column arithmetic rather than algorithmic insight. The unicode-width rule (R8) pervasively interacting with all padding rules was the strongest hidden complexity, while pagination (R6) and overflow (R14) added structural difficulty. Next design should keep the multi-rule combinatorial approach but rebalance toward more diverse themes\u2014fewer pure formatting rules, more arithmetic/conditional/edge-input rules\u2014and introduce sharper hidden inputs that can't be caught by eyeballing column positions.",
+      "held": [
+        "R1 (72-column width)",
+        "R3 (SKU sort)",
+        "R12 (error handling)",
+        "R13 (negative quantities)",
+        "R19 (slip ordering)"
+      ],
+      "failed": [
+        "R8 (unicode visual width vs codepoints)",
+        "R6 (pagination at 8 items)",
+        "R14 (20-item overflow)",
+        "R5/R17 (round-half-up Decimal arithmetic)"
+      ]
+    },
+    "passes": 3,
+    "n_valid": 3,
+    "n_invalid": 2,
+    "decision": "rejected",
+    "why": "too_easy (stopped early: 3 passes, no failure yet; EARLY_STOP_PASSES=3)",
+    "triage": [],
+    "band": {
+      "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/packing-slip-fixed-width-renderer",
+      "verdict": "too_easy",
+      "passes": 3,
+      "n_valid": 3,
+      "n_invalid": 2,
+      "trials": [
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__9mi3pPk",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 1993311,
+          "output_tokens": 78107,
+          "cost_usd": 0.16119793600000001,
+          "episodes": 47,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__BnCSyqA",
+          "outcome": "invalid",
+          "detail": "CancelledError",
+          "reward": null,
+          "input_tokens": 1531939,
+          "output_tokens": 78796,
+          "cost_usd": 0.127648575,
+          "episodes": 39,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__NHPYq9k",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 731588,
+          "output_tokens": 54008,
+          "cost_usd": 0.06425098299999998,
+          "episodes": 25,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__gZGXgdu",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 546681,
+          "output_tokens": 66567,
+          "cost_usd": 0.053259413,
+          "episodes": 21,
+          "failed_tests": [],
+          "found_step": 1
+        },
+        {
+          "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0/packing-slip-fixed-width-rendere__oBqbSME",
+          "outcome": "pass",
+          "detail": "",
+          "reward": 1.0,
+          "input_tokens": 890419,
+          "output_tokens": 86963,
+          "cost_usd": 0.082447171,
+          "episodes": 27,
+          "failed_tests": [],
+          "found_step": 1
+        }
+      ],
+      "jobs": [
+        "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/band-packing-slip-fixed-width-renderer-20261022-051534-5a28-0"
+      ],
+      "tokens": {
+        "input": 5693938,
+        "output": 364441
+      },
+      "cost_usd": 0.4888,
+      "median_steps": 25,
+      "median_found_step": 1,
+      "early_stop": true,
+      "seconds": 700.4,
+      "error": ""
+    },
+    "eval_model": "openrouter/z-ai/glm-5.3-flash",
+    "reasoning_effort": "high",
+    "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_rejected/packing-slip-fixed-width-renderer",
+    "topic": "[spec] a packing-slip generator that renders fixed-width slips from an orders CSV with strict rules for grouping, quantities, weights, address blocks, page breaks and totals",
+    "stage": "eval",
+    "gen_logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-packing-slip-generator-that-renders-fi-20261022-034705-f1d7"
+  }
+}

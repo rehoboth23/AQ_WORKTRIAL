@@ -1,0 +1,77 @@
+Looking at this carefully, I need to verify the instruction.md format specifications against what the test parser actually expects.
+
+**Critical issue found:** The TOTAL and GRAND TOTAL line formats in the instruction don't match the test parser's token indices.
+
+The instruction says R13 format: `  TOTAL  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot  ${pay:>9.2f}`
+
+But the test parser for TOTAL reads: `tokens[2]` for reg, `tokens[5]` for dot, `tokens[8]` for wot, `tokens[10]` for pay.
+
+Let me verify: with the instruction's format and Alice's values (reg=56.0, dot=5.5, wot=4.0, pay=1806.25):
+```
+"  TOTAL   56.00h reg   5.50h dot   4.00h wot  $  1806.25".split()
+→ ['TOTAL', '56.00h', 'reg', '5.50h', 'dot', '4.00h', 'wot', '$', '1806.25']
+```
+tokens[2] = 'reg' → `float('reg')` → **ValueError!** The parser would crash.
+
+Working backwards from the parser indices [2,5,8,10], the only format that works is:
+`  TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}`
+
+Which produces: `['TOTAL', 'reg', '56.00', 'h', 'dot', '5.50', 'h', 'wot', '4.00', 'h', '$1806.25']` — matching indices [2,5,8,10] correctly.
+
+Same issue for GRAND TOTAL (parser indices [3,6,9,11]): the format must be `GRAND TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}`.
+
+Also, `${pay:>9.2f}` creates a space between `$` and the number, splitting into two tokens and breaking `tokens[10].lstrip('$')`. The `$` must be directly adjacent to the pay amount.
+
+VERDICT: leaks
+- UNSTATED FORMAT: test_outputs.py TOTAL parser (tokens[2,5,8,10]) and GRAND TOTAL parser (tokens[3,6,9,11]) require a format where labels precede values, 'h' is a separate token, and '$' is directly attached to the pay number — the instruction describes a different format (values before labels, 'h' attached to value, '$' with 9-char right-aligned field creating a space) that would crash the parser
+<<<FILE instruction.md>>>
+Your colleague wrote a quick prototype timesheet-to-payroll converter at `/app/payroll.py` that works for basic cases but ignores the company's detailed payroll policies. You need to rewrite it so that when run as `python3 /app/payroll.py <csv_path>` it produces a payroll report obeying all the rules below precisely.
+
+The CSV has these columns: employee_id, name, date, clock_in, clock_out, timezone
+
+**Processing rules:**
+
+1. Convert all clock_in/clock_out from their local timezone to UTC before computing duration. Use the date column as the local date. If clock_out local time is earlier than or equal to clock_in local time, clock_out is on the next local day (midnight crossing).
+
+2. A work week runs Sunday 00:00:00 UTC through Saturday 23:59:59 UTC. A shift belongs to the week containing its UTC clock_in datetime. Weekly overtime is computed per employee per week based on UTC dates.
+
+3. Each shift's duration in hours is rounded to the nearest 0.25 (quarter-hour). Exact midpoints round UP. Use floor(value*4+0.5)/4. For example, 8.125 rounds to 8.25; 8.375 rounds to 8.5.
+
+4. If a shift's rounded-and-capped hours exceed 8.0, the first 8.0 hours are regular and the rest is daily overtime. If hours are exactly 8.0 or less, all hours are regular with zero daily overtime.
+
+5. After daily OT separation, if an employee's total regular hours in a week exceed 40.0, the excess is weekly overtime. Weekly OT is allocated to shifts in reverse chronological order (last shift first by UTC clock_in), converting regular hours to weekly OT on each shift until the excess is consumed. Partial conversion is allowed: a shift with 5h regular can contribute up to 5h to weekly OT. The 8.0 regular hours from a missing clock-out (rule 6) participate in this reallocation like any other regular hours.
+
+6. If clock_out is blank, assume the shift is 8.0 hours of regular time (zero daily overtime). Flag as "missing clock-out". These 8.0 regular hours are subject to weekly OT reallocation per rule 5.
+
+7. If clock_in is blank, skip the entry entirely (0 hours counted, no duration computed). Flag as "missing clock-in". Clock_out is ignored even if present. If both clock_in and clock_out are blank, treat as missing clock-in.
+
+8. Pay rates: regular $25.00/hr, daily overtime $37.50/hr (1.5x), weekly overtime $50.00/hr (2x). An employee's total pay = round_cent_up(regular_hours × 25.00 + daily_ot_hours × 37.50 + weekly_ot_hours × 50.00).
+
+9. No shift may exceed 16.0 hours after rounding. If it does, cap the rounded hours at 16.0 and flag as "exceeds cap". The excess hours above 16.0 are discarded. The cap is applied BEFORE the daily OT split: a 16.0h capped shift produces 8.0h regular + 8.0h daily OT.
+
+10. Clock_in and clock_out may be in HH:MM or HH:MM:SS format. Both must be accepted. Seconds are included in the raw duration calculation before quarter-hour rounding.
+
+**Output format rules:**
+
+11. Employee header line: `EMPLOYEE: {id} ({name})` where id is zero-padded to exactly 4 digits (e.g., 42 becomes 0042, 1001 stays 1001). No leading spaces.
+
+12. Shift line: `  {date}  {reg:>6.2f}h reg  {dot:>6.2f}h dot  {wot:>6.2f}h wot` where date is the UTC clock_in date in YYYY-MM-DD format (not the CSV date column). Two leading spaces before the date. Each value is right-aligned in a 6-character field with 'h' directly appended (no space between the number and 'h'). The label follows after a space.
+
+13. Employee total line: `  TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}`. Two leading spaces. Each field is: label (reg/dot/wot), then the value right-aligned in a 6-character field with 2 decimal places, then a space and 'h' as a separate unit token. Pay is a dollar sign immediately followed by the amount with 2 decimal places (no space between $ and the number, e.g., `$1806.25`, `$3987.50`).
+
+14. Employees sorted by employee_id as integers ascending (99 before 100). Shifts within an employee sorted by UTC clock_in datetime ascending. Flagged entries sorted by (employee_id numerically ascending, then date string ascending).
+
+15. Flagged entries section: after all employees and a blank line, print `FLAGGED ENTRIES:` then each flag as `  {id} {date}: {reason}` with id zero-padded to 4 digits, date from the original CSV date column (not the UTC date). Reasons: "missing clock-out", "missing clock-in", "exceeds cap". If there are no flagged entries, omit the `FLAGGED ENTRIES:` header entirely (do not print it).
+
+16. Grand total line: `GRAND TOTAL  reg  {reg:>6.2f} h  dot  {dot:>6.2f} h  wot  {wot:>6.2f} h  ${pay:.2f}` after a blank line. Same field structure as the employee total line (rule 13). Grand total reg/dot/wot are the sums of all employees' reg/dot/wot hours respectively. Grand total pay = round_cent_up(grand_total_reg × 25.00 + grand_total_dot × 37.50 + grand_total_wot × 50.00), NOT the sum of individually-rounded employee pays.
+
+17. Blank lines: one blank line after each employee's TOTAL line (including the last employee), one blank line between the last employee's blank line and `FLAGGED ENTRIES:` (if any flagged entries exist; if no flagged entries, this blank line is still present between the last employee and `GRAND TOTAL`), one blank line between the flagged entries (or the blank line after the last employee if no flags) and `GRAND TOTAL`. An employee with zero counted hours still produces a header, TOTAL line, and the blank line after.
+
+18. Each employee's total pay and the grand total pay are rounded to the nearest cent with exact half-cents rounding UP (not banker's rounding). Use floor(value*100+0.5)/100. For example, $228.125 rounds to $228.13 (not $228.12).
+
+19. The date shown on each shift line (rule 12) is the UTC date of the clock_in time, which may differ from the CSV date column after timezone conversion. The date used in flagged entries (rule 15) is always the original CSV date column value.
+
+20. Exit 0 on success. Exit 1 if the input file cannot be opened (does not exist or no read permission). Exit 2 if any data row (rows after the header) has fewer than 6 comma-separated columns; on exit 2 produce no stdout output at all. The header row is not checked for column count. Rows with 6 or more columns are valid (extra columns are ignored). Output must use LF line endings only (no CR characters). The output must end with exactly one trailing newline (the GRAND TOTAL line followed by one `\n`).
+
+The shipped timesheet.csv at `/app/timesheet.csv` contains multi-employee, multi-week data in America/New_York, America/Chicago, and America/Los_Angeles timezones, including a midnight-crossing shift, a missing clock-out, and a missing clock-in. Note that hidden test inputs will use completely different CSVs with edge cases not present in the shipped data.
+<<<END>>>

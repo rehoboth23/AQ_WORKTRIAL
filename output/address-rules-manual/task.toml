@@ -1,0 +1,27 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/address-normaliser-rule-recovery"
+description = "Recover ordered rewrite rules from 900 before/after address pairs and implement a Python normaliser that reproduces the retired engine on unseen addresses."
+keywords = [ "rule-induction", "regex", "address-normalization", "ordering",]
+
+[metadata]
+difficulty = "hard"
+category = "data-processing"
+tags = [ "rule-induction", "regex", "address-normalization", "ordering",]
+expert_time_estimate_min = 120.0
+junior_time_estimate_min = 360.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+network_mode = "no-network"
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

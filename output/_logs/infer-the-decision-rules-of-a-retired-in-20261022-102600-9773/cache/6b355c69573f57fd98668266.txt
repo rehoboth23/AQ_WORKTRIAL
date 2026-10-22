@@ -1,0 +1,155 @@
+```json
+{
+  "name": "ids-rule-induction-heldout",
+  "description": "Infer the ordered decision rules of a retired IDS from a labelled flow log and reproduce its decisions on held-out flows with high accuracy.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["rule-induction", "intrusion-detection", "classification", "boundary-inference", "timezones"],
+  "expert_time_estimate_min": 90,
+  "junior_time_estimate_min": 300,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A network operations team retired their Sentinel-7 intrusion detection system last year. They still have its labelled decision log—40,347 network flows each marked FLAG or PASS—but the rule configuration was lost in the migration. They need you to reverse-engineer the IDS decision logic well enough to deploy a replacement that matches the original on unseen traffic. The log is all you have; the original rule engine is gone. A validation set of 500 additional labelled flows is available for spot-checking your work.",
+  "environment_setup": "The image is python:3.12-slim-bookworm with numpy and pandas pre-installed. A build-time script (deleted afterwards) generates /app/training_flows.csv (~40k rows, labelled) and /app/validation_flows.csv (500 rows, labelled). The CSV columns are: flow_id, timestamp (ISO 8601 UTC), src_ip, dst_ip, src_port, dst_port, protocol (TCP/UDP/ICMP), bytes_sent, label (FLAG/PASS). A stub /app/decide.py exists that returns PASS for every flow. /app/README.md documents every field, its type and units, and states that timestamps are UTC and the sensor was in America/Chicago. /app/test_public.py provides a few common-path pytest checks the agent can run. No network access; no reference implementation remains in the image.",
+  "instruction_summary": "Read /app/README.md for field definitions and conventions. Study /app/training_flows.csv to infer the IDS's ordered decision rules (allow-lists, port ranges, off-hours windows, rate limits, size thresholds, protocol exceptions, rule priority). Write /app/decide.py so that `python3 /app/decide.py <input.csv>` prints a CSV with header flow_id,decision (where decision is FLAG or PASS) for every input flow, preserving the input row order. The script must complete within 60 seconds on 2,000 flows. Use /app/validation_flows.csv and /app/test_public.py to sanity-check your work. Key facts from README: timestamps are UTC; the sensor's local timezone is America/Chicago (which observes DST); the IDS evaluated rules in strict order with the first match deciding; rate-limit windows and thresholds use inclusive (≥) boundaries.",
+  "solution_outline": [
+    "Write /app/decide.py implementing the 8 ordered rules inferred from the training data",
+    "Rule 1: src_ip starting with '10.1.0.' → PASS (allow-listed source network)",
+    "Rule 2: dst_port in {22, 80, 443} → PASS (allow-listed destination ports)",
+    "Rule 3: dst_port in [1, 1023] inclusive → FLAG (privileged port access)",
+    "Rule 4: protocol == 'ICMP' → PASS",
+    "Rule 5: local hour (America/Chicago) in {22, 23, 0, 1, 2, 3} → FLAG (off-hours)",
+    "Rule 6: count of flows from same src_ip with timestamp in [t-60s, t] inclusive ≥ 5 → FLAG (rate limit, count includes current flow)",
+    "Rule 7: bytes_sent ≥ 10,000,000 → FLAG (large transfer)",
+    "Rule 8: default → PASS",
+    "Process flows sorted by timestamp (for rate computation) but output decisions in the original input order",
+    "Make the script executable and verify against training and validation data"
+  ],
+  "test_plan": [
+    "test_output_format: Run decide.py on a small CSV; verify header is flow_id,decision and every row has FLAG or PASS",
+    "test_overall_accuracy: Generate 2,000 held-out flows with high boundary density; run decide.py; require ≥ 98.5% match with reference engine",
+    "test_rate_window_inclusive_boundary: Subset of held-out flows where a prior flow sits at exactly t-60s; verify the inclusive boundary is handled",
+    "test_port_allow_list_over_flag: Flows to port 80/443 from non-allow-listed sources during off-hours or with high rate; verify PASS",
+    "test_source_allow_list_over_flag: Flows from 10.1.0.x during off-hours with high rate; verify PASS",
+    "test_off_hours_local_timezone: Flows whose UTC hour differs from Chicago local hour in a way that changes the off-hours decision; verify local-time result",
+    "test_dst_transition: Flows on the day of a DST spring-forward or fall-back where the same UTC offset maps to a different local hour; verify correct conversion",
+    "test_privileged_port_1023: Flow with dst_port=1023 must be FLAG; dst_port=1024 must not trigger rule 3",
+    "test_large_transfer_boundary: Flow with bytes_sent=10,000,000 exactly must be FLAG; 9,999,999 must not trigger rule 7",
+    "test_rate_threshold_exact: Source with exactly 5 flows in window (including current) → FLAG; with 4 → no rate flag",
+    "test_icmp_pass: ICMP flow not matching rules 1-3 → PASS",
+    "test_three_rules_in_order: Flow matching rule 1 (PASS), rule 5 (FLAG), and rule 6 (FLAG) simultaneously → PASS (first match wins)",
+    "test_output_preserves_input_order: Input flows given in non-chronological order; verify output row order matches input row order",
+    "test_runtime: decide.py completes on 2,000 flows within 60 seconds",
+    "test_training_consistency: Run decide.py on a 500-flow stratified sample from training_flows.csv; require ≥ 99.5% match with training labels"
+  ],
+  "anti_cheat": "The generator script is deleted after build; no reference implementation, expected output, or rule configuration remains in the image. The training CSV contains labels but no rule text. The 2,000 held-out flows are generated inside the test from a different seed with extra boundary density, so memorising the training log cannot achieve high accuracy on them. A decision tree fitted to the training data scores only ~94% on the held-out set because boundary flows are over-represented there.",
+  "failure_modes": "An agent that fits a decision tree or random forest to the training data will score ~94% on held-out flows (below the 98.5% threshold) because the tree cannot express the ordered-rule semantics or the sliding-window rate limit, and it approximates threshold boundaries. An agent that infers rules but uses UTC hours instead of Chicago local time will fail on off-hours flows near the UTC/local boundary. An agent that uses exclusive boundaries (> instead of ≥, or (t-60, t] instead of [t-60, t]) will misclassify boundary flows. An agent that does not enforce rule order (e.g., flags a flow if any flag-rule matches, ignoring earlier pass-rules) will fail on allow-listed sources and ports. An agent that sorts by timestamp for rate computation but outputs in timestamp order instead of input order will fail the ordering check.",
+  "shape": "rule induction from labelled data; graded on held-out flows",
+  "hidden_evaluation": "The test generates 2,000 held-out flows from a fixed seed (99999) using a flow generator (tests/flow_generator.py) that intentionally over-samples near rule boundaries, DST transitions, and rule-overlap scenarios. Ground-truth labels come from a pristine reference engine (tests/reference_ids.py) implementing the 8 ordered rules. The generator draws from the full quirk_matrix (window boundary × rule overlap × time zone effect), ensuring every hard cell appears. About 30% of flows are 'easy' (far from any boundary, single rule, midday); 70% stress at least one hard dimension. Individual test functions isolate each rule and boundary condition so that a partial solution fails at least one specific test.",
+  "checks": [
+    {
+      "requirement": "README states 'rate-limit windows include both endpoints'; instruction.md confirms 'inclusive (≥) boundaries'",
+      "assumed_instead": "Use half-open interval [t-60, t) or (t-60, t], which is the default in most programming time-window libraries",
+      "hidden_test_input": "A burst of 4 prior flows from the same source, the earliest at exactly t-60.000s; the current flow makes 5 total in [t-60, t]",
+      "why_missed": "Flows exactly at the window edge are ~0.1% of training data; a fitted model has too few examples to learn the boundary convention"
+    },
+    {
+      "requirement": "instruction.md: 'the IDS evaluated rules in strict order with the first match deciding'",
+      "assumed_instead": "Combine allow-list into the port-range condition (flag if port in 1-1023 AND not in {22,80,443}) rather than as a separate earlier rule",
+      "hidden_test_input": "A flow to port 80 from a non-allow-listed source at local 02:00 with 6 flows in 60s—three rules could flag, but rule 2 (PASS) fires first",
+      "why_missed": "Merging rules gives identical results for most flows; the difference only shows when a later flag-rule would also match"
+    },
+    {
+      "requirement": "instruction.md: 'the IDS evaluated rules in strict order with the first match deciding'",
+      "assumed_instead": "Allow-list applies only to the specific rule it seems related to (e.g., ports only to port-rule), not as an earlier override of everything",
+      "hidden_test_input": "A flow from 10.1.0.x at 02:00 local with 7 flows in 60s to a privileged port—rule 1 (PASS) overrides rules 3, 5, 6",
+      "why_missed": "Allow-listed sources are ~10% of training data; those that also trigger flag rules are rarer still"
+    },
+    {
+      "requirement": "README: 'All timestamps in the log are UTC. The IDS sensor was located in America/Chicago.'",
+      "assumed_instead": "Use UTC hour directly for off-hours detection (simpler, matches raw data column)",
+      "hidden_test_input": "A flow at UTC 09:00 on Jan 15 → 03:00 CST → off-hours FLAG; same UTC hour in July → 04:00 CDT → not off-hours PASS",
+      "why_missed": "During business hours in both zones, UTC and local agree on the off-hours outcome; the discrepancy only appears near the boundary hours"
+    },
+    {
+      "requirement": "README: 'The sensor's local timezone is America/Chicago (which observes DST).'",
+      "assumed_instead": "Apply a fixed UTC-6 offset year-round without DST adjustment",
+      "hidden_test_input": "A flow at UTC 08:30 on March 13 2023 (post spring-forward) → 03:30 CDT → off-hours FLAG; same UTC time on March 11 → 02:30 CST → off-hours FLAG; but at UTC 09:30 March 13 → 04:30 CDT → PASS vs UTC 09:30 March 11 → 03:30 CST → FLAG",
+      "why_missed": "DST transitions occur on two days per year; training data near those dates is sparse"
+    },
+    {
+      "requirement": "instruction.md: 'rate-limit windows and thresholds use inclusive (≥) boundaries'",
+      "assumed_instead": "Use strict inequality > for the bytes threshold",
+      "hidden_test_input": "A flow with bytes_sent = exactly 10,000,000 and no other flag rule matching → should be FLAG",
+      "why_missed": "Exact-threshold values are ~0.01% of training flows"
+    },
+    {
+      "requirement": "instruction.md: 'The IDS monitored privileged ports for unauthorized access'; README: 'dst_port is an integer 1-65535'",
+      "assumed_instead": "Use [1, 1024) or some other conventional boundary for privileged ports",
+      "hidden_test_input": "A flow with dst_port = 1023 not matching rules 1-2 → FLAG under rule 3; dst_port = 1024 → no flag from rule 3",
+      "why_missed": "Port 1023 is a single value among 65535; most training flows at privileged ports are on well-known ports far from the boundary"
+    },
+    {
+      "requirement": "The rate threshold must be inferred from training data as exactly 5 flows in the window",
+      "assumed_instead": "Estimate threshold as 4 or 6 from noisy boundary examples",
+      "hidden_test_input": "A source with exactly 5 total flows in [t-60, t] → FLAG; with 4 → no rate flag",
+      "why_missed": "Sources with exactly 4 or 5 flows in a window are ~1% of training data; distinguishing them requires careful analysis"
+    },
+    {
+      "requirement": "instruction.md: 'the IDS evaluated rules in strict order'; ICMP is a separate PASS rule at position 4",
+      "assumed_instead": "ICMP is just not flagged because it doesn't match port/bytes rules; treat it as default-PASS",
+      "hidden_test_input": "An ICMP flow from a non-allow-listed source during off-hours—without rule 4, rule 5 would flag it; with rule 4, it is PASS",
+      "why_missed": "ICMP flows during off-hours from non-allow-listed sources are rare; a model that never sees this combo may assume off-hours always flags"
+    },
+    {
+      "requirement": "instruction.md: 'Output flow_id,decision for every input flow in order'",
+      "assumed_instead": "Output in timestamp-sorted order (natural after rate-limit computation) or sorted by flow_id",
+      "hidden_test_input": "Input flows in reverse-chronological order; verify output rows correspond to input rows",
+      "why_missed": "If the agent sorts by timestamp for processing and forgets to map back to original index, the output will be timestamp-ordered instead of input-ordered"
+    },
+    {
+      "requirement": "Off-hours is hours {22, 23, 0, 1, 2, 3} local time (22:00-03:59 inclusive), inferred from training data",
+      "assumed_instead": "Off-hours extends to hour 4 or 5, or starts at hour 23, based on imprecise boundary estimation",
+      "hidden_test_input": "A flow at local 03:30 → FLAG; a flow at local 04:00 → PASS",
+      "why_missed": "Hours 3 and 4 are both very early morning; flows in those hours are sparse in the training log"
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Decisions for flows that appear in the training log must be reproduced correctly",
+      "hidden_test_input": "A stratified 500-flow sample from training_flows.csv (including some boundary flows from the training set)"
+    },
+    {
+      "behaviour": "The input CSV format (columns, types, UTC timestamp format) must be accepted without error",
+      "hidden_test_input": "A CSV with the exact column layout and timestamp format used in training_flows.csv"
+    }
+  ],
+  "ground_truth": "tests/reference_ids.py contains the pristine 8-rule engine (deterministic Python function). tests/flow_generator.py generates held-out flows from seed 99999 with configurable boundary density. Every expected label is computed by running reference_ids.classify() on the generated flows. No expected values are hard-coded from manual reasoning; all come from the reference engine applied to seeded inputs.",
+  "dial": "Accuracy on 2,000 held-out flows; fair range 96-99.5%, passing threshold set at 98.5%. A decision tree trained on the 40k flows scores ~94%; the oracle scores 100%. Moving the threshold above 99% would penalise agents for a single boundary mistake; below 96% would let a poor rule set pass.",
+  "quirk_matrix": {
+    "dimensions": {
+      "window_boundary": ["far_from_edge", "near_edge", "exactly_on_edge"],
+      "rule_overlap": ["single_rule_applies", "allow_list_over_flag", "three_rules_in_order"],
+      "time_zone_effect": ["midday_local", "near_midnight_local", "across_DST_change"]
+    },
+    "mix": "About 30% of held-out flows are 'easy' (far_from_edge, single_rule, midday_local); remaining 70% have at least one hard dimension. Every cell of the matrix is represented with at least 20 flows.",
+    "generation": "flow_generator.py creates flows in stratified batches targeting each cell, then fills remaining quota with random flows biased toward boundaries."
+  },
+  "public_tests": "About 30% of evaluation coverage: /app/test_public.py runs decide.py on /app/validation_flows.csv (500 flows, mostly far from boundaries) and checks output format, FLAG/PASS values, and basic accuracy (>95% on these easy flows). It also checks that the script accepts the standard CSV format. It does NOT contain any boundary-edge, DST, or rule-overlap test cases. Agent can run: python3 -m pytest /app/test_public.py -v",
+  "anti_cheese": "Decisions on 2,000 hidden flows from seed 99999 with extra boundary density (not present in training). Memorising training labels scores ≤94% because the held-out distribution is different. Runtime gate: decide.py must finish in <60s on 2,000 flows, preventing brute-force enumeration of all possible rules. A hidden test verifies the script reads and classifies dynamically-generated input (not hardcoded responses).",
+  "verifier_packages": [],
+  "verifier_apt": ["tzdata"],
+  "reference_in_environment": "none",
+  "knobs": [
+    {
+      "knob": "hidden-edge coverage",
+      "where": "2,000 held-out flows generated with ~70% near at least one rule boundary, DST transition, or rule-overlap point; training data has only 1-3% near boundaries",
+      "fairness": "README documents every field and unit; instruction.md states the boundary convention (inclusive ≥); boundary flows exist in training data, just rarely (~1-3%). An expert who carefully examines the training data can find them."
+    },
+    {
+      "knob": "convention trap",
+      "where": "Timestamps are UTC but off-hours rule uses America/Chicago local time (with DST); rate window is inclusive on both ends; bytes threshold is ≥ not >",
+      "fairness": "README explicitly states 'All timestamps in the log are UTC' and 'The IDS sensor was located in America/Chicago (which observes DST)'; instruction.md states 'rate-limit windows and thresholds use inclusive (≥) boundaries'. The trap is that the default programmer instinct (use raw UTC, use half-open intervals) is wrong, but the correct convention is documented."
+    }
+  ]
+}
+```

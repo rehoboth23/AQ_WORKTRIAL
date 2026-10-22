@@ -1,0 +1,30 @@
+VERDICT: leaks
+- "The POS field is 1-based: it is the leftmost mapping position of the first CIGAR operation that consumes the reference." -> reveals knowledge point 0 (the fix/crux itself)
+- "CIGAR operations and what they consume (query, reference, or both) are defined in Section 1.4.2, Table 3 of the spec. Every operation's reference/query consumption must be handled exactly as stated." -> reveals fault categories (CIGAR consumption) and points to where answers live (Section 1.4.2, Table 3)
+- "The MD:Z: optional tag format is defined in Section 1.5. Its regex is `([0-9]+|[A-Z]|\\^[A-Z]+)*`. Digits are runs of matched bases. Single uppercase letters (not preceded by `^`) are reference bases at substitution mismatch positions. A caret `^` followed by one or more uppercase letters denotes deleted reference bases (from D or N operations) — these are **not** substitution mismatches." -> reveals knowledge points 3, 4, 7; points to Section 1.5; provides the regex and its interpretation (the fix)
+- "For reads with FLAG bit 0x10 set (reverse strand), SEQ is already stored reverse-complemented in the SAM file. Do not reverse-complement it again. Walk CIGAR and SEQ left-to-right for all reads regardless of strand." -> reveals knowledge point 8 (the fix: don't reverse-complement again, walk left-to-right)
+- "Deletions and reference skips are **not** substitution mismatches." -> warns against wrong_fixes for knowledge points 3 and 4
+
+<<<FILE instruction.md>>>
+The genomics lab's SAM coverage and mismatch script at `/app/sam_coverage.py` produces incorrect output. Fix it so it correctly computes per-base reference coverage depth and a substitution-mismatch report from SAM alignment files, conforming to the SAM Format Specification v1.6 (https://samtools.github.io/hts-specs/SAMv1.pdf).
+
+**Invocation:**
+```
+python3 /app/sam_coverage.py <sam_file> <coverage_file> <mismatch_file>
+```
+
+**Output format:**
+
+1. **Coverage file** — tab-separated columns: `reference_name`, `position`, `depth`
+   - Positions are 1-based.
+   - Only positions with depth > 0 are written.
+   - Sorted by reference_name then position.
+
+2. **Mismatch file** — tab-separated columns: `reference_name`, `position`, `reference_base`, `read_base`, `count`
+   - Positions are 1-based.
+   - A substitution mismatch is a reference position where a read base aligned to it differs from the reference base. Only substitution mismatches are included.
+   - `count` is the number of reads showing that exact substitution (same ref base and read base) at that position.
+   - Sorted by reference_name then position.
+
+Test data is at `/app/data/alignments.sam`. The script must produce correct output for any valid SAM file, not only the test data.
+<<<END>>>

@@ -1,0 +1,1 @@
+a replacement for a vendor's closed-source tax and fee calculator, as a Python library that returns identical quotes for any order

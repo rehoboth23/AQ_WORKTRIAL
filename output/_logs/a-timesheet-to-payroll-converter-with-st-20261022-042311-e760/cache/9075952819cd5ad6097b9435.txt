@@ -1,0 +1,614 @@
+Looking at the failing check output, I need to fix 5 specific test gaps:
+
+1. **DST spring-forward** - No test checks that Chicago timezone correctly handles DST (naive datetimes give wrong duration)
+2. **Sorting employee-before-week** - Existing sorting tests use same week for all employees, missing the case where employee order differs from week order
+3. **Line endings** - `text=True` in subprocess translates `\r\n` to `\n`, so CRLF mutant passes
+4. **Empty weeks with multiple employees** - Single-employee gap test doesn't catch mutants that generate zero rows for cross-employee-week combinations
+5. **Duplicate clock-in** - Test only checks `reg==8.0` which passes even if both entries are kept (daily OT absorbs the excess); needs `daily_ot` and `gross` checks
+
+I also need to strengthen `test_duplicate_clock_out` for the same reason as #5.
+
+<<<FILE tests/test_outputs.py>>>
+import subprocess
+import tempfile
+import os
+import re
+import pytest
+
+PYTHON = '/usr/local/bin/python3'
+CONVERTER = '/app/converter.py'
+
+
+# ── Helpers ──────────────────────────────────────────────────
+
+def run_converter(csv_content=None, flags=None, filepath=None):
+    flags = flags or []
+    cleanup = False
+    if filepath is None:
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.csv', delete=False, newline=''
+        ) as f:
+            f.write(csv_content)
+            filepath = f.name
+        cleanup = True
+    try:
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+        env.pop('VIRTUAL_ENV', None)
+        result = subprocess.run(
+            [PYTHON, CONVERTER, filepath] + flags,
+            capture_output=True, text=True, env=env,
+        )
+        return result.stdout, result.stderr, result.returncode
+    finally:
+        if cleanup and os.path.exists(filepath):
+            os.unlink(filepath)
+
+
+def run_converter_bytes(csv_content=None, flags=None, filepath=None):
+    """Run converter and return raw bytes (no newline translation).
+
+    subprocess with text=True translates \\r\\n to \\n, hiding CRLF.
+    Use this when checking for carriage returns in the output.
+    """
+    flags = flags or []
+    cleanup = False
+    if filepath is None:
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.csv', delete=False, newline=''
+        ) as f:
+            f.write(csv_content)
+            filepath = f.name
+        cleanup = True
+    try:
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+        env.pop('VIRTUAL_ENV', None)
+        result = subprocess.run(
+            [PYTHON, CONVERTER, filepath] + flags,
+            capture_output=True, env=env,
+        )
+        return result.stdout, result.stderr, result.returncode
+    finally:
+        if cleanup and os.path.exists(filepath):
+            os.unlink(filepath)
+
+
+def parse_rows(stdout):
+    lines = [l for l in stdout.split('\n') if l]
+    if not lines:
+        return None, []
+    header = lines[0]
+    rows = []
+    for line in lines[1:]:
+        if line.startswith('TOTAL:'):
+            continue
+        parts = line.split('|')
+        if len(parts) == 6:
+            rows.append({
+                'employee_id': parts[0],
+                'week_start': parts[1],
+                'reg': float(parts[2]),
+                'daily_ot': float(parts[3]),
+                'weekly_ot': float(parts[4]),
+                'gross': float(parts[5].replace('$', '').replace(',', '')),
+                'gross_raw': parts[5],
+            })
+    return header, rows
+
+
+def get_raw_rows(stdout):
+    data = []
+    for line in stdout.split('\n'):
+        if not line or line.startswith('Employee ID|') or line.startswith('TOTAL:'):
+            continue
+        data.append(line)
+    return data
+
+
+def parse_summary(stdout):
+    for line in stdout.split('\n'):
+        if line.startswith('TOTAL:'):
+            m = re.match(
+                r'TOTAL: (\d+) employees, ([\d.]+) regular hours, '
+                r'([\d.]+) overtime hours, \$([\d,.]+) total pay', line
+            )
+            if m:
+                return {
+                    'employees': int(m.group(1)),
+                    'reg': float(m.group(2)),
+                    'ot': float(m.group(3)),
+                    'pay': float(m.group(4).replace(',', '')),
+                    'pay_raw': m.group(4),
+                }
+    return None
+
+
+# ── Rounding tests ───────────────────────────────────────────
+
+def test_round_half_up_quarter_hour():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T08:07:30\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]['reg'] == 0.25
+
+
+def test_minimum_shift_discard():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T08:06:00\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 2
+    assert len(rows) == 0
+
+
+def test_minimum_shift_boundary():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T08:07:30\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]['reg'] == 0.25
+
+
+# ── Overtime tests ───────────────────────────────────────────
+
+def test_daily_overtime():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T18:30:00\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert rows[0]['reg'] == 8.0
+    assert rows[0]['daily_ot'] == 2.5
+    assert rows[0]['weekly_ot'] == 0.0
+
+
+def test_daily_overtime_multi_shift():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T12:45:00\n"
+        "E001,2024-06-03T13:15:00,2024-06-03T18:00:00\n"
+    )
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert rows[0]['reg'] == 8.0
+    assert rows[0]['daily_ot'] == 1.5
+    assert rows[0]['weekly_ot'] == 0.0
+
+
+def test_weekly_overtime():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T16:00:00\n"
+        "E001,2024-06-05T08:00:00,2024-06-05T16:00:00\n"
+        "E001,2024-06-06T08:00:00,2024-06-06T16:00:00\n"
+        "E001,2024-06-07T08:00:00,2024-06-07T16:00:00\n"
+        "E001,2024-06-08T08:00:00,2024-06-08T11:00:00\n"
+    )
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert rows[0]['reg'] == 40.0
+    assert rows[0]['daily_ot'] == 0.0
+    assert rows[0]['weekly_ot'] == 3.0
+
+
+def test_weekly_overtime_with_daily():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T17:00:00\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T17:00:00\n"
+        "E001,2024-06-05T08:00:00,2024-06-05T17:00:00\n"
+        "E001,2024-06-06T08:00:00,2024-06-06T17:00:00\n"
+        "E001,2024-06-07T08:00:00,2024-06-07T17:00:00\n"
+    )
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert rows[0]['reg'] == 40.0
+    assert rows[0]['daily_ot'] == 5.0
+    assert rows[0]['weekly_ot'] == 0.0
+
+
+# ── Cross-week splitting tests ───────────────────────────────
+
+def test_cross_week_split():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-02T22:00:00,2024-06-03T06:00:00\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 2
+    weeks = {r['week_start'] for r in rows}
+    assert '05/27' in weeks
+    assert '06/03' in weeks
+    prior = [r for r in rows if r['week_start'] == '05/27'][0]
+    new = [r for r in rows if r['week_start'] == '06/03'][0]
+    assert prior['reg'] == 2.0
+    assert new['reg'] == 6.0
+
+
+def test_cross_week_split_nonround():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-02T21:52:30,2024-06-03T06:00:00\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 2
+    prior = [r for r in rows if r['week_start'] == '05/27'][0]
+    new = [r for r in rows if r['week_start'] == '06/03'][0]
+    # 21:52:30 -> 24:00 = 2h7m30s = 2.125h; 2.125*4=8.5 -> round half up -> 9 -> 2.25
+    assert prior['reg'] == 2.25
+    assert new['reg'] == 6.0
+
+
+# ── Timezone tests ───────────────────────────────────────────
+
+def test_timezone_chicago():
+    # Sun 23:00 Chicago -> Mon 07:00 Chicago. In Chicago this crosses midnight Mon.
+    # In UTC (CDT = UTC-5 in June) both would be Monday UTC -> no split.
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-02T23:00:00,2024-06-03T07:00:00\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 2
+    weeks = {r['week_start'] for r in rows}
+    assert '05/27' in weeks
+    assert '06/03' in weeks
+
+
+def test_dst_spring_forward():
+    # 2024-03-10: DST spring forward at 2 AM Chicago (clocks jump 2->3 AM).
+    # Shift 01:00 to 10:00 Chicago = 8 elapsed hours (the 2 AM hour is skipped).
+    # If timestamps are treated as naive/UTC, duration = 9 hours, producing
+    # 8.00 reg + 1.00 daily OT = $237.50. Correct Chicago computation yields
+    # 8.00 reg + 0.00 daily OT = $200.00.
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-03-10T01:00:00,2024-03-10T10:00:00\n"
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]['reg'] == 8.0
+    assert rows[0]['daily_ot'] == 0.0
+    assert rows[0]['weekly_ot'] == 0.0
+    assert rows[0]['gross'] == 200.0
+
+
+# ── Duplicate and incomplete tests ────────────────────────────
+
+def test_missing_clock_out_warning():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T16:00:00\n"
+    )
+    out, err, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert "WARNING: incomplete shift for E001 on 2024-06-03" in err
+    assert len(rows) == 1
+    assert rows[0]['reg'] == 8.0
+
+
+def test_duplicate_clock_in():
+    # Two entries with the same clock_in timestamp but different clock_outs.
+    # Correct dedup (keep first) -> one 8-hour shift, 0 daily OT, $200.00.
+    # A mutant that only removes exact-row duplicates keeps both entries,
+    # producing 17 combined hours -> 8 reg + 9 daily OT = $537.50.
+    # Checking daily_ot and gross distinguishes the two behaviours.
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T17:00:00\n"
+    )
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]['reg'] == 8.0
+    assert rows[0]['daily_ot'] == 0.0
+    assert rows[0]['gross'] == 200.0
+
+
+def test_duplicate_clock_out():
+    # Two entries with the same clock_out timestamp but different clock_ins.
+    # Correct dedup (keep last) -> one 8-hour shift, 0 daily OT, $200.00.
+    # A mutant that only removes exact-row duplicates keeps both entries,
+    # producing 17 combined hours -> 8 reg + 9 daily OT = $537.50.
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T07:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    )
+    out, _, rc = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]['reg'] == 8.0
+    assert rows[0]['daily_ot'] == 0.0
+    assert rows[0]['gross'] == 200.0
+
+
+# ── Format tests ─────────────────────────────────────────────
+
+def test_pipe_delimiter_and_header():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E002,2024-06-03T09:00:00,2024-06-03T17:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    header, rows = parse_rows(out)
+    assert header == "Employee ID|Week Start|Reg|Daily OT|Weekly OT|Gross"
+    assert len(rows) == 2
+    raw = get_raw_rows(out)
+    for line in raw:
+        assert line.count('|') == 5
+
+
+def test_week_start_format():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2025-01-06T08:00:00,2025-01-06T16:00:00\n"
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rows[0]['week_start'] == '01/06'
+
+
+def test_hours_format():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    out, _, _ = run_converter(csv)
+    raw = get_raw_rows(out)
+    assert len(raw) == 1
+    parts = raw[0].split('|')
+    assert parts[2] == '8.00'
+    assert parts[3] == '0.00'
+    assert parts[4] == '0.00'
+
+
+def test_gross_pay_format_thousands():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T16:00:00\n"
+        "E001,2024-06-05T08:00:00,2024-06-05T16:00:00\n"
+        "E001,2024-06-06T08:00:00,2024-06-06T16:00:00\n"
+        "E001,2024-06-07T08:00:00,2024-06-07T16:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rows[0]['gross'] == 1000.0
+    assert rows[0]['gross_raw'] == '$1,000.00'
+
+
+def test_gross_pay_format_under_thousand():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T16:00:00\n"
+        "E001,2024-06-05T08:00:00,2024-06-05T16:00:00\n"
+        "E001,2024-06-06T08:00:00,2024-06-06T16:00:00\n"
+        "E001,2024-06-07T08:00:00,2024-06-07T15:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rows[0]['gross'] == 975.0
+    assert rows[0]['gross_raw'] == '$975.00'
+
+
+def test_gross_pay_round_half_up():
+    # 8.75h in one day -> 8 reg + 0.75 daily OT
+    # gross = 8*25 + 0.75*37.50 = 200 + 28.125 = 228.125
+    # round-half-up to cent -> 228.13 (banker's would give 228.12)
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T16:45:00\n"
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rows[0]['gross'] == 228.13
+    assert rows[0]['gross_raw'] == '$228.13'
+
+
+def test_line_endings_lf_only():
+    # Capture raw bytes: subprocess with text=True translates \r\n to \n,
+    # which would hide CRLF output. We must inspect the raw byte stream.
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    raw, _, _ = run_converter_bytes(csv)
+    assert b'\r' not in raw
+    # Also verify with --summary (summary line must also use LF)
+    raw_summary, _, _ = run_converter_bytes(csv, flags=['--summary'])
+    assert b'\r' not in raw_summary
+    # Also verify with the shipped sample.csv
+    raw2, _, _ = run_converter_bytes(filepath='/app/data/sample.csv')
+    assert b'\r' not in raw2
+
+
+# ── Sorting tests ────────────────────────────────────────────
+
+def test_sorting():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E002,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rows[0]['employee_id'] == 'E001'
+    assert rows[1]['employee_id'] == 'E002'
+
+
+def test_sorting_string_vs_numeric():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "A20,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "A100,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert rows[0]['employee_id'] == 'A100'
+    assert rows[1]['employee_id'] == 'A20'
+
+
+def test_sorting_employee_before_week():
+    # Employee B20 works in week 01/06, A100 works in week 01/13.
+    # Correct sort (Employee ID first, then week): A100|01/13 before B20|01/06.
+    # A mutant that sorts by week first would put B20|01/06 before A100|01/13.
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "B20,2025-01-06T08:00:00,2025-01-06T16:00:00\n"
+        "A100,2025-01-13T08:00:00,2025-01-13T16:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert len(rows) == 2
+    assert rows[0]['employee_id'] == 'A100'
+    assert rows[0]['week_start'] == '01/13'
+    assert rows[1]['employee_id'] == 'B20'
+    assert rows[1]['week_start'] == '01/06'
+
+
+# ── Exit code tests ──────────────────────────────────────────
+
+def test_exit_code_success():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    _, _, rc = run_converter(csv)
+    assert rc == 0
+
+
+def test_exit_code_file_not_found():
+    _, _, rc = run_converter(filepath='/nonexistent/file.csv')
+    assert rc == 1
+
+
+def test_exit_code_no_valid_shifts():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T08:06:00\n"
+    out, _, rc = run_converter(csv)
+    assert rc == 2
+    _, rows = parse_rows(out)
+    assert len(rows) == 0
+
+
+def test_exit_code_with_warnings():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T16:00:00\n"
+    )
+    out, err, rc = run_converter(csv)
+    assert rc == 0
+    assert "WARNING: incomplete shift for E001 on 2024-06-03" in err
+
+
+# ── Structure tests ──────────────────────────────────────────
+
+def test_empty_week_omitted():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E001,2024-06-17T08:00:00,2024-06-17T16:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert len(rows) == 2
+    weeks = {r['week_start'] for r in rows}
+    assert '06/03' in weeks
+    assert '06/17' in weeks
+    assert '06/10' not in weeks
+
+
+def test_empty_week_no_zero_rows_multi_employee():
+    # Two employees each working in a different week. A mutant that
+    # generates rows for every employee-week combination would produce
+    # 4 rows (2 real + 2 zero-hour), instead of the correct 2.
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E1,2024-01-08T09:00:00,2024-01-08T17:00:00\n"
+        "E2,2024-01-15T09:00:00,2024-01-15T17:00:00\n"
+    )
+    out, _, _ = run_converter(csv)
+    _, rows = parse_rows(out)
+    assert len(rows) == 2
+    for r in rows:
+        assert r['reg'] > 0
+    combos = {(r['employee_id'], r['week_start']) for r in rows}
+    assert ('E1', '01/08') in combos
+    assert ('E2', '01/15') in combos
+    assert ('E1', '01/15') not in combos
+    assert ('E2', '01/08') not in combos
+
+
+# ── Flag tests ───────────────────────────────────────────────
+
+def test_summary_flag():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+        "E002,2024-06-03T09:00:00,2024-06-03T17:00:00\n"
+    )
+    out, _, rc = run_converter(csv, flags=['--summary'])
+    assert rc == 0
+    summary = parse_summary(out)
+    assert summary is not None
+    assert summary['employees'] == 2
+    assert summary['reg'] == 16.0
+    assert summary['ot'] == 0.0
+    assert summary['pay'] == 400.0
+
+
+def test_summary_flag_large_amount():
+    # Two employees, each 9h/day Mon-Fri = 40 reg + 5 daily OT
+    # gross each = 40*25 + 5*37.50 = 1187.50; total = 2375.00
+    # Summary should NOT have thousands comma (unlike main output)
+    rows_csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "E001,2024-06-03T08:00:00,2024-06-03T17:00:00\n"
+        "E001,2024-06-04T08:00:00,2024-06-04T17:00:00\n"
+        "E001,2024-06-05T08:00:00,2024-06-05T17:00:00\n"
+        "E001,2024-06-06T08:00:00,2024-06-06T17:00:00\n"
+        "E001,2024-06-07T08:00:00,2024-06-07T17:00:00\n"
+        "E002,2024-06-03T08:00:00,2024-06-03T17:00:00\n"
+        "E002,2024-06-04T08:00:00,2024-06-04T17:00:00\n"
+        "E002,2024-06-05T08:00:00,2024-06-05T17:00:00\n"
+        "E002,2024-06-06T08:00:00,2024-06-06T17:00:00\n"
+        "E002,2024-06-07T08:00:00,2024-06-07T17:00:00\n"
+    )
+    out, _, rc = run_converter(rows_csv, flags=['--summary'])
+    assert rc == 0
+    summary = parse_summary(out)
+    assert summary is not None
+    assert summary['employees'] == 2
+    assert summary['reg'] == 80.0
+    assert summary['ot'] == 10.0
+    assert summary['pay'] == 2375.0
+    # Summary pay should NOT have thousands comma
+    assert ',' not in summary['pay_raw']
+    # Main output rows SHOULD have comma for >= $1000
+    _, parsed_rows = parse_rows(out)
+    for r in parsed_rows:
+        assert ',' in r['gross_raw']
+
+
+def test_verbose_flag():
+    csv = "Employee ID,Clock In,Clock Out\nE001,2024-06-03T08:00:00,2024-06-03T16:00:00\n"
+    out, err, rc = run_converter(csv, flags=['--verbose'])
+    assert rc == 0
+    assert "Processing shift: E001 2024-06-03T08:00:00 - 2024-06-03T16:00:00" in err
+
+
+# ── Input tolerance tests ────────────────────────────────────
+
+def test_blank_lines_and_whitespace():
+    csv = (
+        "Employee ID,Clock In,Clock Out\n"
+        "\n"
+        "  E001  , 2024-06-03T08:00:00 , 2024-06-03T16:00:00 \n"
+        "\n"
+        "E002,2024-06-03T09:00:00,2024-06-03T17:00:00\n"
+    )
+    out, _, rc = run_converter(csv)
+    assert rc == 0
+    _, rows = parse_rows(out)
+    assert len(rows) == 2
+    ids = {r['employee_id'] for r in rows}
+    assert 'E001' in ids
+    assert 'E002' in ids
+    e001 = [r for r in rows if r['employee_id'] == 'E001'][0]
+    assert e001['reg'] == 8.0
+<<<END>>>

@@ -1,0 +1,9 @@
+{"time": "2026-10-22T11:53:19", "pid": 18378, "event": "batch_start", "batch": "addrfix-115319", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T11:53:19", "pid": 18378, "event": "stage", "topic": "@seeds/address-rules.yaml", "key": "410de41297", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T12:56:29", "pid": 18378, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T12:56:43", "pid": 30577, "event": "batch_start", "batch": "addrfix-115319", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T12:56:43", "pid": 30577, "event": "resume", "topic": "@seeds/address-rules.yaml", "key": "410de41297", "stage": "generating", "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/recover-the-ordered-rewrite-rules-a-reti-20261022-115319-9f34"}
+{"time": "2026-10-22T13:31:56", "pid": 30577, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T13:32:04", "pid": 54738, "event": "batch_start", "batch": "addrfix-115319", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T13:32:04", "pid": 54738, "event": "resume", "topic": "@seeds/address-rules.yaml", "key": "410de41297", "stage": "generating", "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/recover-the-ordered-rewrite-rules-a-reti-20261022-115319-9f34"}
+{"time": "2026-10-22T13:32:55", "pid": 54738, "event": "killed", "signal": "SIGTERM", "children": []}

@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Create CSV with two rows for same employee: 'E001,2024-01-08T08:00:00,2024-01-08T16:00:00' and 'E001,2024-01-08T08:00:00,2024-01-08T17:00:00'. Correct solution deduplicates by clock_in (keeps first) → one 8-hour shift, output shows 8.00 reg hours and $200.00 gross. Mutant keeps both rows (different clock_outs, not exact duplicates) → two shifts totaling 17 hours, output shows 17.00 reg hours and $425.00 gross.",
+ "reason": "The mutant only removes exact row duplicates (same clock_in AND clock_out), while the spec requires deduplicating by clock_in alone (keep first) and by clock_out alone (keep last). Same clock_in with different clock_outs (or vice versa) produces different results."}
+```

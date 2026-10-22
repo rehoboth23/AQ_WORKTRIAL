@@ -1,0 +1,291 @@
+<<<FILE tests/test_outputs.py>>>
+import os
+import re
+import stat
+import subprocess
+import time
+import pytest
+
+# PostgreSQL connection settings
+PGHOST = "localhost"
+PGPORT = "5432"
+PGDB = "etl_db"
+PGUSER = "etl_user"
+PGPASS = "etl_pass"
+
+REPORT_PATH = "/data/reports/daily_summary.txt"
+IMAGE_PYTHON = "/usr/local/bin/python3"
+
+
+def psql_env():
+    """Environment for psql commands with password."""
+    env = os.environ.copy()
+    env["PGPASSWORD"] = PGPASS
+    env["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # Remove VIRTUAL_ENV if set to avoid interfering with the image's Python
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def run_psql(sql, superuser=False):
+    """Run a SQL command via psql and return stdout stripped."""
+    if superuser:
+        result = subprocess.run(
+            ["sudo", "-u", "postgres", "psql", "-d", PGDB, "-t", "-A", "-c", sql],
+            capture_output=True, text=True,
+        )
+    else:
+        result = subprocess.run(
+            ["psql", "-h", PGHOST, "-p", PGPORT, "-U", PGUSER, "-d", PGDB,
+             "-t", "-A", "-c", sql],
+            capture_output=True, text=True, env=psql_env(),
+        )
+    assert result.returncode == 0, f"psql failed ({sql}): {result.stderr}"
+    return result.stdout.strip()
+
+
+def run_image_python(code, timeout=30):
+    """Run Python code using the image's interpreter (has psycopg2, locale etc.)."""
+    env = {
+        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/root",
+        "PGPASSWORD": PGPASS,
+    }
+    result = subprocess.run(
+        [IMAGE_PYTHON, "-c", code],
+        capture_output=True, text=True, env=env, timeout=timeout,
+    )
+    return result
+
+
+def read_report():
+    with open(REPORT_PATH, "r") as f:
+        return f.read()
+
+
+def parse_currency(s):
+    """Parse a currency string like $1,234.56 into a float."""
+    return float(s.replace("$", "").replace(",", ""))
+
+
+def is_fifo(path):
+    """Return True if path is a named pipe (FIFO)."""
+    try:
+        return stat.S_ISFIFO(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped fixture: ensure PostgreSQL is running
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_postgres():
+    """Start PostgreSQL if it is not already running."""
+    r = subprocess.run(["pg_isready", "-q"], capture_output=True)
+    if r.returncode != 0:
+        subprocess.run(["pg_ctlcluster", "15", "main", "start"], check=True)
+        for _ in range(60):
+            r2 = subprocess.run(["pg_isready", "-q"], capture_output=True)
+            if r2.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            raise RuntimeError("PostgreSQL did not become ready within 60 s")
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+def test_psycopg2_importable():
+    """psycopg2 must be importable from the image's Python."""
+    r = run_image_python("import psycopg2")
+    assert r.returncode == 0, f"import psycopg2 failed: {r.stderr}"
+
+
+def test_postgresql_running():
+    """PostgreSQL must be running and accepting connections."""
+    r = subprocess.run(["pg_isready", "-q"], capture_output=True)
+    assert r.returncode == 0, "PostgreSQL is not running"
+
+
+def test_database_exists():
+    """The etl_db database must exist and be accessible."""
+    r = subprocess.run(
+        ["psql", "-h", PGHOST, "-p", PGPORT, "-U", PGUSER, "-d", PGDB, "-c", "SELECT 1"],
+        capture_output=True, text=True, env=psql_env(),
+    )
+    assert r.returncode == 0, f"Cannot connect to etl_db: {r.stderr}"
+
+
+def test_no_select_rule_hidden():
+    """The orders table must not have any RULEs visible in pg_rules."""
+    output = run_psql(
+        "SELECT rulename FROM pg_rules WHERE tablename='orders'", superuser=True
+    )
+    assert output == "", f"Rules found on orders table: {output}"
+
+
+def test_customers_loaded():
+    """Customers table must have 5 rows from the CSV."""
+    count = run_psql("SELECT COUNT(*) FROM customers")
+    assert count == "5", f"Expected 5 customers, got {count}"
+
+
+def test_orders_loaded():
+    """Orders table must have 10 rows (8 completed + 2 cancelled) from the CSV."""
+    count = run_psql("SELECT COUNT(*) FROM orders")
+    assert count == "10", f"Expected 10 orders, got {count}"
+
+
+def test_products_loaded():
+    """Products table must have 5 rows from the CSV."""
+    count = run_psql("SELECT COUNT(*) FROM products")
+    assert count == "5", f"Expected 5 products, got {count}"
+
+
+def test_report_file_exists():
+    """The report file must exist and be a regular file."""
+    assert os.path.isfile(REPORT_PATH), f"{REPORT_PATH} is not a regular file"
+
+
+def test_report_total_orders():
+    """Report must show Total Orders: 8 (completed only)."""
+    report = read_report()
+    m = re.search(r"Total Orders:\s*(\d+)", report)
+    assert m is not None, "Could not find 'Total Orders:' in report"
+    assert m.group(1) == "8", f"Expected 8 total orders, got {m.group(1)}"
+
+
+def test_report_total_revenue():
+    """Report must show Total Revenue: $610.00 (completed only)."""
+    report = read_report()
+    m = re.search(r"Total Revenue:\s*\$([\d,]+\.\d{2})", report)
+    assert m is not None, "Could not find 'Total Revenue:' in report"
+    value = parse_currency("$" + m.group(1))
+    assert value == pytest.approx(610.00), f"Expected $610.00, got ${value:.2f}"
+
+
+def test_report_regional_breakdown():
+    """Report must show the correct regional breakdown for completed orders."""
+    report = read_report()
+    expected = {
+        "East":  {"orders": 1, "revenue": 50.00},
+        "North": {"orders": 4, "revenue": 350.00},
+        "South": {"orders": 1, "revenue": 100.00},
+        "West":  {"orders": 2, "revenue": 110.00},
+    }
+    for region, data in expected.items():
+        pat = rf"{re.escape(region)}:\s*(\d+)\s+orders/\s*\$([\d,]+\.\d{{2}})"
+        m = re.search(pat, report)
+        assert m is not None, f"Could not find region '{region}' in report"
+        orders = int(m.group(1))
+        revenue = parse_currency("$" + m.group(2))
+        assert orders == data["orders"], (
+            f"Region {region}: expected {data['orders']} orders, got {orders}"
+        )
+        assert revenue == pytest.approx(data["revenue"]), (
+            f"Region {region}: expected ${data['revenue']:.2f}, got ${revenue:.2f}"
+        )
+
+
+def test_report_top_products():
+    """Report must list top products in correct order with correct revenue."""
+    report = read_report()
+    expected = [
+        ("Sensor Delta",   200.00),
+        ("Widget Alpha",   200.00),
+        ("Gadget Beta",    150.00),
+        ("Module Epsilon",  60.00),
+    ]
+    # Extract the Top Products section
+    parts = report.split("Top Products:")
+    assert len(parts) >= 2, "Could not find 'Top Products:' section in report"
+    section = parts[1].split("=" * 50)[0]
+
+    products_found = []
+    for line in section.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"(.+?):\s*\$([\d,]+\.\d{2})", line)
+        if m:
+            name = m.group(1).strip()
+            revenue = parse_currency("$" + m.group(2))
+            products_found.append((name, revenue))
+
+    assert len(products_found) >= len(expected), (
+        f"Expected at least {len(expected)} products, found {len(products_found)}"
+    )
+    for i, (exp_name, exp_rev) in enumerate(expected):
+        act_name, act_rev = products_found[i]
+        assert act_name == exp_name, (
+            f"Product {i}: expected '{exp_name}', got '{act_name}'"
+        )
+        assert act_rev == pytest.approx(exp_rev), (
+            f"Product {i} ({exp_name}): expected ${exp_rev:.2f}, got ${act_rev:.2f}"
+        )
+
+
+def test_cancelled_excluded_hidden():
+    """Even after inserting a new cancelled order, it must be excluded from the report."""
+    # Insert a large cancelled order that would change the total if included
+    run_psql(
+        "INSERT INTO orders (order_id, customer_id, product_id, quantity, unit_price, status) "
+        "VALUES ('ORD_CHK', 'C001', 'P001', 1000, 25.00, 'cancelled')"
+    )
+
+    try:
+        # Regenerate the report via the image's Python
+        r = run_image_python(
+            "import sys; sys.path.insert(0, '/app'); "
+            "from etl_runner import generate_report; generate_report()"
+        )
+        assert r.returncode == 0, f"generate_report failed: {r.stderr}"
+
+        report = read_report()
+
+        # Total Revenue must still be $610.00
+        m = re.search(r"Total Revenue:\s*\$([\d,]+\.\d{2})", report)
+        assert m is not None, "Could not find 'Total Revenue:' in report"
+        value = parse_currency("$" + m.group(1))
+        assert value == pytest.approx(610.00), (
+            f"Cancelled order included in revenue: expected $610.00, got ${value:.2f}"
+        )
+
+        # Total Orders must still be 8
+        m = re.search(r"Total Orders:\s*(\d+)", report)
+        assert m is not None, "Could not find 'Total Orders:' in report"
+        assert m.group(1) == "8", (
+            f"Cancelled order counted: expected 8 orders, got {m.group(1)}"
+        )
+    finally:
+        # Clean up: delete the test order and restore the report
+        run_psql("DELETE FROM orders WHERE order_id = 'ORD_CHK'")
+        run_image_python(
+            "import sys; sys.path.insert(0, '/app'); "
+            "from etl_runner import generate_report; generate_report()"
+        )
+
+
+def test_csv_data_in_db_hidden():
+    """Data must come from the CSV files, not be hard-coded."""
+    name = run_psql("SELECT name FROM customers WHERE customer_id='C002'")
+    assert "Alpine" in name, f"Expected 'Alpine' in customer C002 name, got '{name}'"
+
+
+def test_no_tool_gamma_hidden():
+    """Tool Gamma (cancelled-only product) must not appear in the report."""
+    report = read_report()
+    assert "Tool Gamma" not in report, (
+        "Tool Gamma appears in report but should not (cancelled-only product)"
+    )
+
+
+def test_no_fifo_hidden():
+    """/data/reports must be a directory, not a named pipe."""
+    assert not is_fifo("/data/reports"), "/data/reports is a named pipe (FIFO)"
+    assert os.path.isdir("/data/reports"), "/data/reports is not a directory"
+<<<END>>>

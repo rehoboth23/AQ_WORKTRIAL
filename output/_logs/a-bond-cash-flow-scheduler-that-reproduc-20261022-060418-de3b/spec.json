@@ -1,0 +1,170 @@
+{
+  "name": "bond-cashflow-scheduler-replica",
+  "description": "Reproduce a legacy bond desk tool's coupon schedule \u2014 accrual fractions and adjusted payment dates \u2014 exactly by probing a stripped binary that has several non-standard quirks deviating from ISDA textbook conventions",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": [
+    "bonds",
+    "day-count-convention",
+    "business-day-rule",
+    "calendar-arithmetic",
+    "black-box",
+    "scheduler"
+  ],
+  "expert_time_estimate_min": 45.0,
+  "junior_time_estimate_min": 180.0,
+  "base_image": "ubuntu:24.04",
+  "scenario": "A bond trading desk relies on a legacy stripped binary (`/usr/local/bin/bondsched`) to compute fixed-rate bond coupon schedules. The source is long gone. The desk needs a Python replacement at `/app/bondsched.py` that produces byte-for-byte identical output for any trade specification of the kinds they trade. The legacy tool was written in-house and has several non-standard behaviours that differ from ISDA textbook conventions \u2014 the agent must discover each quirk by probing the binary systematically. The agent has the binary and a sample trade file; it must probe every day-count convention, business-day rule, and date-generation quirk to build a faithful replica.",
+  "environment_setup": "Multi-stage Dockerfile: builder stage on ubuntu:24.04 installs gcc and compiles reference.c (~200 lines, stdlib only) into a stripped binary at /usr/local/bin/bondsched. Final image on ubuntu:24.04 has python3, the stripped binary, and /app/sample.txt (18 sample trades covering all parameter values). No source code, no services, no daemons. The binary reads one line from stdin (space-separated key=value pairs) and outputs one line per coupon period.",
+  "instruction_summary": "Build a Python script at /app/bondsched.py, runnable as `python3 /app/bondsched.py`, that reads one trade specification line from stdin and writes the coupon schedule to stdout. Output format: `N START END PAYMENT FRACTION` per line (N=1-based index, dates as YYYY-MM-DD, fraction with exactly 6 decimal places). The schedule is generated backwards from maturity at 12/freq-month intervals; the first period starts from settlement (creating a short stub if settlement falls between coupon dates); accrual fractions use unadjusted dates while payment dates use BDC-adjusted end dates. Day counts: 30U360, 30E360, ACT365, ACTACT. BDCs: NONE, FOLLOWING, PRECEDING, MODFOLLOW, MODPRECED. End-of-month rule may apply. Output must match the reference binary byte-for-byte (same stdout, same exit code) for any input of the kinds in /app/sample.txt. The artifact must not call the binary or any external program; the binary will be absent during grading.",
+  "solution_outline": [
+    "Write /app/bondsched.py implementing: date parsing (YYYY-MM-DD), Julian day conversion for actual-day counts, add_months with end-of-month handling, day-of-week, weekend checking",
+    "Implement 30U/360 with the reference's non-standard adjustment order: D1=31\u219230, then D1 end-of-Feb\u219230, then D2=31\u219230 (Feb adj BEFORE D2 check, unlike ISDA standard where D2 check comes before Feb adj)",
+    "Implement 30E/360 with D1=31\u219230, D2=31\u219230, PLUS D1 end-of-Feb\u219230 (non-standard Feb adjustment for D1 only; D2 end-of-Feb stays as-is)",
+    "Implement ACT/365 with denominator 365.25 (not 365), and ACT/ACT using total-days / denominator-based-on-end-year (no ISDA year-boundary split)",
+    "Implement BDC adjustments: FOLLOWING and PRECEDING (simple roll); MODFOLLOW = FOLLOWING (no month-crossing rollback); MODPRECED = PRECEDING (no month-crossing roll-forward)",
+    "Generate coupon dates backwards from maturity; first period starts from settlement (short stub); end-of-month rule applies when maturity day >= 28",
+    "Apply observed-holiday logic: holidays on Saturday are observed on Friday, holidays on Sunday are observed on Monday",
+    "Format fractions by truncating (floor) to 6 decimal places using math.floor(f*1e6)/1e6, then output with %.6f; exit 0 on success, 1 on empty stdin, 2 on malformed input with 'ERROR: reason' on stderr"
+  ],
+  "test_plan": [
+    "test_artifact_exists: assert /app/bondsched.py exists",
+    "test_sample_cases: load all 18 lines from /app/sample.txt, compile /tests/reference.c with gcc, hide /usr/local/bin/bondsched (rename to .disabled), run reference and artifact on each, compare stdout and exit code byte-for-byte, fail on first mismatch showing input + both outputs",
+    "test_generated_cases: run /tests/gen_cases.py (seed=42, 500 random trades drawn from sample parameter space with emphasis on edge dates), run reference and artifact on each, compare byte-for-byte, fail showing first 3 mismatches",
+    "test_binary_not_available: assert /usr/local/bin/bondsched does not exist (was hidden), proving artifact cannot have called it"
+  ],
+  "anti_cheat": "Source only in builder stage. Binary is stripped. No comment or string names any rule. Sample shows format only; expected outputs require running the binary. Tests compile their own reference from /tests/reference.c, hide the environment binary, and use 500 seeded-random cases with edge-date emphasis. Artifact is a Python script invoked with /usr/bin/python3.",
+  "failure_modes": "Agent that doesn't test 30U/360 with February end-of-month dates misses the non-standard Feb-before-D2 order. Agent that doesn't test 30E/360 with February dates misses the D1 Feb adjustment. Agent that assumes ISDA MODFOLLOW/MODPRECED rollback logic misses that they degenerate to FOLLOWING/PRECEDING. Agent that doesn't test settlement exactly on a coupon date misses the exclusive boundary. Agent that doesn't verify exact ACT/365 fractions misses the 365.25 denominator. Agent that doesn't test ACT/ACT across a year boundary misses the simplified denominator. Agent that doesn't check borderline fractions misses truncation-vs-rounding. Agent that doesn't test maturity on day 28 misses the lowered end-of-month threshold. Agent that doesn't place holidays on weekends misses the observed-holiday logic.",
+  "faults": [],
+  "requirements": [],
+  "themes": [],
+  "starter": "",
+  "spec_document": "",
+  "property": "",
+  "reported_symptom": "",
+  "sites": [],
+  "partial_fix": "",
+  "preserved_behaviours": [],
+  "decoys": [],
+  "hidden_edge_cases": [],
+  "why_not_textbook": "",
+  "static_read": "",
+  "crux": "",
+  "challenge_kind": "executable_reference",
+  "sequence_invariant": "",
+  "nameable_fix": "",
+  "self_check_blind_spot": "",
+  "reference_in_environment": "",
+  "interaction": "",
+  "runnable_reference": "",
+  "failing_state": "",
+  "end_state": [],
+  "obstacles": [],
+  "shortcut_guards": [],
+  "offline": "",
+  "domain": "",
+  "standards": [],
+  "knowledge_points": [],
+  "verifier_packages": [],
+  "reference_check": "",
+  "black_box_kind": "calculator",
+  "artifact_kind": "cli",
+  "reference_language": "c",
+  "reference_binary": "/usr/local/bin/bondsched",
+  "interface": "Reads one line from stdin: `settle=YYYY-MM-DD maturity=YYYY-MM-DD freq=N daycount=XXX bdc=YYY holidays=YYYY-MM-DD,...`. Writes to stdout one line per period: `N YYYY-MM-DD YYYY-MM-DD YYYY-MM-DD F.FFFFFF` (period_num 1-based, unadjusted_start, unadjusted_end, adjusted_payment, accrual_fraction_6dp). Exit 0 on success, 1 on empty stdin, 2 on malformed input with 'ERROR: reason' on stderr.",
+  "sample_file": "/app/sample.txt",
+  "input_kinds": [
+    "30U360 with regular mid-month dates",
+    "30U360 with end-of-month day-31 dates",
+    "30U360 with February coupon dates",
+    "30E360 with end-of-month day-31 dates",
+    "30E360 with February coupon dates",
+    "ACT365 with periods in non-leap years",
+    "ACT365 with periods spanning or in leap years",
+    "ACTACT spanning a year boundary",
+    "BDC=NONE",
+    "BDC=FOLLOWING with holidays",
+    "BDC=PRECEDING with holidays",
+    "BDC=MODFOLLOW",
+    "BDC=MODPRECED",
+    "freq=1 annual",
+    "freq=2 semi-annual",
+    "freq=4 quarterly",
+    "Maturity on day 28 or later (near end-of-month)",
+    "Maturity on day 1 or 15 (not near end-of-month)",
+    "Settlement exactly on a coupon date",
+    "Settlement between coupon dates",
+    "With holidays including some on weekends",
+    "Without holidays (weekends only)"
+  ],
+  "decision_points": [
+    {
+      "behaviour": "In 30U/360, the D1 end-of-February\u219230 adjustment is applied BEFORE the D2=31\u219230 conditional check, so when D1 was end-of-Feb, after adjustment D1=30\u226530 and D2=31 always becomes 30",
+      "assumed_instead": "A programmer following ISDA would check D2=31 before the Feb adjustment, so D2=31 stays as 31 when original D1 was end-of-Feb (D1=28 or 29 < 30 at check time)",
+      "input_kind": "30U360 with February coupon dates",
+      "observe": "Run: settle=2024-02-29 maturity=2025-08-31 freq=2 daycount=30U360 bdc=NONE holidays= \u2014 the Feb\u2192Aug period fraction is 0.500000 (not 0.502778)"
+    },
+    {
+      "behaviour": "In 30E/360, D1 end-of-February is adjusted to 30 (non-standard; standard 30E/360 has no February adjustment at all). D2 end-of-February is NOT adjusted.",
+      "assumed_instead": "A programmer would follow standard 30E/360 which never adjusts February dates, keeping D1=28 or 29",
+      "input_kind": "30E360 with February coupon dates",
+      "observe": "Run: settle=2023-02-28 maturity=2024-08-28 freq=2 daycount=30E360 bdc=NONE holidays= \u2014 the Feb\u2192Aug period fraction is 0.494444 (not 0.500000)"
+    },
+    {
+      "behaviour": "ACT/ACT uses total actual days in the period divided by 366 if the period end date is in a leap year, or 365 otherwise \u2014 no ISDA year-boundary splitting",
+      "assumed_instead": "A programmer following ISDA would split the period at Jan 1 boundaries and sum days_i/denominator_i per calendar year",
+      "input_kind": "ACTACT spanning a year boundary",
+      "observe": "Run: settle=2023-07-01 maturity=2024-07-01 freq=1 daycount=ACTACT bdc=NONE holidays= \u2014 the annual period fraction is 1.000000 (not 1.001377)"
+    },
+    {
+      "behaviour": "MODFOLLOW degenerates to FOLLOWING: if forward roll crosses a month boundary, the forward-rolled date is kept (no rollback to preceding business day)",
+      "assumed_instead": "A programmer would implement ISDA MODFOLLOW: roll forward, and if the result is in a different month, roll backward to the preceding business day instead",
+      "input_kind": "BDC=MODFOLLOW",
+      "observe": "Run: settle=2024-02-29 maturity=2025-08-31 freq=2 daycount=ACT365 bdc=MODFOLLOW holidays= \u2014 Aug 31 2024 (Saturday) payment date is Sep 2 (not Aug 30)"
+    },
+    {
+      "behaviour": "MODPRECED degenerates to PRECEDING: if backward roll crosses a month boundary, the backward-rolled date is kept (no roll-forward to following business day)",
+      "assumed_instead": "A programmer would implement ISDA MODPRECED: roll backward, and if the result is in a different month, roll forward to the following business day instead",
+      "input_kind": "BDC=MODPRECED",
+      "observe": "Run: settle=2026-05-01 maturity=2027-05-01 freq=2 daycount=30U360 bdc=MODPRECED holidays= \u2014 Nov 1 2026 (Sunday) payment date is Oct 30 (not Nov 2)"
+    },
+    {
+      "behaviour": "Settlement exactly on a coupon date is exclusive (<): the schedule starts from the next coupon date after settlement, excluding the coupon date itself",
+      "assumed_instead": "A programmer would follow the standard inclusive rule (\u2264), starting the schedule from the coupon date equal to or before settlement",
+      "input_kind": "Settlement exactly on a coupon date",
+      "observe": "Run: settle=2023-01-15 maturity=2025-01-15 freq=2 daycount=30U360 bdc=NONE holidays= \u2014 output has 3 periods starting from 2023-07-15 (not 4 periods starting from 2023-01-15)"
+    },
+    {
+      "behaviour": "End-of-month rule is triggered when maturity day \u2265 28 (not only when maturity is the actual last calendar day of its month), so Feb 28 in a non-leap year or day 28 of a 30/31-day month triggers it",
+      "assumed_instead": "A programmer would follow the standard rule: end-of-month applies only when maturity is the actual last calendar day of its month",
+      "input_kind": "Maturity on day 28 or later",
+      "observe": "Run: settle=2023-04-28 maturity=2025-04-28 freq=2 daycount=30U360 bdc=NONE holidays= \u2014 coupon dates include Oct 31 and Apr 30 (not Oct 28 and Apr 28)"
+    },
+    {
+      "behaviour": "The first accrual period starts from the settlement date itself, creating a short stub period; subsequent periods are full length",
+      "assumed_instead": "A programmer would start the first full period from the coupon date at or before settlement, with no stub",
+      "input_kind": "Settlement between coupon dates",
+      "observe": "Run: settle=2023-04-15 maturity=2025-01-15 freq=2 daycount=30U360 bdc=NONE holidays= \u2014 first period is Apr 15\u2192Jul 15 with fraction 0.250000 (not Jan 15\u2192Jul 15 with 0.500000)"
+    },
+    {
+      "behaviour": "ACT/365 uses denominator 365.25 (a legacy approximation), not 365",
+      "assumed_instead": "A programmer would use the standard denominator 365",
+      "input_kind": "ACT365 with periods in or spanning leap years",
+      "observe": "Run: settle=2024-01-01 maturity=2025-01-01 freq=1 daycount=ACT365 bdc=NONE holidays= \u2014 annual fraction is 1.002053 (not 1.002740)"
+    },
+    {
+      "behaviour": "Accrual fractions are truncated (floored) to 6 decimal places, not rounded; e.g., 0.002739726\u2026 becomes 0.002739, not 0.002740",
+      "assumed_instead": "A programmer would use standard rounding (round-half-up) to 6 decimal places via %.6f",
+      "input_kind": "ACT365 with periods in or spanning leap years",
+      "observe": "Run: settle=2023-07-01 maturity=2024-01-01 freq=2 daycount=ACT365 bdc=NONE holidays= \u2014 Jul\u2192Jan period fraction is 0.504109 (not 0.504110); the 7th decimal is 5, which rounds up but truncation keeps it down"
+    },
+    {
+      "behaviour": "Holidays that fall on Saturday are observed on the preceding Friday (making Friday non-business); holidays on Sunday are observed on the following Monday (making Monday non-business). The original date is also non-business (weekend), but the observed date adds a new non-business weekday.",
+      "assumed_instead": "A programmer would simply check if a date is in the holiday list, ignoring that weekend holidays are observed on adjacent weekdays",
+      "input_kind": "With holidays including some on weekends",
+      "observe": "Run: settle=2024-03-27 maturity=2025-09-27 freq=2 daycount=ACT365 bdc=FOLLOWING holidays=2024-09-28 \u2014 Sep 27 2024 (Friday) payment rolls to Sep 30 (Monday), because the Saturday holiday is observed on Friday"
+    }
+  ],
+  "shortcut_guard": "Before running the artifact, the test fixture renames /usr/local/bin/bondsched to /usr/local/bin/bondsched.disabled, so the artifact cannot invoke it at its expected path. The test also compiles its own fresh reference binary from /tests/reference.c (a file never present in the image) at /tmp/reference_binary. The 500 generated cases use a fixed random seed but draw from a broad date and parameter space with emphasis on edge dates (Feb end-of-month, month-end weekends, day-28 maturities, weekend-adjacent holidays), so hard-coding sample outputs cannot pass. A separate test asserts the binary is absent at its original path during grading.",
+  "expected_agent_steps": null
+}

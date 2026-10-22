@@ -1,0 +1,1 @@
+a bond cash-flow scheduler that reproduces a legacy desk tool's accrual fractions and adjusted payment dates exactly for any trade

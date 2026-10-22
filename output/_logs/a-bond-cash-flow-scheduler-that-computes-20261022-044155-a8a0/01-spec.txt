@@ -1,0 +1,83 @@
+```json
+{
+  "name": "isda-cashflow-scheduler-fix",
+  "description": "Fix day-count and business-day convention bugs in a bond cash-flow scheduler per ISDA 2006 definitions",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["finance", "isda", "day-count", "bonds", "conventions"],
+  "expert_time_estimate_min": 40,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A trading desk has a Python cash-flow scheduler that computes accrual fractions and adjusted payment dates for bond coupon periods. The scheduler reads period data from periods.csv and writes a cash-flow schedule to schedule.json. Several of its ISDA day-count and business-day convention implementations contain subtle bugs that produce wrong accrual fractions and payment dates. The desk needs all conventions fixed to match the ISDA 2006 definitions exactly.",
+  "environment_setup": "The Dockerfile copies scheduler.py (with 5 intentional bugs) and periods.csv (10 periods spanning all convention types) into /app/. No financial libraries are installed — only Python 3.12 stdlib. The scheduler.py imports csv, json, sys, datetime only. Bugs planted: (1) 30/360 caps D2 at 30 always instead of only when D1>=30, (2) 30E/360 ISDA ignores the last-day-of-February rule (behaves as plain 30E/360), (3) ACT/ACT ISDA uses a single denominator (366 if any leap year overlaps, 365 otherwise) instead of splitting by year, (4) Modified Following always rolls forward without checking month boundary, (5) accrual fraction computed on the adjusted payment date instead of the unadjusted end date. A helper function is_last_day_of_february() exists in the code but is never called — a latent hint.",
+  "instruction_summary": "Fix /app/scheduler.py so it produces correct output per ISDA 2006 definitions. The input is /app/periods.csv (columns: period_id, notional, rate, start_date, end_date, day_count, bdc). The output is /app/schedule.json — a JSON array with one object per period containing: period_id, notional, rate, start_date (unadjusted, YYYY-MM-DD), end_date (unadjusted, YYYY-MM-DD), adjusted_payment_date (YYYY-MM-DD), day_count_convention, business_day_convention, accrual_fraction (rounded to 10 decimal places), cashflow_amount (rounded to 2 decimal places). Conventions: 30/360 (ISDA 2006 §4.16(f)), 30E/360 (§4.16(g)), 30E/360 ISDA (§4.16(h)), ACT/ACT ISDA (§4.16(c)), FOLLOW (§4.10), Modified Following (§4.11). Business days are Monday–Friday only. Accrual fractions use unadjusted start and end dates; the business-day convention adjusts only the payment date. After fixing, run the scheduler on periods.csv to regenerate schedule.json.",
+  "solution_outline": [
+    "Fix adjust_bdc MODFOLLOW: save original month; roll forward to next business day; if rolled date's month differs from original month, roll backward from original date instead",
+    "Fix day_count_30_360: change D2 logic — only set D2=30 if D2==31 AND D1>=30 (not always cap D2 at 30)",
+    "Fix day_count_30e_360_isda: after the min(30, day) adjustments, check if start is last day of February → set D1=30; check if end is last day of February → set D2=30",
+    "Fix day_count_act_act_isda: replace single-denominator logic with year-by-year loop — split period at Jan 1 boundaries, divide each year's days by 365 or 366, sum fractions",
+    "Fix process_periods: swap order — compute fraction on (start, end) unadjusted FIRST, then adjust end date for payment",
+    "Run python3 /app/scheduler.py /app/periods.csv /app/schedule.json to produce correct output"
+  ],
+  "test_plan": [
+    "test_schedule_exists_and_valid: schedule.json exists, is valid JSON array with 10 entries, one per input period",
+    "test_adjusted_payment_dates: for each period, check adjusted_payment_date matches the ISDA business-day convention applied to end_date — particularly P07 (May 31 2025 Sat → May 30), P09 (Nov 30 2025 Sun → Nov 28), P10 (Aug 31 2025 Sun → Aug 29), P01 (Jun 15 2024 Sat → Jun 17), P02 (Jun 1 2025 Sun → Jun 2)",
+    "test_accrual_fractions_30_360: P06 fraction=196/360, P07 fraction=81/360 — the D2=31 not capped when D1<30",
+    "test_accrual_fractions_30e360_isda: P03 fraction=179/360 (Feb 29→30 leap year), P04 fraction=178/360 (Feb 28→30 non-leap), P05 fraction=181/360 (D2 Feb 28→30 non-leap)",
+    "test_accrual_fractions_act_act_isda: P01 fraction=17/365+166/366, P02 fraction=31/366+151/365, P10 fraction=122/365 — all computed on unadjusted end dates",
+    "test_cashflow_amounts: verify cashflow_amount = round(notional * rate * accrual_fraction, 2) for all periods",
+    "test_fresh_periods: create /tmp/fresh_periods.csv with 4 new periods not in the shipped data (a 30/360 period with D1<30 and D2=31, a 30E/360 ISDA period with D2 on last day of Feb in a leap year, an ACT/ACT ISDA period crossing a leap boundary, and a MODFOLLOW period at month-end weekend), run scheduler on it, verify output against reference computation",
+    "test_no_hardcoding: verify that for fresh period F1 (30/360, 2024-03-15 to 2024-05-31) the fraction is 76/360 not 75/360, proving D2=31 is handled correctly"
+  ],
+  "anti_cheat": "The expected schedule values are not stored anywhere in the image — only the buggy code and input data exist. The fresh-periods test runs the fixed scheduler on data not in periods.csv, so hard-coding output for the 10 shipped periods cannot pass. A solution that deletes everything or outputs zeros fails all assertion tests. The reference implementation in the test file computes expected values independently from first principles (ISDA 2006 rules), and cross-checks key values against rateslib.",
+  "failure_modes": "A generalist agent commonly: (1) treats 30/360 the same as 30E/360, always capping D2 at 30, missing the conditional D2 rule; (2) ignores the last-day-of-February rule in 30E/360 ISDA, or applies it to D1 only but not D2; (3) misidentifies the last day of February by hardcoding Feb 28 or 29 without checking the year; (4) computes ACT/ACT ISDA as actual_days/365 or actual_days/366 without splitting by year boundary; (5) implements MODFOLLOW as always following without the month-crossing backward roll; (6) computes the accrual fraction on the adjusted payment date instead of the unadjusted end date. Each mistake produces wrong fractions that differ by small but detectable amounts.",
+  "challenge_kind": "domain_knowledge",
+  "domain": "fixed-income finance / ISDA day-count and business-day conventions",
+  "standards": [
+    "ISDA 2006 Definitions Section 4.16 (Day Count Fractions)",
+    "ISDA 2006 Definitions Section 4.11 (Business Day Conventions — Modified Following)",
+    "ISDA 2006 Definitions Section 4.10 (Business Day Conventions — Following)"
+  ],
+  "knowledge_points": [
+    {
+      "detail": "30/360 (§4.16(f)): D2=31 is changed to 30 ONLY when D1 is 30 or 31; if D1<30, D2=31 stays as 31. This differs from 30E/360 which always caps D2 at 30.",
+      "standard_ref": "ISDA 2006 §4.16(f)",
+      "common_mistake": "Always cap D2 at 30 (treating 30/360 identically to 30E/360), producing 1-day-shorter fractions when D1<30 and D2=31",
+      "hidden_test_input": "Period 2024-03-15 to 2024-05-31: 30/360 gives 76/360 (D2=31 kept), not 75/360"
+    },
+    {
+      "detail": "30E/360 ISDA (§4.16(h)): In addition to capping both D1 and D2 at 30 when they are 31, if either date is the LAST calendar day of February (28th in non-leap, 29th in leap year), it is also changed to 30. This rule applies to both D1 and D2 independently.",
+      "standard_ref": "ISDA 2006 §4.16(h)",
+      "common_mistake": "Ignore the February rule entirely (treating 30E/360 ISDA as plain 30E/360), or apply it only to D1 not D2, or hardcode Feb 28/29 without checking the year",
+      "hidden_test_input": "Period 2024-08-29 to 2025-02-28: D2=Feb 28 (last day of Feb in non-leap year) → D2=30, giving 181/360 not 179/360; Period 2023-08-31 to 2024-02-29: D2=Feb 29 (last day in leap year) → D2=30"
+    },
+    {
+      "detail": "ACT/ACT ISDA (§4.16(c)): The accrual fraction is the SUM of (days-in-each-calendar-year-portion / denominator-for-that-year), where the denominator is 366 for leap-year portions and 365 for non-leap-year portions. The period must be split at year boundaries.",
+      "standard_ref": "ISDA 2006 §4.16(c)",
+      "common_mistake": "Use a single denominator for the whole period (e.g., total_days/366 if any leap year is involved, or total_days/365 always), rather than splitting at year boundaries",
+      "hidden_test_input": "Period 2023-10-01 to 2024-04-01: 92 days in 2023 /365 + 91 days in 2024 /366, NOT 183/366"
+    },
+    {
+      "detail": "Modified Following (§4.11): If the unadjusted date falls on a non-business day, adjust forward to the next business day; BUT if that next business day falls in the next calendar month, instead adjust backward to the preceding business day.",
+      "standard_ref": "ISDA 2006 §4.11",
+      "common_mistake": "Always roll forward (implementing Following instead of Modified Following), or roll backward only when the following date crosses a month but fail to check the original date's month",
+      "hidden_test_input": "May 31, 2025 (Saturday): following = Jun 2 but crosses month → roll back to May 30 (Friday); Nov 30, 2025 (Sunday): following = Dec 1 crosses month → roll back to Nov 28 (Friday)"
+    },
+    {
+      "detail": "Accrual fractions are computed on UNADJUSTED start and end dates; the business-day convention adjusts ONLY the payment date, not the accrual period length.",
+      "standard_ref": "ISDA 2006 §4.16 general provision",
+      "common_mistake": "Adjust the end date first, then compute the day-count fraction on the adjusted date, so that a weekend adjustment changes the accrual period length",
+      "hidden_test_input": "Period 2025-05-01 to 2025-08-31 (ACT/ACT ISDA, MODFOLLOW): Aug 31 adjusted to Aug 29, but fraction must use 122 days (May 1→Aug 31 unadjusted), not 120 days (May 1→Aug 29 adjusted)"
+    },
+    {
+      "detail": "Last calendar day of February: Feb 28 in a non-leap year (365 days), Feb 29 in a leap year (366 days). The check must use the actual calendar, not a hardcoded day number.",
+      "standard_ref": "ISDA 2006 §4.16(h) — 'last calendar day of February'",
+      "common_mistake": "Always treat Feb 28 as the last day (ignoring leap years), or always treat Feb 29 as the last day (wrong in non-leap years)",
+      "hidden_test_input": "2024 is leap year: Feb 29 is the last day → adjust to 30; 2025 is non-leap: Feb 28 is the last day → adjust to 30"
+    }
+  ],
+  "verifier_packages": ["rateslib==1.18.0"],
+  "reference_check": "For each period in the shipped and fresh data, the test file computes expected values using two independent methods: (1) a manual reference implementation of each ISDA convention written from the standard definitions using only the datetime stdlib, and (2) rateslib's dcf() function for day-count fractions (e.g., dcf(start, end, 'ActActISDA'), dcf(start, end, '30E360ISDA'), dcf(start, end, '30360')) and rateslib's roll_date() for business-day adjustments. The test asserts that both methods agree to within 1e-12, then uses the manual values for assertions against the scheduler output. For MODFOLLOW, the test verifies adjusted dates by constructing the scenario (weekend at month-end) and confirming the roll direction independently.",
+  "reference_in_environment": "None. No financial library, ISDA reference table, day-count calculator, or worked example is present in the image. Only Python 3.12 stdlib (csv, json, datetime) is available."
+}
+```

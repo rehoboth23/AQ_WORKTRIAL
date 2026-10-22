@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Run python3 /app/converter.py /app/data/sample.csv and inspect the raw output bytes. The correct solution produces LF (\\n) line endings in the pipe-delimited report, while the mutant produces CRLF (\\r\\n) because it uses '\\r\\n'.join(lines) + '\\r\\n' instead of '\\n'.join(lines) + '\\n'. Any input CSV with at least one valid shift will reveal this difference.",
+ "reason": "The mutant explicitly replaces '\\n' with '\\r\\n' in ReportFormatter.format(), violating rule R16 (LF line endings only). Any output with at least one data row will contain carriage returns in the mutant but not in the correct solution."}
+```

@@ -1,0 +1,163 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction_summary, which tells it to fix sam_coverage.py to conform to SAM Format Specification v1.6. The instruction defines the output format (1-based, tab-separated, coverage depth and substitution mismatches) but does NOT explain which CIGAR ops consume reference, the MD:Z: tag format, the =/X semantics, or reverse-strand SEQ handling.",
+    "Agent reads the broken script. It sees the script already has structure for parsing SAM fields, CIGAR, and output. It identifies obvious bugs: POS subtracted by 1 (0-based treatment), I and S incorrectly advancing ref_pos, D and N not advancing ref_pos, no X mismatch detection.",
+    "Agent fixes the CIGAR consumption table bugs. A strong AI agent will likely get I, S, D, and M consumption right from general knowledge (these are well-represented in training data). N consuming reference is less commonly discussed but still known to many. H being distinct from S (hard-clipped bases NOT in SEQ) is niche — the agent may treat H like S, advancing query_pos and adding phantom coverage.",
+    "Agent addresses MD:Z: tag parsing. The broken script partially parses MD but mishandles the ^ deletion syntax. The agent likely knows MD:Z: has numbers for matches and letters for mismatches, but the ^ syntax is niche. A common mistake: treating letters after ^ as substitution mismatches rather than deleted reference bases. The agent's own test would only catch this if it specifically checks that deletion positions don't appear in mismatches.tsv.",
+    "Agent handles X and = CIGAR operations. = means match, X means mismatch — both consume query and reference. The agent might know this but could fail to detect X mismatches if it treats X like M without consulting the MD tag for the reference base, or if it ignores =/X entirely.",
+    "Agent handles reverse-strand reads (flag 0x10). This is a critical knowledge point: SAM stores SEQ already reverse-complemented for reverse-strand reads. A very common mistake is to reverse-complement SEQ again before processing, producing wrong read bases for mismatch reporting. The agent's own test using the same wrong logic would not catch this.",
+    "Agent runs the fixed script on the shipped SAM file and checks output. For the visible test data, it can verify coverage at known positions and mismatches from the MD tag. However, if the agent has the same misconception about ^ in MD or reverse-strand SEQ, its manual verification would confirm wrong output.",
+    "Agent writes its own tests. These tests encode the agent's understanding. If the agent misunderstands ^ in MD:Z:, its test will also treat ^ bases as mismatches, passing despite the bug. The hidden test using pysam as independent reference catches all such misunderstandings."
+  ],
+  "too_easy_because": [
+    "The original instruction_summary explicitly lists which CIGAR operations consume the reference ('M, D, N, =, X'), explains what MD:Z: does ('encodes reference bases at mismatch and deletion positions'), and defines = and X ('= denotes match and X denotes mismatch'). These are KNOWLEDGE POINTS the agent should bring, not information the instruction provides. Per the design rules: 'instruction.md never explains the details: knowing them is the work.'",
+    "The original instruction explicitly states 'Deletions/insertions are structural, NOT substitution mismatches, and must NOT appear' — this is domain knowledge the agent should derive from the spec, not be told.",
+    "Several knowledge points in the original are very well-known (POS is 1-based, I/S don't consume reference) and the instruction already explains the less common ones, leaving no genuine knowledge gap for a strong agent.",
+    "The reverse-strand SEQ handling is not listed as a formal knowledge_point despite being a critical common misconception and having a test for it — it's mentioned only in failure_modes.",
+    "The broken script not parsing MD:Z: at all (original design) produces completely empty mismatch output for M reads, making the bug too obvious. A partially-correct MD parser that mishandles ^ is harder to detect."
+  ],
+  "spec": {
+    "name": "sam-coverage-mismatch-fixer",
+    "description": "Fix a lab script that miscomputes per-base coverage and mismatch reports from SAM alignments due to misunderstandings of the SAM CIGAR and MD-tag specification.",
+    "difficulty": "hard",
+    "category": "data-processing",
+    "tags": ["bioinformatics", "sam-format", "cigar", "coverage", "mismatch"],
+    "expert_time_estimate_min": 45.0,
+    "junior_time_estimate_min": 150.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "A genomics lab has a Python script that processes SAM alignment files to produce per-base reference coverage depth and a substitution-mismatch report. The script was written by a generalist programmer who consulted a blog post instead of the specification. It produces plausible-looking output but contains multiple errors rooted in misunderstandings of the SAM Format Specification v1.6: it treats the SAM POS field as 0-based, incorrectly handles which CIGAR operations consume the reference (I, S, D, N, H), does not detect mismatches from X CIGAR operations, partially parses the MD:Z: tag but mishandles the deletion notation within it, and incorrectly reverse-complements the SEQ of reads with flag 0x10. The lab needs the script fixed to conform to the SAM Format Specification v1.6.",
+    "environment_setup": "The Dockerfile builds from python:3.12-slim-bookworm with WORKDIR /app. It removes build-essential and development headers after Python installation to prevent compiling C extensions. It creates /app/data/ and /app/output/ directories. It copies the broken script /app/sam_coverage.py and test data /app/data/alignments.sam into the image. No bioinformatics packages (pysam, samtools, biopython, etc.) are installed and cannot be compiled — only the Python standard library is available. The SAM file contains 14 reads on a single reference 'chr1' exercising: simple matches (M), insertions (I), leading and trailing soft clips (S), deletions (D) with MD:Z: caret-deletion syntax, intron skips (N), mismatches via MD:Z: tag within M operations, mismatches via X CIGAR op with corresponding MD:Z:, matches via = CIGAR op, hard clips (H), reverse-strand reads (flag 0x10) with mismatches, a read at POS=1 (boundary test), and overlapping reads for depth counting.",
+    "instruction_summary": "Fix /app/sam_coverage.py so it correctly computes per-base reference coverage and a substitution-mismatch report from SAM files, conforming to the SAM Format Specification v1.6 (https://samtools.github.io/hts-specs/SAMv1.pdf). The script is invoked as: python3 /app/sam_coverage.py <sam_file> <coverage_file> <mismatch_file>. Output format: (1) coverage file — tab-separated columns: reference_name, position, depth; positions are 1-based; only positions with depth > 0; sorted by reference_name then position. (2) mismatch file — tab-separated columns: reference_name, position, reference_base, read_base, count; positions are 1-based; count is the number of reads showing that exact substitution at that position; only substitution mismatches; sorted by reference_name then position. A substitution mismatch is a reference position where a read base that aligns to it differs from the reference base at that position. Test data is at /app/data/alignments.sam.",
+    "solution_outline": [
+      "Fix POS handling: the SAM POS field is 1-based; do not subtract 1.",
+      "Fix CIGAR I: does not consume the reference — do not advance ref_pos or add coverage for I.",
+      "Fix CIGAR S: does not consume the reference — do not advance ref_pos or add coverage for S.",
+      "Fix CIGAR D: consumes the reference only — advance ref_pos and add coverage for each D position.",
+      "Fix CIGAR N: consumes the reference only — advance ref_pos and add coverage for each N position.",
+      "Fix CIGAR H: consumes neither query nor reference; hard-clipped bases are not in SEQ — do not advance query_pos or ref_pos.",
+      "Fix CIGAR X: consumes both query and reference; X means sequence mismatch — record each X position as a substitution mismatch, obtaining the reference base from the MD:Z: tag.",
+      "Fix CIGAR =: consumes both query and reference; = means sequence match — no mismatch to record.",
+      "Fix MD:Z: parsing: the caret (^) followed by one or more letters denotes deleted reference bases (from D or N operations), not substitution mismatches — advance ref_pos past them but do not record them in the mismatch report. MD tag position tracking only advances through reference-consuming CIGAR operations.",
+      "Fix reverse-strand handling: SEQ in SAM is already stored reverse-complemented for reads with flag 0x10 — do not reverse-complement it again. Walk CIGAR and SEQ left-to-right for all reads regardless of strand."
+    ],
+    "test_plan": [
+      "test_coverage_positions_1based: Run script on shipped SAM. Verify read12 (5M at POS=1) covers positions 1–5. Position 0 must NOT appear. Verifies POS is 1-based.",
+      "test_insertion_not_consume_ref: Run script on shipped SAM. Verify read02 (3M2I3M at POS=25) covers exactly positions 25–30 (6 ref positions). Positions beyond 30 from the I must NOT appear. Verifies I does not consume reference.",
+      "test_softclip_not_consume_ref: Run script on shipped SAM. Verify read03 (2S3M at POS=40) covers 40–42 only; read11 (3M2S at POS=165) covers 165–167 only. Soft-clipped positions must NOT appear in coverage. Verifies S does not consume reference.",
+      "test_deletion_consume_ref: Run script on shipped SAM. Verify read04 (3M2D3M at POS=55) covers positions 55–62 (8 positions). Positions 58–59 (the D) must have depth ≥ 1. Verifies D consumes reference for coverage.",
+      "test_deletion_not_mismatch: Run script on shipped SAM. Verify positions 58–59 (deletion in read04, MD:Z:3^AC3) do NOT appear in mismatches.tsv. Verifies ^ in MD:Z: denotes deleted reference bases, not substitution mismatches.",
+      "test_intron_skip_consume_ref: Run script on shipped SAM. Verify read05 (3M10N3M at POS=75) covers positions 75–90 (16 positions). All 10 N positions (78–87) must have depth 1. Verifies N consumes reference for coverage.",
+      "test_mismatch_via_md_tag: Run script on shipped SAM. Verify mismatches.tsv has a row for position 102 with ref_base=G (read06, CIGAR 4M, MD:Z:2G2). Verifies MD:Z: tag parsing for substitution mismatches within M operations.",
+      "test_mismatch_via_x_cigar: Run script on shipped SAM. Verify mismatches.tsv has a row for position 117 with the correct ref_base from MD:Z: (read07, CIGAR 2=1X2=, MD:Z:2T2). Verifies X CIGAR operation is detected as mismatch and ref base is obtained from MD tag.",
+      "test_hardclip_ignored: Run script on shipped SAM. Verify read09 (1H5M at POS=135) covers exactly positions 135–139 with depth 1. No phantom positions from H. Verifies H consumes neither query nor reference and hard-clipped bases are absent from SEQ.",
+      "test_reverse_strand_no_revcomp: Run script on shipped SAM. Verify position 152 has the correct ref_base and read_base (read10, flag=16, CIGAR 4M, MD:Z:2A2). If SEQ were incorrectly reverse-complemented again, the read_base at the mismatch position would be wrong. Verifies SEQ is already on reference orientation in SAM.",
+      "test_consecutive_x_mismatches: Run script on shipped SAM. Verify read13 (2=2X1= at POS=180, MD:Z:2AT1) produces two mismatch rows at positions 182 and 183. Verifies X detection for consecutive mismatches and MD tag parsing with consecutive single-letter entries.",
+      "test_equal_cigar_match: Run script on shipped SAM. Verify read07 (2=1X2=) has no mismatches at the = positions (115–116 and 118–119). Verifies = is treated as match.",
+      "test_hidden_sam_pysam: Create a new SAM file in tmpdir with a reference FASTA, including reads at POS=1, reads with complex CIGAR (2S3M1D2M1I2=1X), overlapping reads with different mismatches at the same position, a reverse-strand read with mismatch, an N-containing read, an H-containing read, and a read with D and ^ in MD:Z: that also has mismatches after the deletion. Use pysam to compute expected coverage (pileup or count_aligned_pairs at each reference position) and mismatches (from aligned pairs with reference sequence). Compare script output to pysam ground truth position-by-position."
+    ],
+    "anti_cheat": "The expected coverage and mismatch values are not stored anywhere in the image. The broken script produces wrong output, so running it and checking its own output would not reveal the correct answers. The shipped SAM file does not include any tool output or log showing correct values. The hidden test uses a completely different SAM file with pysam-computed ground truth, so hardcoding answers for the shipped data alone cannot pass. No C compiler or development headers are available, preventing installation of pysam or samtools in the agent environment.",
+    "failure_modes": [
+      "An agent might fix the 0-based position bug but miss that I and S should not consume reference, passing some tests but failing the hidden test's coverage counts at I/S positions.",
+      "An agent might parse the MD:Z: tag but mishandle the ^ deletion syntax, treating deleted reference bases as substitution mismatches — its own tests (using the same wrong parser) would not catch this.",
+      "An agent might forget that N (intron skip) consumes reference like D, since N is rarer in practice, causing missing coverage at intron positions.",
+      "An agent might reverse-complement SEQ for flag 0x10 reads (double reverse-complement), producing wrong read bases for mismatch reporting — a very common misconception.",
+      "An agent might treat H like S (advance query_pos), causing index-out-of-bounds or wrong base lookups for subsequent CIGAR operations since hard-clipped bases are absent from SEQ.",
+      "An agent might handle X for coverage but fail to record X positions as mismatches, or fail to obtain the reference base from the MD:Z: tag for X positions.",
+      "An agent might advance the MD:Z: tag position counter for I or S CIGAR operations, causing a mismatch between MD tag state and CIGAR position after insertions or soft clips."
+    ],
+    "faults": [],
+    "requirements": [],
+    "themes": [],
+    "starter": "",
+    "spec_document": "",
+    "property": "",
+    "reported_symptom": "",
+    "sites": [],
+    "partial_fix": "",
+    "preserved_behaviours": [],
+    "decoys": [],
+    "hidden_edge_cases": [],
+    "why_not_textbook": "",
+    "static_read": "",
+    "crux": "",
+    "challenge_kind": "domain_knowledge",
+    "sequence_invariant": "",
+    "nameable_fix": "",
+    "self_check_blind_spot": "",
+    "reference_in_environment": "None. No bioinformatics libraries (pysam, samtools, biopython, etc.) are installed and no C compiler is available to compile them. No reference FASTA, no worked examples, and no correct output files are present. The Python standard library does not include any SAM/BAM parsing capability.",
+    "interaction": "",
+    "runnable_reference": "",
+    "failing_state": "",
+    "end_state": [],
+    "obstacles": [],
+    "shortcut_guards": [],
+    "offline": "",
+    "domain": "bioinformatics",
+    "standards": [
+      "SAM Format Specification v1.6 (https://samtools.github.io/hts-specs/SAMv1.pdf)"
+    ],
+    "knowledge_points": [
+      {
+        "detail": "SAM POS field is 1-based: the leftmost mapping position of the first CIGAR operation that consumes the reference",
+        "standard_ref": "SAM v1.6 Section 1.4, field POS: '1-based leftmost mapping POSition'",
+        "common_mistake": "Treating POS as 0-based, subtracting 1; or converting to 0-based internally but forgetting to convert back for output",
+        "hidden_test_input": "A read at POS=1 with 3M should cover reference positions 1, 2, 3 — not 0, 1, 2; position 0 must never appear in output"
+      },
+      {
+        "detail": "CIGAR I (insertion) consumes query only, NOT reference — inserted bases have no corresponding reference position and must not advance the reference position counter",
+        "standard_ref": "SAM v1.6 Section 1.4.2, Table 3: I consumes query only",
+        "common_mistake": "Advancing ref_pos for I operations, creating phantom coverage at non-existent reference positions and shifting all downstream positions",
+        "hidden_test_input": "A read with 5M2I3M at POS=10 covers ref positions 10–17 (8 positions total); the 2I must not add coverage at any reference position"
+      },
+      {
+        "detail": "CIGAR S (soft clip) consumes query only, NOT reference — soft-clipped bases are present in SEQ but are not aligned to the reference",
+        "standard_ref": "SAM v1.6 Section 1.4.2, Table 3: S consumes query only",
+        "common_mistake": "Counting soft-clipped bases as covering reference positions, overcounting coverage at alignment boundaries",
+        "hidden_test_input": "A read with 3S5M at POS=20 covers only ref positions 20–24; positions 17–19 (corresponding to the soft-clipped bases) must not appear"
+      },
+      {
+        "detail": "CIGAR D (deletion from reference) consumes reference only — the read spans those reference positions (coverage includes them) but has no query bases there",
+        "standard_ref": "SAM v1.6 Section 1.4.2, Table 3: D consumes reference only",
+        "common_mistake": "Not counting D positions as covered; confusing 'no read base' with 'not spanned by the read'",
+        "hidden_test_input": "A read with 3M5D3M at POS=10 covers ref positions 10–17 (11 positions); the 5 D positions 13–17 must each have depth ≥ 1"
+      },
+      {
+        "detail": "CIGAR N (skipped region/intron) consumes reference only — like D, these positions are spanned by the alignment and contribute to coverage",
+        "standard_ref": "SAM v1.6 Section 1.4.2, Table 3: N consumes reference only",
+        "common_mistake": "Confusing N with I (both involve 'skipping something'), resulting in N positions not being counted as covered; N is rarer than D and less discussed in tutorials",
+        "hidden_test_input": "A read with 2M100N2M at POS=5 covers ref positions 5–108 (104 positions); all 100 N positions must have depth 1"
+      },
+      {
+        "detail": "CIGAR H (hard clip) consumes neither query nor reference; hard-clipped bases are NOT present in SEQ — unlike S, H does not advance the query position counter",
+        "standard_ref": "SAM v1.6 Section 1.4.2, Table 3: H consumes neither; Section 1.4.2 text: 'H can only be present at the ends of the CIGAR string; bases in SEQ corresponding to H are absent'",
+        "common_mistake": "Treating H like S (advancing query_pos), causing wrong base lookups for subsequent CIGAR operations since hard-clipped bases are absent from SEQ",
+        "hidden_test_input": "A read with 2H4M at POS=30: SEQ has 4 bases (not 6); positions 30–33 have coverage 1; advancing query_pos by 2 for H would cause SEQ index errors or wrong base assignments for the M block"
+      },
+      {
+        "detail": "CIGAR = means sequence match and X means sequence mismatch; both consume query and reference; X positions are substitution mismatches whose reference base comes from the MD:Z: tag",
+        "standard_ref": "SAM v1.6 Section 1.4.2, Table 3: = (match) and X (mismatch) consume both query and reference",
+        "common_mistake": "Ignoring =/X entirely; treating X like M (missing that X is explicitly a mismatch); or not obtaining the reference base for X from the MD:Z: tag",
+        "hidden_test_input": "A read with 3=2X1= at POS=50 has mismatches at positions 53 and 54; the reference bases at those positions come from the MD:Z: tag (e.g., MD:Z:3AT1 → ref bases A at pos 53, T at pos 54)"
+      },
+      {
+        "detail": "MD:Z: tag format: numbers for runs of matched bases, single uppercase letters for reference bases at substitution mismatches, caret (^) followed by uppercase letters for deleted reference bases (from D or N operations); the MD tag position counter advances only through reference-consuming CIGAR operations",
+        "standard_ref": "SAM v1.6 Section 1.5: MD:Z: regex ([0-9]+|[A-Z]|\\^[A-Z]+)*; algorithm: 'if it is a D or N operation, output the count, output ^ followed by the deleted reference bases, and reset the count'",
+        "common_mistake": "Treating letters after ^ as substitution mismatches rather than deleted reference bases; not advancing the MD position counter correctly past D/N before resuming M/=/X tracking; advancing the MD counter for I or S operations (which don't consume reference)",
+        "hidden_test_input": "A read with CIGAR 3M2D3M and MD:Z:3^AC3 — the ^AC denotes 2 deleted reference bases at positions 4–5 of the alignment; they must NOT appear in mismatches.tsv; a read with CIGAR 2M1I2M and MD:Z:4 — the I does not advance the MD counter, so the 4 matches span positions 1–2 and 4–5"
+      },
+      {
+        "detail": "For reads with flag 0x10 (reverse strand), SEQ is already stored reverse-complemented in the SAM file; do NOT reverse-complement it again; walk CIGAR and SEQ left-to-right for all reads regardless of strand",
+        "standard_ref": "SAM v1.6 Section 1.4.1, FLAG bit 0x10: 'SEQ being reverse complemented'; the stored SEQ is the reverse complement of the original sequenced read",
+        "common_mistake": "Reverse-complementing SEQ for flag 0x10 reads before processing, producing wrong read bases for mismatch reporting (double reverse-complement); the very common blog-post error is to think SEQ is in 'original orientation' and needs conversion",
+        "hidden_test_input": "A reverse-strand read (flag=16) at POS=50 with CIGAR 4M and MD:Z:2A2 has a mismatch at position 52 where ref=A; if SEQ is incorrectly reverse-complemented again, the read_base reported would be the complement of the actual stored base, producing a wrong mismatch row"
+      }
+    ],
+    "verifier_packages": [
+      "pysam==0.22.1"
+    ],
+    "reference_check": "For the hidden test, pysam is used as the independent reference implementation. A reference FASTA is created alongside the test SAM file and indexed with pysam.fastaio. The SAM file is loaded with pysam.AlignmentFile. Coverage ground truth is computed from pysam's get_aligned_pairs(matches_only=False): every tuple where ref_pos is not None contributes +1 to coverage at that 1-based position. Mismatch ground truth is computed from aligned pairs where both query and reference bases are present and differ (case-insensitive): these are substitution mismatches; the reference base comes from the FASTA. For reads with deletions (D/N), coverage includes those positions but no mismatch is recorded (no query base). The script's coverage.tsv is compared position-by-position to pysam coverage, and mismatches.tsv is compared position-by-position and base-by-base to pysam mismatches. For the shipped SAM file, expected values are derived from manual analysis cross-checked against pysam.",
+    "expected_agent_steps": null
+  }
+}
+```

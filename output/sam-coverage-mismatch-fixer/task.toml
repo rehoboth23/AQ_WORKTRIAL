@@ -1,0 +1,27 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/sam-coverage-mismatch-fixer"
+description = "Fix a lab script that miscomputes per-base coverage and mismatch reports from SAM alignments due to misunderstandings of the SAM CIGAR and MD-tag specification."
+keywords = [ "bioinformatics", "sam-format", "cigar", "coverage", "mismatch",]
+
+[metadata]
+difficulty = "hard"
+category = "data-processing"
+tags = [ "bioinformatics", "sam-format", "cigar", "coverage", "mismatch",]
+expert_time_estimate_min = 45.0
+junior_time_estimate_min = 150.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+network_mode = "no-network"
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

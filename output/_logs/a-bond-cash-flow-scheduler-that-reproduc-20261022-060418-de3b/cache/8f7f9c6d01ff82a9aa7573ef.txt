@@ -1,0 +1,961 @@
+<<<FILE instruction.md>>>
+The bond trading desk relies on a legacy tool at `/usr/local/bin/bondsched` to compute
+fixed-rate bond coupon schedules. The original source code is lost — only the stripped
+binary remains. Your job is to build a Python replacement.
+
+## Goal
+
+Create `/app/bondsched.py`, runnable as `python3 /app/bondsched.py`, that reads one trade
+specification line from stdin and writes the coupon schedule to stdout. Your output must
+match the reference binary byte-for-byte (same stdout content and same exit status) for
+any input of the kinds shown in `/app/sample.txt`.
+
+## Interface
+
+Input: one line on stdin with space-separated key=value pairs:
+```
+settle=YYYY-MM-DD maturity=YYYY-MM-DD freq=N daycount=XXX bdc=YYY holidays=YYYY-MM-DD,...
+```
+
+- `freq`: 1 (annual), 2 (semi-annual), or 4 (quarterly)
+- `daycount`: 30U360, 30E360, ACT365, or ACTACT
+- `bdc`: NONE, FOLLOWING, PRECEDING, MODFOLLOW, or MODPRECED
+- `holidays`: comma-separated YYYY-MM-DD dates (may be empty)
+
+Output: one line per coupon period:
+```
+N START END PAYMENT FRACTION
+```
+
+- `N`: 1-based period index (no zero-padding)
+- `START`: unadjusted start date (YYYY-MM-DD)
+- `END`: unadjusted end date (YYYY-MM-DD)
+- `PAYMENT`: business-day-adjusted payment date (YYYY-MM-DD)
+- `FRACTION`: accrual fraction with exactly 6 decimal places
+
+Exit codes:
+- 0: success
+- 1: empty stdin
+- 2: malformed input, with `ERROR: reason` on stderr
+
+## Schedule construction rules
+
+1. Coupon dates are generated backwards from the maturity date at `12/freq`-month intervals.
+2. Accrual fractions are computed from the **unadjusted** start and end dates; the payment date is the **BDC-adjusted** end date.
+3. If settlement falls between coupon dates, the first period starts from the settlement date itself, creating a short stub; subsequent periods are full length.
+4. Weekends (Saturday, Sunday) are always non-business days.
+5. Listed holidays are also non-business days.
+6. Output must match byte-for-byte — identical text on stdout and identical exit code.
+
+## Important notes
+
+- The artifact **must not** call the reference binary or any external program.
+- The reference binary will **not** be available when the artifact is checked.
+- The legacy tool was written in-house and may deviate from ISDA textbook conventions.
+- Probe the binary systematically on the sample inputs and your own test cases to discover its exact behaviour. Pay close attention to boundary conditions, day-count fractions near rounding thresholds, business-day adjustments near month boundaries, and how February dates are handled.
+- See `/app/sample.txt` for 18 sample trade specifications covering all parameter values.
+<<<END>>>
+<<<FILE environment/Dockerfile>>>
+FROM ubuntu:24.04 AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+COPY src/reference.c /build/reference.c
+RUN gcc -O2 -o /build/bondsched /build/reference.c -lm && strip /build/bondsched
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/bondsched /usr/local/bin/bondsched
+COPY sample.txt /app/sample.txt
+WORKDIR /app
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+cat > /app/bondsched.py << 'PYEOF'
+#!/usr/bin/env python3
+import sys
+import math
+
+
+def is_leap(y):
+    return (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0)
+
+
+def days_in_month(y, m):
+    dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if m == 2 and is_leap(y):
+        return 29
+    return dim[m - 1]
+
+
+def days_from_civil(y, m, d):
+    ya = y - (1 if m <= 2 else 0)
+    era = ya // 400 if ya >= 0 else (ya - 399) // 400
+    yoe = ya - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def civil_from_days(z):
+    z += 719468
+    era = z // 146097 if z >= 0 else (z - 146096) // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    yr = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    dd = doy - (153 * mp + 2) // 5 + 1
+    mm = mp + 3 if mp < 10 else mp - 9
+    if mm <= 2:
+        yr += 1
+    return yr, mm, dd
+
+
+def calc_dow(days):
+    return ((days % 7) + 4 + 7) % 7
+
+
+def add_months_func(y, m, d, n):
+    total = y * 12 + (m - 1) + n
+    ry = total // 12
+    rm = total % 12 + 1
+    mx = days_in_month(ry, rm)
+    rd = d if d <= mx else mx
+    return ry, rm, rd
+
+
+def parse_date(s):
+    if len(s) != 10 or s[4] != '-' or s[7] != '-':
+        return None
+    try:
+        y = int(s[0:4])
+        m = int(s[5:7])
+        d = int(s[8:10])
+    except ValueError:
+        return None
+    if y < 1 or y > 9999 or m < 1 or m > 12 or d < 1 or d > days_in_month(y, m):
+        return None
+    return y, m, d
+
+
+def fmt_date(y, m, d):
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
+def is_bd(days, hol_days):
+    w = calc_dow(days)
+    if w == 0 or w == 6:
+        return False
+    for h in hol_days:
+        if days == h:
+            return False
+        hw = calc_dow(h)
+        if hw == 6 and days == h - 1:
+            return False
+        if hw == 0 and days == h + 1:
+            return False
+    return True
+
+
+def adjust_date(days, bdc, hol_days):
+    if bdc == 0:
+        return days
+    if bdc == 1 or bdc == 3:
+        while not is_bd(days, hol_days):
+            days += 1
+    else:
+        while not is_bd(days, hol_days):
+            days -= 1
+    return days
+
+
+def dc_30u360(y1, m1, d1, y2, m2, d2):
+    if d1 == 31:
+        d1 = 30
+    if m1 == 2 and d1 == days_in_month(y1, 2):
+        d1 = 30
+    if d2 == 31:
+        d2 = 30
+    days = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)
+    return days / 360.0
+
+
+def dc_30e360(y1, m1, d1, y2, m2, d2):
+    if d1 == 31:
+        d1 = 30
+    if d2 == 31:
+        d2 = 30
+    if m1 == 2 and d1 == days_in_month(y1, 2):
+        d1 = 30
+    days = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1)
+    return days / 360.0
+
+
+def dc_act365(y1, m1, d1, y2, m2, d2):
+    start = days_from_civil(y1, m1, d1)
+    end = days_from_civil(y2, m2, d2)
+    actual = end - start
+    denom = 365.0
+    for y in range(y1, y2 + 1):
+        if is_leap(y):
+            feb29 = days_from_civil(y, 2, 29)
+            if feb29 > start and feb29 <= end:
+                denom = 365.25
+                break
+    return actual / denom
+
+
+def dc_actact(y1, m1, d1, y2, m2, d2):
+    start = days_from_civil(y1, m1, d1)
+    end = days_from_civil(y2, m2, d2)
+    actual = end - start
+    denom = 366.0 if is_leap(y2) else 365.0
+    return actual / denom
+
+
+def main():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(1)
+    line = line.rstrip('\n\r')
+    if len(line) == 0:
+        sys.exit(1)
+
+    sy = sm = sd = my = mm = md = 0
+    freq = 0
+    dc = ''
+    bdc_str = ''
+    hol_str = ''
+    have_settle = have_mat = have_freq = have_dc = have_bdc = False
+
+    for tok in line.split(' '):
+        if not tok:
+            continue
+        eq = tok.find('=')
+        if eq < 0:
+            sys.stderr.write("ERROR: invalid token\n")
+            sys.exit(2)
+        key = tok[:eq]
+        val = tok[eq + 1:]
+
+        if key == 'settle':
+            r = parse_date(val)
+            if r is None:
+                sys.stderr.write("ERROR: invalid settle\n")
+                sys.exit(2)
+            sy, sm, sd = r
+            have_settle = True
+        elif key == 'maturity':
+            r = parse_date(val)
+            if r is None:
+                sys.stderr.write("ERROR: invalid maturity\n")
+                sys.exit(2)
+            my, mm, md = r
+            have_mat = True
+        elif key == 'freq':
+            try:
+                freq = int(val)
+            except ValueError:
+                sys.stderr.write("ERROR: invalid freq\n")
+                sys.exit(2)
+            if freq not in (1, 2, 4):
+                sys.stderr.write("ERROR: invalid freq\n")
+                sys.exit(2)
+            have_freq = True
+        elif key == 'daycount':
+            dc = val
+            have_dc = True
+        elif key == 'bdc':
+            bdc_str = val
+            have_bdc = True
+        elif key == 'holidays':
+            hol_str = val
+        else:
+            sys.stderr.write("ERROR: unknown key\n")
+            sys.exit(2)
+
+    if not (have_settle and have_mat and have_freq and have_dc and have_bdc):
+        sys.stderr.write("ERROR: missing field\n")
+        sys.exit(2)
+
+    settle_days = days_from_civil(sy, sm, sd)
+    mat_days = days_from_civil(my, mm, md)
+    if settle_days >= mat_days:
+        sys.stderr.write("ERROR: settle must be before maturity\n")
+        sys.exit(2)
+
+    hol_days = []
+    if hol_str:
+        for h in hol_str.split(','):
+            r = parse_date(h)
+            if r is None:
+                sys.stderr.write("ERROR: invalid holiday\n")
+                sys.exit(2)
+            hol_days.append(days_from_civil(*r))
+
+    bdc_map = {'NONE': 0, 'FOLLOWING': 1, 'PRECEDING': 2, 'MODFOLLOW': 3, 'MODPRECED': 4}
+    if bdc_str not in bdc_map:
+        sys.stderr.write("ERROR: invalid bdc\n")
+        sys.exit(2)
+    bdc_code = bdc_map[bdc_str]
+
+    dc_map = {'30U360': 0, '30E360': 1, 'ACT365': 2, 'ACTACT': 3}
+    if dc not in dc_map:
+        sys.stderr.write("ERROR: invalid daycount\n")
+        sys.exit(2)
+    dc_code = dc_map[dc]
+
+    eom = 1 if md >= 28 else 0
+    step = 12 // freq
+
+    cd = []
+    cy_arr = []
+    cm_arr = []
+    cdd_arr = []
+
+    for i in range(1000):
+        if i == 0:
+            ry, rm, rd = my, mm, md
+        else:
+            ry, rm, rd = add_months_func(my, mm, md, -i * step)
+            if eom:
+                rd = days_in_month(ry, rm)
+        days = days_from_civil(ry, rm, rd)
+        if days <= settle_days:
+            break
+        cd.append(days)
+        cy_arr.append(ry)
+        cm_arr.append(rm)
+        cdd_arr.append(rd)
+
+    n = len(cd)
+    cd.reverse()
+    cy_arr.reverse()
+    cm_arr.reverse()
+    cdd_arr.reverse()
+
+    pry, prm, prd = add_months_func(my, mm, md, -n * step)
+    if eom:
+        prd = days_in_month(pry, prm)
+    prev_days = days_from_civil(pry, prm, prd)
+    on_coupon = (prev_days == settle_days)
+
+    if on_coupon:
+        num_periods = n - 1
+        sy_a = cy_arr[:num_periods]
+        sm_a = cm_arr[:num_periods]
+        sd_a = cdd_arr[:num_periods]
+        ey_a = cy_arr[1:num_periods + 1]
+        em_a = cm_arr[1:num_periods + 1]
+        ed_a = cdd_arr[1:num_periods + 1]
+        ed_days_arr = cd[1:num_periods + 1]
+    else:
+        num_periods = n
+        sy_a = [0] * num_periods
+        sm_a = [0] * num_periods
+        sd_a = [0] * num_periods
+        ey_a = [0] * num_periods
+        em_a = [0] * num_periods
+        ed_a = [0] * num_periods
+        ed_days_arr = [0] * num_periods
+        sy_a[0] = sy
+        sm_a[0] = sm
+        sd_a[0] = sd
+        ey_a[0] = cy_arr[0]
+        em_a[0] = cm_arr[0]
+        ed_a[0] = cdd_arr[0]
+        ed_days_arr[0] = cd[0]
+        for i in range(1, num_periods):
+            sy_a[i] = cy_arr[i - 1]
+            sm_a[i] = cm_arr[i - 1]
+            sd_a[i] = cdd_arr[i - 1]
+            ey_a[i] = cy_arr[i]
+            em_a[i] = cm_arr[i]
+            ed_a[i] = cdd_arr[i]
+            ed_days_arr[i] = cd[i]
+
+    for i in range(num_periods):
+        pay = adjust_date(ed_days_arr[i], bdc_code, hol_days)
+        py, pm, pd = civil_from_days(pay)
+
+        frac = 0.0
+        if dc_code == 0:
+            frac = dc_30u360(sy_a[i], sm_a[i], sd_a[i], ey_a[i], em_a[i], ed_a[i])
+        elif dc_code == 1:
+            frac = dc_30e360(sy_a[i], sm_a[i], sd_a[i], ey_a[i], em_a[i], ed_a[i])
+        elif dc_code == 2:
+            frac = dc_act365(sy_a[i], sm_a[i], sd_a[i], ey_a[i], em_a[i], ed_a[i])
+        elif dc_code == 3:
+            frac = dc_actact(sy_a[i], sm_a[i], sd_a[i], ey_a[i], em_a[i], ed_a[i])
+
+        tf = math.floor(frac * 1000000) / 1000000.0
+
+        print(f"{i + 1} {fmt_date(sy_a[i], sm_a[i], sd_a[i])} {fmt_date(ey_a[i], em_a[i], ed_a[i])} {fmt_date(py, pm, pd)} {tf:.6f}")
+
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
+PYEOF
+
+chmod +x /app/bondsched.py
+<<<END>>>
+<<<FILE tests/test_outputs.py>>>
+import subprocess
+import os
+import pytest
+
+REFERENCE_C = "/tests/reference.c"
+REFERENCE_BIN = "/tmp/reference_binary"
+ARTIFACT = "/app/bondsched.py"
+SAMPLE_FILE = "/app/sample.txt"
+BINARY_PATH = "/usr/local/bin/bondsched"
+BINARY_HIDDEN = "/usr/local/bin/bondsched.disabled"
+PYTHON = "/usr/bin/python3"
+GEN_CASES = "/tests/gen_cases.py"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_environment():
+    """Compile reference binary and hide the environment's binary."""
+    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    subprocess.run(["apt-get", "update", "-qq"], capture_output=True, check=True, env=env)
+    subprocess.run(["apt-get", "install", "-y", "-qq", "gcc"], capture_output=True, check=True, env=env)
+    subprocess.run(
+        ["gcc", "-O2", "-o", REFERENCE_BIN, REFERENCE_C, "-lm"],
+        capture_output=True, check=True,
+    )
+    if os.path.exists(BINARY_PATH):
+        os.rename(BINARY_PATH, BINARY_HIDDEN)
+    yield
+
+
+def run_reference(input_line):
+    result = subprocess.run(
+        [REFERENCE_BIN],
+        input=input_line,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout, result.returncode
+
+
+def run_artifact(input_line):
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/root",
+    }
+    result = subprocess.run(
+        [PYTHON, ARTIFACT],
+        input=input_line,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    return result.stdout, result.returncode
+
+
+def compare_cases(lines, label=""):
+    mismatches = []
+    for i, line in enumerate(lines):
+        ref_out, ref_rc = run_reference(line)
+        art_out, art_rc = run_artifact(line)
+        if ref_out != art_out or ref_rc != art_rc:
+            mismatches.append((i + 1, line, ref_out[:500], ref_rc, art_out[:500], art_rc))
+            if len(mismatches) >= 3:
+                break
+    if mismatches:
+        msg = f"{label} mismatches:\n" if label else "Mismatches:\n"
+        for idx, inp, ro, rr, ao, ar in mismatches:
+            msg += (
+                f"  Case {idx}: Input: {inp}\n"
+                f"    Ref(rc={rr}): {ro}\n"
+                f"    Art(rc={ar}): {ao}\n"
+            )
+        pytest.fail(msg)
+
+
+def test_artifact_exists():
+    assert os.path.exists(ARTIFACT), f"Artifact not found at {ARTIFACT}"
+
+
+def test_binary_not_available():
+    assert not os.path.exists(BINARY_PATH), (
+        f"Binary still at {BINARY_PATH}; artifact could have invoked it"
+    )
+
+
+def test_sample_cases():
+    with open(SAMPLE_FILE, "r") as f:
+        lines = [l.strip() for l in f if l.strip()]
+    compare_cases(lines, label="Sample")
+
+
+def test_generated_cases():
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/root",
+    }
+    gen_result = subprocess.run(
+        [PYTHON, GEN_CASES],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert gen_result.returncode == 0, f"gen_cases.py failed: {gen_result.stderr}"
+    lines = [l.strip() for l in gen_result.stdout.split("\n") if l.strip()]
+    assert len(lines) >= 400, f"Expected >= 400 generated cases, got {len(lines)}"
+    compare_cases(lines, label="Generated")
+
+
+def test_error_empty_input():
+    _, ref_rc = run_reference("")
+    _, art_rc = run_artifact("")
+    assert ref_rc == art_rc, f"Empty input exit code mismatch: ref={ref_rc} art={art_rc}"
+
+
+def test_error_malformed_input():
+    bad = "settle=NOTDATE maturity=2025-01-01 freq=2 daycount=30U360 bdc=NONE holidays="
+    _, ref_rc = run_reference(bad)
+    _, art_rc = run_artifact(bad)
+    assert ref_rc == art_rc, f"Malformed input exit code mismatch: ref={ref_rc} art={art_rc}"
+<<<END>>>
+<<<FILE tests/reference.c>>>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#define MAX_DATES 1000
+#define MAX_HOLIDAYS 200
+#define MAX_LINE 8192
+
+static int is_leap(int y) {
+    return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+}
+
+static int days_in_month(int y, int m) {
+    static const int dim[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (m == 2 && is_leap(y)) return 29;
+    return dim[m-1];
+}
+
+static int days_from_civil(int y, int m, int d) {
+    y -= (m <= 2);
+    int era = (y >= 0 ? y : y-399) / 400;
+    int yoe = y - era * 400;
+    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static void civil_from_days(int days, int *y, int *m, int *d) {
+    days += 719468;
+    int era = (days >= 0 ? days : days - 146096) / 146097;
+    int doe = days - era * 146097;
+    int yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+    int yr = yoe + era * 400;
+    int doy = doe - (365*yoe + yoe/4 - yoe/100);
+    int mp = (5*doy + 2) / 153;
+    int dd = doy - (153*mp+2)/5 + 1;
+    int mm = mp < 10 ? mp + 3 : mp - 9;
+    if (mm <= 2) yr++;
+    *y = yr;
+    *m = mm;
+    *d = dd;
+}
+
+static int calc_dow(int days) {
+    return ((days % 7) + 4 + 7) % 7;
+}
+
+static void add_months(int y, int m, int d, int n, int *ry, int *rm, int *rd) {
+    int total = y * 12 + (m - 1) + n;
+    *ry = total / 12;
+    *rm = total % 12;
+    if (*rm < 0) { *rm += 12; (*ry)--; }
+    *rm += 1;
+    int maxd = days_in_month(*ry, *rm);
+    *rd = (d > maxd) ? maxd : d;
+}
+
+static int parse_date(const char *s, int *y, int *m, int *d) {
+    if (strlen(s) != 10 || s[4] != '-' || s[7] != '-') return 0;
+    char buf[5];
+    strncpy(buf, s, 4); buf[4] = 0; *y = atoi(buf);
+    strncpy(buf, s+5, 2); buf[2] = 0; *m = atoi(buf);
+    strncpy(buf, s+8, 2); buf[2] = 0; *d = atoi(buf);
+    if (*y < 1 || *y > 9999) return 0;
+    if (*m < 1 || *m > 12) return 0;
+    if (*d < 1 || *d > days_in_month(*y, *m)) return 0;
+    return 1;
+}
+
+static int hol_count = 0;
+static int hol_days[MAX_HOLIDAYS];
+
+static int is_bd(int days) {
+    int w = calc_dow(days);
+    if (w == 0 || w == 6) return 0;
+    for (int i = 0; i < hol_count; i++) {
+        if (days == hol_days[i]) return 0;
+        int hw = calc_dow(hol_days[i]);
+        if (hw == 6 && days == hol_days[i] - 1) return 0;
+        if (hw == 0 && days == hol_days[i] + 1) return 0;
+    }
+    return 1;
+}
+
+static int adjust_date(int days, int bdc) {
+    if (bdc == 0) return days;
+    if (bdc == 1 || bdc == 3) {
+        while (!is_bd(days)) days++;
+    } else {
+        while (!is_bd(days)) days--;
+    }
+    return days;
+}
+
+static double day_count_30u360(int y1, int m1, int d1, int y2, int m2, int d2) {
+    if (d1 == 31) d1 = 30;
+    if (m1 == 2 && d1 == days_in_month(y1, 2)) d1 = 30;
+    if (d2 == 31) d2 = 30;
+    int days = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1);
+    return (double)days / 360.0;
+}
+
+static double day_count_30e360(int y1, int m1, int d1, int y2, int m2, int d2) {
+    if (d1 == 31) d1 = 30;
+    if (d2 == 31) d2 = 30;
+    if (m1 == 2 && d1 == days_in_month(y1, 2)) d1 = 30;
+    int days = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1);
+    return (double)days / 360.0;
+}
+
+static double day_count_act365(int y1, int m1, int d1, int y2, int m2, int d2) {
+    int start = days_from_civil(y1, m1, d1);
+    int end = days_from_civil(y2, m2, d2);
+    int actual = end - start;
+    double denom = 365.0;
+    for (int y = y1; y <= y2; y++) {
+        if (is_leap(y)) {
+            int feb29 = days_from_civil(y, 2, 29);
+            if (feb29 > start && feb29 <= end) {
+                denom = 365.25;
+                break;
+            }
+        }
+    }
+    return (double)actual / denom;
+}
+
+static double day_count_actact(int y1, int m1, int d1, int y2, int m2, int d2) {
+    int start = days_from_civil(y1, m1, d1);
+    int end = days_from_civil(y2, m2, d2);
+    int actual = end - start;
+    double denom = is_leap(y2) ? 366.0 : 365.0;
+    return (double)actual / denom;
+}
+
+int main(void) {
+    char line[MAX_LINE];
+    if (fgets(line, sizeof(line), stdin) == NULL) {
+        return 1;
+    }
+    line[strcspn(line, "\n\r")] = 0;
+    if (strlen(line) == 0) {
+        return 1;
+    }
+
+    int sy=0, sm=0, sd=0, my=0, mm=0, md=0, freq=0;
+    char dc[16] = {0}, bdc_str[16] = {0}, hol[4096] = {0};
+    int have_settle=0, have_mat=0, have_freq=0, have_dc=0, have_bdc=0;
+
+    char *tok = strtok(line, " ");
+    while (tok) {
+        char *eq = strchr(tok, '=');
+        if (!eq) {
+            fprintf(stderr, "ERROR: invalid token\n");
+            return 2;
+        }
+        *eq = 0;
+        char *key = tok;
+        char *val = eq + 1;
+
+        if (!strcmp(key, "settle")) {
+            if (!parse_date(val, &sy, &sm, &sd)) { fprintf(stderr, "ERROR: invalid settle\n"); return 2; }
+            have_settle = 1;
+        } else if (!strcmp(key, "maturity")) {
+            if (!parse_date(val, &my, &mm, &md)) { fprintf(stderr, "ERROR: invalid maturity\n"); return 2; }
+            have_mat = 1;
+        } else if (!strcmp(key, "freq")) {
+            freq = atoi(val);
+            if (freq != 1 && freq != 2 && freq != 4) { fprintf(stderr, "ERROR: invalid freq\n"); return 2; }
+            have_freq = 1;
+        } else if (!strcmp(key, "daycount")) {
+            strncpy(dc, val, 15);
+            have_dc = 1;
+        } else if (!strcmp(key, "bdc")) {
+            strncpy(bdc_str, val, 15);
+            have_bdc = 1;
+        } else if (!strcmp(key, "holidays")) {
+            strncpy(hol, val, 4095);
+        } else {
+            fprintf(stderr, "ERROR: unknown key\n");
+            return 2;
+        }
+        tok = strtok(NULL, " ");
+    }
+
+    if (!have_settle || !have_mat || !have_freq || !have_dc || !have_bdc) {
+        fprintf(stderr, "ERROR: missing field\n");
+        return 2;
+    }
+
+    int settle_days = days_from_civil(sy, sm, sd);
+    int mat_days = days_from_civil(my, mm, md);
+    if (settle_days >= mat_days) {
+        fprintf(stderr, "ERROR: settle must be before maturity\n");
+        return 2;
+    }
+
+    hol_count = 0;
+    if (strlen(hol) > 0) {
+        char *htok = strtok(hol, ",");
+        while (htok && hol_count < MAX_HOLIDAYS) {
+            int hy, hm, hd;
+            if (!parse_date(htok, &hy, &hm, &hd)) { fprintf(stderr, "ERROR: invalid holiday\n"); return 2; }
+            hol_days[hol_count++] = days_from_civil(hy, hm, hd);
+            htok = strtok(NULL, ",");
+        }
+    }
+
+    int bdc_code;
+    if (!strcmp(bdc_str, "NONE")) bdc_code = 0;
+    else if (!strcmp(bdc_str, "FOLLOWING")) bdc_code = 1;
+    else if (!strcmp(bdc_str, "PRECEDING")) bdc_code = 2;
+    else if (!strcmp(bdc_str, "MODFOLLOW")) bdc_code = 3;
+    else if (!strcmp(bdc_str, "MODPRECED")) bdc_code = 4;
+    else { fprintf(stderr, "ERROR: invalid bdc\n"); return 2; }
+
+    int dc_code;
+    if (!strcmp(dc, "30U360")) dc_code = 0;
+    else if (!strcmp(dc, "30E360")) dc_code = 1;
+    else if (!strcmp(dc, "ACT365")) dc_code = 2;
+    else if (!strcmp(dc, "ACTACT")) dc_code = 3;
+    else { fprintf(stderr, "ERROR: invalid daycount\n"); return 2; }
+
+    int eom = (md >= 28);
+    int step = 12 / freq;
+
+    int cd[MAX_DATES];
+    int cy_arr[MAX_DATES], cm_arr[MAX_DATES], cdd_arr[MAX_DATES];
+    int n = 0;
+
+    for (int i = 0; i < MAX_DATES; i++) {
+        int ry, rm, rd;
+        if (i == 0) {
+            ry = my; rm = mm; rd = md;
+        } else {
+            add_months(my, mm, md, -i * step, &ry, &rm, &rd);
+            if (eom) rd = days_in_month(ry, rm);
+        }
+        int days = days_from_civil(ry, rm, rd);
+        if (days <= settle_days) break;
+        cd[n] = days;
+        cy_arr[n] = ry;
+        cm_arr[n] = rm;
+        cdd_arr[n] = rd;
+        n++;
+    }
+
+    for (int i = 0; i < n/2; i++) {
+        int t;
+        t = cd[i]; cd[i] = cd[n-1-i]; cd[n-1-i] = t;
+        t = cy_arr[i]; cy_arr[i] = cy_arr[n-1-i]; cy_arr[n-1-i] = t;
+        t = cm_arr[i]; cm_arr[i] = cm_arr[n-1-i]; cm_arr[n-1-i] = t;
+        t = cdd_arr[i]; cdd_arr[i] = cdd_arr[n-1-i]; cdd_arr[n-1-i] = t;
+    }
+
+    int pry, prm, prd;
+    add_months(my, mm, md, -n * step, &pry, &prm, &prd);
+    if (eom) prd = days_in_month(pry, prm);
+    int prev_days = days_from_civil(pry, prm, prd);
+    int on_coupon = (prev_days == settle_days);
+
+    int num_periods;
+    int sd_arr[MAX_DATES], ed_arr[MAX_DATES];
+    int sy_arr[MAX_DATES], sm_arr_a[MAX_DATES], sdd_arr[MAX_DATES];
+    int ey_arr[MAX_DATES], em_arr_a[MAX_DATES], edd_arr[MAX_DATES];
+
+    if (on_coupon) {
+        num_periods = n - 1;
+        for (int i = 0; i < num_periods; i++) {
+            sd_arr[i] = cd[i];
+            sy_arr[i] = cy_arr[i]; sm_arr_a[i] = cm_arr[i]; sdd_arr[i] = cdd_arr[i];
+            ed_arr[i] = cd[i+1];
+            ey_arr[i] = cy_arr[i+1]; em_arr_a[i] = cm_arr[i+1]; edd_arr[i] = cdd_arr[i+1];
+        }
+    } else {
+        num_periods = n;
+        sd_arr[0] = settle_days;
+        sy_arr[0] = sy; sm_arr_a[0] = sm; sdd_arr[0] = sd;
+        ed_arr[0] = cd[0];
+        ey_arr[0] = cy_arr[0]; em_arr_a[0] = cm_arr[0]; edd_arr[0] = cdd_arr[0];
+        for (int i = 1; i < num_periods; i++) {
+            sd_arr[i] = cd[i-1];
+            sy_arr[i] = cy_arr[i-1]; sm_arr_a[i] = cm_arr[i-1]; sdd_arr[i] = cdd_arr[i-1];
+            ed_arr[i] = cd[i];
+            ey_arr[i] = cy_arr[i]; em_arr_a[i] = cm_arr[i]; edd_arr[i] = cdd_arr[i];
+        }
+    }
+
+    for (int i = 0; i < num_periods; i++) {
+        int pay = adjust_date(ed_arr[i], bdc_code);
+        int py, pm, pd;
+        civil_from_days(pay, &py, &pm, &pd);
+
+        double frac = 0.0;
+        switch (dc_code) {
+            case 0: frac = day_count_30u360(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+            case 1: frac = day_count_30e360(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+            case 2: frac = day_count_act365(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+            case 3: frac = day_count_actact(sy_arr[i], sm_arr_a[i], sdd_arr[i], ey_arr[i], em_arr_a[i], edd_arr[i]); break;
+        }
+
+        double tf = floor(frac * 1e6) / 1e6;
+
+        printf("%d %04d-%02d-%02d %04d-%02d-%02d %04d-%02d-%02d %.6f\n",
+               i + 1,
+               sy_arr[i], sm_arr_a[i], sdd_arr[i],
+               ey_arr[i], em_arr_a[i], edd_arr[i],
+               py, pm, pd,
+               tf);
+    }
+
+    return 0;
+}
+<<<END>>>
+<<<FILE tests/gen_cases.py>>>
+#!/usr/bin/env python3
+"""Generate 500 random bond trade specifications with emphasis on edge dates."""
+import random
+import datetime
+
+random.seed(42)
+
+
+def is_leap(y):
+    return (y % 4 == 0 and y % 100 != 0) or (y % 400 == 0)
+
+
+def days_in_month(y, m):
+    dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if m == 2 and is_leap(y):
+        return 29
+    return dim[m - 1]
+
+
+def fmt(y, m, d):
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
+def random_date(min_y=2020, max_y=2028):
+    y = random.randint(min_y, max_y)
+    m = random.randint(1, 12)
+    d = random.randint(1, days_in_month(y, m))
+    return y, m, d
+
+
+def random_edge_date(min_y=2020, max_y=2028):
+    y = random.randint(min_y, max_y)
+    m = random.choice([1, 2, 2, 2, 2, 3, 6, 7, 9, 12])
+    if m == 2:
+        d = days_in_month(y, 2)
+    else:
+        d = random.choice([1, 15, 28, 30, 31])
+        d = min(d, days_in_month(y, m))
+    return y, m, d
+
+
+def maturity_after(sy, sm, sd, extra=None):
+    if extra is None:
+        extra = random.choice([6, 12, 18, 24, 36, 48, 60])
+    total = sy * 12 + (sm - 1) + extra
+    my = total // 12
+    mm = total % 12 + 1
+    md = min(sd, days_in_month(my, mm))
+    return my, mm, md
+
+
+def edge_maturity_after(sy, sm, sd, extra=None):
+    if extra is None:
+        extra = random.choice([6, 12, 18, 24, 36, 48, 60])
+    total = sy * 12 + (sm - 1) + extra
+    my = total // 12
+    mm = total % 12 + 1
+    if mm == 2:
+        md = days_in_month(my, 2)
+    else:
+        md = random.choice([1, 15, 28, 30, 31])
+        md = min(md, days_in_month(my, mm))
+    return my, mm, md
+
+
+def day_of_week(y, m, d):
+    return datetime.date(y, m, d).weekday()  # 0=Mon, 6=Sun
+
+
+def generate_holidays(sy, sm, sd, my, mm, md, bdc):
+    if bdc == "NONE":
+        return ""
+    count = random.randint(0, 3)
+    if count == 0:
+        return ""
+    holidays = []
+    for _ in range(count):
+        y = random.randint(min(sy, my), max(sy, my))
+        m = random.randint(1, 12)
+        d = random.randint(1, days_in_month(y, m))
+        holidays.append(fmt(y, m, d))
+    # Add weekend-adjacent holidays ~40% of the time
+    if random.random() < 0.4:
+        for _ in range(30):
+            y = random.randint(max(2020, sy), min(2030, my))
+            m = random.randint(1, 12)
+            d = random.randint(1, days_in_month(y, m))
+            dow = day_of_week(y, m, d)
+            if dow == 5 or dow == 6:  # Sat or Sun
+                holidays.append(fmt(y, m, d))
+                break
+    return ",".join(holidays)
+
+
+daycounts = ["30U360", "30E360", "ACT365", "ACTACT"]
+bdcs = ["NONE", "FOLLOWING", "PRECEDING", "MODFOLLOW", "MODPRECED"]
+freqs = [1, 2, 4]
+
+lines = []
+for _ in range(500):
+    dc = random.choice(daycounts)
+    bdc = random.choice(bdcs)
+    freq = random.choice(freqs)
+
+    if random.random() < 0.65:
+        sy, sm, sd = random_edge_date(2020, 2028)
+        my, mm, md = edge_maturity_after(sy, sm, sd)
+    else:
+        sy, sm, sd = random_date(2020, 2028)
+        my, mm, md = maturity_after(sy, sm, sd)
+
+    hol = generate_holidays(sy, sm, sd, my, mm, md, bdc)
+    line = f"settle={fmt(sy,sm,sd)} maturity={fmt(my,mm,md)} freq={freq} daycount={dc} bdc={bdc} holidays={hol}"
+    lines.append(line)
+
+print("\n".join(lines))
+<<<END>>>

@@ -1,0 +1,291 @@
+{
+  "name": "timesheet-payroll-spec-converter",
+  "description": "Update a timesheet-to-payroll converter to follow a detailed specification covering rounding, overtime tiers, week boundaries, timezone handling, and exact output layout.",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": [
+    "payroll",
+    "rounding",
+    "overtime",
+    "timezone",
+    "specification",
+    "csv"
+  ],
+  "expert_time_estimate_min": 60.0,
+  "junior_time_estimate_min": 180.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "The agent finds an existing Python timesheet-to-payroll converter at /app/converter.py that works for simple cases but was written with default Python behaviours (banker's rounding, naive datetimes treated as UTC, comma-separated output, no daily overtime, no week-boundary splitting, etc.). A detailed company payroll specification document has been placed at /app/docs/PAYROLL_SPEC.md defining 20 precise rules the converter must follow. The agent must read the spec, identify every gap between the current code and the spec, and update the converter accordingly while preserving its existing --summary and --verbose features.",
+  "environment_setup": "The Dockerfile installs python:3.12-slim-bookworm plus tzdata. /app/converter.py is a ~270-line working converter with classes (TimesheetEntry, Shift, PayrollEngine, ReportFormatter, TimesheetReader, ShiftMatcher), argparse with --summary and --verbose flags, and CSV tolerance for blank lines and whitespace. It produces output but violates the spec in many ways: uses naive datetimes (no Chicago timezone), rounds with Python's round() (banker's) to 2 decimals instead of quarter-hour round-half-up, never computes daily overtime, doesn't split shifts at week boundaries, silently drops missing clock-outs without warnings, only deduplicates exact row matches, uses comma delimiters with wrong column names, formats dates as YYYY-MM-DD, omits $ and thousands comma from gross pay, sorts by week then employee, uses CRLF line endings, and exits 0 when no valid shifts exist. /app/docs/PAYROLL_SPEC.md is the full prose specification. /app/data/sample.csv contains straightforward test data.",
+  "instruction_summary": "Update /app/converter.py so it follows every rule in /app/docs/PAYROLL_SPEC.md precisely. The interface is `python3 /app/converter.py <input_csv> [--summary] [--verbose]`. The spec document defines rules for timezone (America/Chicago), work weeks (Mon-Sun), quarter-hour round-half-up rounding, minimum shift duration, daily and weekly overtime tiers, cross-week shift splitting, duplicate/incomplete entry handling, pipe-delimited output format with specific column names, MM/DD week-start dates, N.NN hours, $N,NNN.NN gross pay, employee-then-week sorting, LF line endings, and exit codes. Keep all existing functionality (--summary, --verbose, blank-line/whitespace tolerance) working. A sample CSV is at /app/data/sample.csv.",
+  "solution_outline": [
+    "Add from zoneinfo import ZoneInfo; define CHICAGO = ZoneInfo('America/Chicago')",
+    "Implement round_half_up(n, precision) function for both quarter-hour and cent rounding",
+    "Implement quarter_hour_round(hours) using round_half_up to nearest 0.25",
+    "Parse timestamps as timezone-aware in America/Chicago",
+    "Implement cross-week shift splitting: detect Monday 00:00 Chicago boundary, split shift into two portions, round each independently",
+    "Implement minimum shift check: discard shifts rounding to < 0.25",
+    "Implement daily overtime: group rounded hours by employee + calendar date (Chicago), apply 8-hour daily threshold",
+    "Implement weekly overtime: sum daily regular hours per employee-week, apply 40-hour weekly threshold, never reclassify daily OT",
+    "Implement duplicate handling: for same employee + same clock_in timestamp, keep first; for same clock_out, keep last; pair in file order",
+    "Implement missing clock-out: omit shift, print 'WARNING: incomplete shift for <eid> on <YYYY-MM-DD>' to stderr",
+    "Update output to pipe-delimited with header 'Employee ID|Week Start|Reg|Daily OT|Weekly OT|Gross'",
+    "Format week start as MM/DD zero-padded (Monday date in Chicago)",
+    "Format hours as N.NN always two decimals",
+    "Format gross as $N,NNN.NN with comma thousands separator for >= $1000",
+    "Sort output by Employee ID (string) then Week Start (chronological)",
+    "Use LF line endings only",
+    "Set exit code 1 for file-not-found, 2 for no valid shifts, 0 otherwise",
+    "Preserve --summary output format and --verbose stderr output format",
+    "Preserve blank-line skipping and whitespace trimming in CSV reading"
+  ],
+  "test_plan": [
+    "test_round_half_up_quarter_hour: CSV with a 7m30s shift (0.125h). Verify output has 0.25 hours (round-half-up) not 0.00 (banker's).",
+    "test_minimum_shift_discard: CSV with a 6-minute shift (0.10h rounds to 0.00). Verify no row produced for that shift.",
+    "test_minimum_shift_boundary: CSV with a 7m30s shift (0.125h rounds to 0.25). Verify row IS produced with 0.25 hours.",
+    "test_daily_overtime: CSV with 10.5h in one day. Verify 8.00 Reg, 2.50 Daily OT, 0.00 Weekly OT.",
+    "test_daily_overtime_multi_shift: Two shifts same day totaling 9.5h. Verify 8.00 Reg, 1.50 Daily OT (combined before threshold).",
+    "test_weekly_overtime: Five 8h days + one 3h day = 43 Reg. Verify 40.00 Reg, 0.00 Daily OT, 3.00 Weekly OT.",
+    "test_weekly_overtime_with_daily: 9h Mon-Fri = 40 Reg + 5 Daily OT. Verify 40 Reg, 5 Daily OT, 0 Weekly OT.",
+    "test_cross_week_split: Shift Sun 22:00 to Mon 06:00 Chicago. Verify two rows: 2.00h in prior week, 6.00h in new week.",
+    "test_cross_week_split_nonround: Shift Sun 21:52:30 to Mon 06:00 Chicago. Verify 2.00h (1.875 rounds up) in prior week, 6.00h in new week.",
+    "test_missing_clock_out_warning: CSV with empty clock_out field. Verify stderr contains exact 'WARNING: incomplete shift for E001 on 2024-06-03' and shift omitted from output.",
+    "test_duplicate_clock_in: Two entries same employee same clock_in, different clock_out. Verify only first kept (8h shift, not 9h).",
+    "test_duplicate_clock_out: Two entries same employee same clock_out, different clock_in. Verify only last kept.",
+    "test_pipe_delimiter_and_header: Verify header is 'Employee ID|Week Start|Reg|Daily OT|Weekly OT|Gross' and rows use |.",
+    "test_week_start_format: Week starting Jan 6 2025. Verify '01/06' not '1/6' or '2025-01-06'.",
+    "test_hours_format: Verify hours always show two decimals (8.00 not 8.0 or 8).",
+    "test_gross_pay_format_thousands: 40 regular hours = $1000.00. Verify '$1,000.00' with comma.",
+    "test_gross_pay_format_under_thousand: 39 regular hours = $975.00. Verify '$975.00' without comma.",
+    "test_gross_pay_round_half_up: Employee works 8.75h in one day. 8.00 Reg + 0.75 Daily OT = $200.00 + $28.125 = $228.125. Verify '$228.63' not '$228.62' (banker's).",
+    "test_sorting: Two employees E002 and E001. Verify E001 row appears before E002.",
+    "test_sorting_string_vs_numeric: Employees 'A100' and 'A20'. Verify 'A100' before 'A20' (string sort).",
+    "test_line_endings_lf_only: Run converter and check output contains no \\r characters.",
+    "test_exit_code_success: Valid input with at least one shift. Verify exit 0.",
+    "test_exit_code_file_not_found: Non-existent file. Verify exit 1.",
+    "test_exit_code_no_valid_shifts: All shifts below minimum. Verify exit 2.",
+    "test_exit_code_with_warnings: One valid shift + one incomplete shift (warning). Verify exit 0.",
+    "test_empty_week_omitted: Employee has shifts in week 1 and week 3 only. Verify no row for week 2.",
+    "test_timezone_chicago: Shift Sun 23:00 to Mon 07:00 Chicago. Verify split at Monday 00:00 Chicago (not UTC).",
+    "test_summary_flag: Run with --summary. Verify 'TOTAL: X employees, Y regular hours, Z overtime hours, $W total pay' format on stdout after main output.",
+    "test_summary_flag_large_amount: Two employees each working 40h regular + 5h daily OT = $1075 each, $2150 total. Verify summary shows '$2150.00' WITHOUT thousands comma (summary format differs from main output).",
+    "test_verbose_flag: Run with --verbose. Verify 'Processing shift: <eid> <clock_in> - <clock_out>' lines on stderr.",
+    "test_blank_lines_and_whitespace: CSV with blank lines and extra spaces. Verify processing succeeds and values are trimmed."
+  ],
+  "anti_cheat": "The spec document contains no example outputs that match the test inputs. No reference implementation exists in the image. The sample.csv uses only round-hour shifts that don't trigger quarter-hour rounding, overtime boundaries, week splits, or format edge cases. Hidden tests use non-round durations (7m30s shifts, 8h7m30s days, 21:52:30 cross-boundary), exactly-at-threshold values (40.00 regular hours, $1000 gross, $228.125 gross), single-digit months (January), and boundary-crossing shifts. A solution that hard-codes sample.csv output or only handles round numbers will fail. The expected values are derivable from the spec rules by hand computation.",
+  "failure_modes": "Agents commonly miss: (1) using Python's round() which does banker's rounding, not round-half-up \u2014 the spec explicitly warns about this but agents skim past it; (2) cross-week shift splitting is described in the 'Work Week Definition' section, not the overtime section, so agents who focus only on overtime miss it; (3) duplicate handling requires keeping first clock-in but last clock-out \u2014 an asymmetric rule easy to get wrong; (4) the gross pay format requires comma for >=$1000 but not below \u2014 the boundary at exactly $1000 is tested; (5) exit code 2 for no-valid-shifts vs exit 0 for success-with-warnings; (6) MM/DD zero-padding for single-digit months and days; (7) daily overtime is per calendar day combining all shifts, not per individual shift \u2014 a subtle distinction when multiple shifts occur on one day; (8) gross pay also uses round-half-up, not just hours \u2014 the currency rounding rule is in a separate 'Compensation' subsection that agents skip; (9) --summary format uses .2f without thousands comma, differing from the main output's $N,NNN.NN format.",
+  "faults": [],
+  "requirements": [
+    {
+      "id": "R1",
+      "rule": "All input timestamps are in the America/Chicago time zone. The converter must interpret and process all timestamps in this time zone.",
+      "theme": "time_zones",
+      "default_behaviour": "Python datetime.strptime produces naive datetimes; without explicit timezone attachment, computation treats them as UTC or local.",
+      "hidden_test_input": "A shift from Sunday 23:00 to Monday 07:00 Chicago time, which in UTC would be Monday 04:00 to Monday 12:00 \u2014 wrong week assignment if UTC is used.",
+      "boundary": "A timestamp near midnight Chicago that falls on a different calendar day in UTC"
+    },
+    {
+      "id": "R2",
+      "rule": "A work week runs from Monday 00:00:00 through Sunday 23:59:59 in America/Chicago. The week start for reporting is the Monday date in America/Chicago.",
+      "theme": "ordering",
+      "default_behaviour": "Code may use ISO week numbering or compute week start from UTC-based dates, producing the wrong Monday for dates near midnight boundaries.",
+      "hidden_test_input": "A shift on Sunday June 2 2024 at 22:00 Chicago belongs to the week starting Monday May 27.",
+      "boundary": "A shift on Sunday evening that a UTC-based calculation would place in the next week"
+    },
+    {
+      "id": "R3",
+      "rule": "All shift durations are rounded to the nearest quarter-hour (0.25 hours) before any further calculation.",
+      "theme": "arithmetic",
+      "default_behaviour": "Programmers typically round to 2 decimal places or not at all.",
+      "hidden_test_input": "A shift of 8.375 hours (8h 22m 30s) should round to 8.50, not 8.38.",
+      "boundary": "8.375 is equidistant between 8.25 and 8.50"
+    },
+    {
+      "id": "R4",
+      "rule": "Rounding uses round-half-up: when exactly halfway between two quarter-hour marks, round upward. Python's round() uses banker's rounding and must not be used.",
+      "theme": "arithmetic",
+      "default_behaviour": "Python's round(0.125, 2) returns 0.12 (banker's), not 0.13 (round-half-up). Applied to quarter-hours, round(0.125*4)/4 = 0.0 under banker's vs 0.25 under round-half-up.",
+      "hidden_test_input": "A shift of 7 minutes 30 seconds = 0.125 hours. Under round-half-up: 0.25. Under banker's: 0.00 (discarded as below minimum).",
+      "boundary": "0.125 is exactly halfway between 0.00 and 0.25"
+    },
+    {
+      "id": "R5",
+      "rule": "A shift that rounds to less than 0.25 hours is discarded entirely. A shift of exactly 0.25 hours counts.",
+      "theme": "edge_inputs",
+      "default_behaviour": "Most implementations count any positive duration; the 15-minute minimum is a payroll-specific rule.",
+      "hidden_test_input": "A 6-minute shift (0.10 hours) rounds to 0.00 and is discarded. A 7m30s shift (0.125 hours) rounds to 0.25 and counts.",
+      "boundary": "0.125 hours is the exact tipping point: round-half-up gives 0.25 (counts), banker's gives 0.00 (discarded)"
+    },
+    {
+      "id": "R6",
+      "rule": "For each calendar day (America/Chicago), if an employee's total rounded hours exceed 8.00, the first 8.00 are regular and the rest is daily overtime. This is computed per calendar day combining all shifts, not per individual shift.",
+      "theme": "arithmetic",
+      "default_behaviour": "A naive implementation either skips daily overtime entirely or computes it per shift rather than per day.",
+      "hidden_test_input": "An employee works two shifts on the same day: 5 hours and 5 hours. Total 10 hours \u2192 8.00 regular + 2.00 daily OT. Per-shift calculation would give 0 daily OT for each.",
+      "boundary": "Exactly 8.00 hours in a day yields 0 daily OT"
+    },
+    {
+      "id": "R7",
+      "rule": "After separating daily overtime, if the sum of regular hours across all days in the week exceeds 40.00, the excess becomes weekly overtime. Daily overtime hours are never reclassified.",
+      "theme": "arithmetic",
+      "default_behaviour": "Many implementations compute weekly OT on total hours (including daily OT) rather than on regular hours only.",
+      "hidden_test_input": "9 hours Mon-Fri = 40 regular + 5 daily OT. Weekly regular = 40, so 0 weekly OT. Add 1 hour Sat = 41 regular, so 1 weekly OT. Result: 40 Reg, 5 Daily OT, 1 Weekly OT.",
+      "boundary": "Exactly 40.00 regular hours means 0 weekly OT"
+    },
+    {
+      "id": "R8",
+      "rule": "When a shift crosses a week boundary (Monday 00:00 Chicago), it is split at the boundary. Hours before the boundary belong to the earlier week; hours after belong to the new week. Each portion is rounded independently.",
+      "theme": "structure",
+      "default_behaviour": "Shifts are typically assigned to the week of their start time, with no splitting.",
+      "hidden_test_input": "Shift from Sunday 21:52:30 to Monday 06:00 Chicago: 1h7m30s before boundary (1.125h, rounds to 1.00? No: 1.125 rounds to 1.00 under banker's, 1.00 under round-half-up since 1.125*4=4.5, round-half-up(4.5)=5, 5/4=1.25). Verify 1.25h in prior week, 6.00h in new week.",
+      "boundary": "A shift ending exactly at Monday 00:00 is not split; a shift starting exactly at Monday 00:00 is not split"
+    },
+    {
+      "id": "R9",
+      "rule": "Duplicate clock-in records for the same employee and same timestamp (to the second): keep only the first. Duplicate clock-out records: keep only the last. After removing duplicates, the remaining entries are processed as shifts in file order.",
+      "theme": "input_tolerance",
+      "default_behaviour": "Deduplication typically removes exact row duplicates; same-timestamp different-field duplicates are kept.",
+      "hidden_test_input": "Two entries for E001 both with clock_in 08:00:00 but different clock_outs (16:00 and 17:00). Keep first \u2192 8-hour shift, not 9-hour.",
+      "boundary": "Same timestamp to the second; millisecond differences would not be duplicates"
+    },
+    {
+      "id": "R10",
+      "rule": "A clock-in with no matching clock-out is omitted. Print to stderr: 'WARNING: incomplete shift for <employee_id> on <YYYY-MM-DD>' where the date is the clock-in date in Chicago time. This warning does not affect the exit code.",
+      "theme": "input_tolerance",
+      "default_behaviour": "Missing clock-outs are either silently dropped or cause an error/crash.",
+      "hidden_test_input": "E001 has a clock_in at 2024-06-03T08:00:00 with empty clock_out, plus a complete shift on 2024-06-04. Verify warning on stderr and only the June 4 shift in output.",
+      "boundary": "An employee with both complete and incomplete shifts: complete shifts still processed"
+    },
+    {
+      "id": "R11",
+      "rule": "Output is pipe-delimited with a header row: 'Employee ID|Week Start|Reg|Daily OT|Weekly OT|Gross'.",
+      "theme": "formatting",
+      "default_behaviour": "CSV output with comma delimiters is the typical default.",
+      "hidden_test_input": "Any valid multi-employee output; check that pipes are used and the header matches exactly.",
+      "boundary": "N/A (always checked)"
+    },
+    {
+      "id": "R12",
+      "rule": "Week Start is formatted as MM/DD, zero-padded. This is the Monday date in America/Chicago.",
+      "theme": "formatting",
+      "default_behaviour": "Dates are typically formatted as YYYY-MM-DD or M/D without zero-padding.",
+      "hidden_test_input": "Week starting January 6, 2025 \u2192 '01/06', not '1/6' or '2025-01-06'.",
+      "boundary": "Single-digit month (January = 01) and single-digit day (6th = 06)"
+    },
+    {
+      "id": "R13",
+      "rule": "Hours fields (Reg, Daily OT, Weekly OT) are formatted as N.NN with exactly two decimal places.",
+      "theme": "formatting",
+      "default_behaviour": "Python's default float formatting may drop trailing zeros (8.0 instead of 8.00).",
+      "hidden_test_input": "8 hours should display as '8.00', not '8.0' or '8'. 0.25 hours should display as '0.25'.",
+      "boundary": "Whole-number hours must still show .00"
+    },
+    {
+      "id": "R14",
+      "rule": "Gross pay is formatted as $N,NNN.NN with a comma thousands separator for values of $1,000 or more. No space after $. Values under $1,000 have no comma.",
+      "theme": "formatting",
+      "default_behaviour": "Typical default is $N.NN without thousands separator.",
+      "hidden_test_input": "40 regular hours = $1,000.00 \u2192 '$1,000.00'. 39 regular hours = $975.00 \u2192 '$975.00'. 500 regular hours = '$12,500.00'.",
+      "boundary": "Exactly $1,000.00 requires a comma; $999.99 does not"
+    },
+    {
+      "id": "R15",
+      "rule": "Rows are sorted by Employee ID ascending (string comparison), then by Week Start ascending (chronological).",
+      "theme": "ordering",
+      "default_behaviour": "Default grouping often sorts by week first, or by numeric employee ID.",
+      "hidden_test_input": "Employees 'A100' and 'A20' \u2014 string sort puts 'A100' before 'A20' (because '1' < '2'), which differs from numeric sort.",
+      "boundary": "Employee IDs that sort differently as strings vs numbers"
+    },
+    {
+      "id": "R16",
+      "rule": "Each output line ends with LF (\\n) only. No carriage return.",
+      "theme": "formatting",
+      "default_behaviour": "On Windows or with some Python write modes, CRLF (\\r\\n) may be produced.",
+      "hidden_test_input": "Any output; verify no \\r characters are present.",
+      "boundary": "N/A (always checked)"
+    },
+    {
+      "id": "R17",
+      "rule": "If an employee has no hours in a given work week, no row is output for that employee-week.",
+      "theme": "structure",
+      "default_behaviour": "A buggy implementation might generate zero rows or '0.00' rows.",
+      "hidden_test_input": "Employee has shifts in weeks 1 and 3 but not week 2. Verify only two rows, no week-2 row.",
+      "boundary": "A gap between two active weeks"
+    },
+    {
+      "id": "R18",
+      "rule": "Pay rates: Regular $25.00/hr, Daily OT $37.50/hr (1.5\u00d7), Weekly OT $50.00/hr (2\u00d7). Gross pay is rounded to the nearest cent using round-half-up.",
+      "theme": "arithmetic",
+      "default_behaviour": "Some implementations use a single overtime rate or round gross pay with banker's rounding.",
+      "hidden_test_input": "Employee works 8.75h in one day: 8.00 Reg + 0.75 Daily OT. Gross = 8.00\u00d7$25 + 0.75\u00d7$37.50 = $200 + $28.125 = $228.125. Round-half-up \u2192 $228.63? No: $228.13 (round-half-up of .125 to cents: 22812.5 \u2192 22813). Banker's \u2192 $228.12.",
+      "boundary": "$228.125 is exactly halfway between $228.12 and $228.13"
+    },
+    {
+      "id": "R19",
+      "rule": "Exit code 0 if at least one valid shift was processed; 1 if the input file cannot be opened; 2 if no valid shifts exist (all discarded or incomplete). Warnings on stderr do not affect exit code.",
+      "theme": "error_handling",
+      "default_behaviour": "Programs typically exit 0 on any non-error completion and 1 on any error, with no distinction for 'no data'.",
+      "hidden_test_input": "A CSV where all shifts are below the minimum duration \u2192 exit 2. A CSV with one valid shift and one incomplete (warning on stderr) \u2192 exit 0.",
+      "boundary": "Having warnings but at least one valid shift: exit 0 not 2"
+    },
+    {
+      "id": "R20",
+      "rule": "Blank rows in the CSV are skipped. Extra whitespace around field values is trimmed before processing.",
+      "theme": "input_tolerance",
+      "default_behaviour": "CSV readers may crash on blank lines or include whitespace in values.",
+      "hidden_test_input": "CSV with a blank line between data rows and spaces around '  E001  ' \u2014 should still process correctly.",
+      "boundary": "Employee ID with leading/trailing spaces should be trimmed"
+    }
+  ],
+  "themes": [
+    "formatting",
+    "arithmetic",
+    "ordering",
+    "structure",
+    "input_tolerance",
+    "error_handling",
+    "time_zones",
+    "edge_inputs"
+  ],
+  "starter": "The shipped converter.py is ~270 lines with a class-based structure: TimesheetEntry (parsing, validation), Shift (duration calculation), PayrollEngine (week grouping, overtime, gross), ReportFormatter (output generation), TimesheetReader (CSV reading), ShiftMatcher (dedup and pairing). It has argparse with --summary and --verbose flags. It actually works for simple cases (whole-hour shifts, single week, no overtime) but violates the spec in 17+ ways: naive datetimes (no Chicago timezone), Python round() instead of round-half-up, no quarter-hour rounding, no daily overtime, no cross-week splitting, silently drops missing clock-outs, weak deduplication, comma delimiters, YYYY-MM-DD dates, no $ or comma in gross, wrong sort order, CRLF endings, wrong exit code for no shifts. The --summary flag prints 'TOTAL: X employees, Y regular hours, Z overtime hours, $W total pay' (with W as .2f, no thousands comma) and --verbose prints per-shift processing lines to stderr. Blank line and whitespace handling are correctly implemented.",
+  "spec_document": "environment/docs/PAYROLL_SPEC.md",
+  "property": "",
+  "reported_symptom": "",
+  "sites": [],
+  "partial_fix": "",
+  "preserved_behaviours": [
+    {
+      "behaviour": "--summary flag: after the main report output, prints exactly 'TOTAL: X employees, Y regular hours, Z overtime hours, $W total pay' to stdout where X is integer, Y and Z are .2f, W is .2f (no thousands comma, no $ prefix). The values must reflect the correctly computed payroll.",
+      "hidden_test_input": "A CSV with two employees each working 40h regular + 5h daily OT (gross $1075 each). Expected summary: 'TOTAL: 2 employees, 80.00 regular hours, 10.00 overtime hours, $2150.00 total pay' \u2014 note NO thousands comma in summary, unlike main output."
+    },
+    {
+      "behaviour": "--verbose flag: for each shift processed, prints 'Processing shift: <employee_id> <clock_in> - <clock_out>' to stderr where timestamps are in YYYY-MM-DDTHH:MM:SS format (original input format, Chicago time).",
+      "hidden_test_input": "A CSV with one shift E001 08:00-16:00. Expected stderr line: 'Processing shift: E001 2024-06-03T08:00:00 - 2024-06-03T16:00:00'."
+    },
+    {
+      "behaviour": "Blank lines in the CSV are silently skipped without error.",
+      "hidden_test_input": "CSV with a blank line between two valid data rows. Both rows should be processed normally."
+    },
+    {
+      "behaviour": "Extra whitespace around CSV field values is trimmed before processing.",
+      "hidden_test_input": "CSV with '  E001  ' as employee_id. Should be processed as 'E001'."
+    }
+  ],
+  "decoys": [],
+  "hidden_edge_cases": [],
+  "why_not_textbook": "",
+  "static_read": "",
+  "crux": "",
+  "challenge_kind": "build_from_spec",
+  "sequence_invariant": "",
+  "nameable_fix": "",
+  "self_check_blind_spot": "Agents are most likely to miss or misimplement: (1) round-half-up \u2014 even after reading the spec warning about Python's round(), many agents still use round() or implement it incorrectly for quarter-hour granularity; (2) cross-week shift splitting \u2014 it's in the 'Work Week Definition' section, not the overtime section, and agents focused on the overtime math often miss it; (3) daily overtime is per calendar day combining all shifts, not per individual shift \u2014 the spec says 'per calendar day' but agents often compute per-shift; (4) duplicate handling asymmetry (first clock-in, last clock-out) \u2014 agents tend to implement symmetric dedup; (5) gross pay also uses round-half-up, not just hours \u2014 the currency rounding rule is in a separate 'Compensation' subsection that agents skip, and the test uses a value ($228.125) that is exactly halfway; (6) the exact header column names ('Daily OT' and 'Weekly OT' with spaces) differ from what agents might guess; (7) the $1,000 comma boundary \u2014 agents test $999 and $1001 but not exactly $1000.00; (8) the --summary format uses .2f WITHOUT thousands comma, which differs from the main output's $N,NNN.NN format \u2014 agents who refactor formatting may accidentally apply the main format to the summary.",
+  "reference_in_environment": "none",
+  "interaction": "",
+  "runnable_reference": "none",
+  "failing_state": "",
+  "end_state": [],
+  "obstacles": [],
+  "shortcut_guards": [],
+  "offline": "",
+  "expected_agent_steps": null
+}
