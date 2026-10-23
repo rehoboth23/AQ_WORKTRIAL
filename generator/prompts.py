@@ -457,7 +457,9 @@ Reply with file blocks only, in exactly this format, nothing before or after:
 def docs_user(public: dict, doc_paths: list[str], project_files: list[str]) -> str:
     return ("Public side of the design (everything you may know):\n\n" + json.dumps(public, indent=2)
             + "\n\nProject files already written (names only):\n" + "\n".join(project_files)
-            + "\n\nWrite instruction.md and these documents, each complete:\n" + "\n".join(doc_paths) + "\n")
+            + ("\n\nWrite instruction.md and these documents, each complete:\n" if "instruction.md" in doc_paths else
+               "\n\ninstruction.md already exists; do not write it. Write these documents, each complete:\n")
+            + "\n".join(doc_paths) + "\n")
 
 
 def files_user(spec: dict, project: dict[str, str] | None = None, max_chars: int = 150_000) -> str:
@@ -558,7 +560,9 @@ Check, against the list of checks and tests/test_outputs.py given to you:
      "UNSTATED FORMAT: <test> requires <form>".
   5. MISSING CONTRACT LINE: a line of the design's `contract` (exit code, output rule, precedence)
      or an `invisible_traps` statement that instruction.md does not state (on an inferred task, a
-     trap shown in the training data is stated by the data).
+     trap shown in the training data is stated by the data). A line that a shipped document states
+     counts as stated when instruction.md names that document as authoritative: do not copy it into
+     instruction.md; one copy of a rule, in the document.
   6. STATED ANSWER: on an inferred task, a sentence in instruction.md or a document that states one
      of the design's `inferred_rules` (its mapping, threshold, ordering or exception), unless it is
      in `stated_facts`; report "STATED ANSWER: <sentence>" and remove it.

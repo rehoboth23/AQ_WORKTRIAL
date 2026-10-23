@@ -566,12 +566,27 @@ def _is_doc(path: str) -> bool:
     return path.startswith("environment/") and path.lower().endswith(_DOC_EXT)
 
 
-def write_docs(spec: dict, project: dict[str, str], doc_paths: list[str], systems: dict, log) -> dict[str, str]:
-    """Need-to-know writing: instruction.md and every shipped document from the public design only."""
-    paths = ["instruction.md"] + [p for p in doc_paths if p != "instruction.md"]
+def write_docs(spec: dict, project: dict[str, str], doc_paths: list[str], systems: dict, log,
+               label: str = "docs") -> dict[str, str]:
+    """Need-to-know writing: instruction.md and every shipped document from the public design only.
+    `doc_paths` without instruction.md (a later call for documents the manifest never declared)
+    writes only those documents."""
+    paths = list(dict.fromkeys(doc_paths)) if label != "docs" else ["instruction.md"] + [p for p in doc_paths if p != "instruction.md"]
     docs, _, _ = chat(systems["docs"], prompts.docs_user(public_design(spec), paths, sorted(project)),
-                      parse_file_blocks, log.llm, "docs")
-    return {p: b for p, b in docs.items() if p == "instruction.md" or _is_doc(p)}
+                      parse_file_blocks, log.llm, label)
+    return {p: b for p, b in docs.items() if (p == "instruction.md" and p in paths) or (_is_doc(p) and p in paths)}
+
+
+def route_docs(spec: dict, files: dict[str, str], written: dict[str, str], systems: dict, log, label: str) -> dict[str, str]:
+    """Need-to-know: a writer that saw the hidden checks (files, repair) produced documents or the
+    instruction. Drop its versions and have the docs writer (public side only) write those paths,
+    so the paths still exist (a Dockerfile COPY, a document the instruction names) without the leak."""
+    redo = sorted(p for p in written if p == "instruction.md" or _is_doc(p))
+    kept = {p: b for p, b in written.items() if p not in redo}
+    if redo:
+        log.event("docs_rerouted", label=label, paths=redo)
+        kept.update(write_docs(spec, {**files, **kept}, redo, systems, log, label=label))
+    return kept
 
 
 def write_project(spec: dict, systems: dict, log, max_continuations: int = 2) -> dict[str, str]:
@@ -817,7 +832,9 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
         docs = write_docs(spec, project, doc_paths, systems, log) if NEED_TO_KNOW else {}
         core, _, _ = chat(systems["files"], prompts.files_user(spec, project), parse_file_blocks, log.llm, "files")
         if NEED_TO_KNOW:  # the docs writer's versions win: the core writer saw the hidden checks
+            undeclared = {p: b for p, b in core.items() if _is_doc(p) and p not in docs}  # the manifest never listed them
             core = {p: b for p, b in core.items() if p != "instruction.md" and not _is_doc(p)}
+            docs.update(route_docs(spec, {**project, **docs}, undeclared, systems, log, "docs-undeclared"))
         raw = {**project, **docs, **core}
     except (LLMError, SpecRejected) as e:
         return finish("failed", error=str(e))
@@ -922,6 +939,8 @@ def generate_task(topic: str, output_dir: str | None = None, calibration: str = 
             summary["error"] = str(e)
             break
         fixed, dropped = clean_files(patch)
+        if NEED_TO_KNOW:  # the repair writer saw the checks too: its documents go through the docs writer
+            fixed = route_docs(spec, files, fixed, systems, log, f"docs-r{rnd + 1}")
         files.update(fixed)
 
     # Failed: keep the last attempt in the logs, not in output/, so output/ only holds good tasks.

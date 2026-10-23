@@ -195,7 +195,9 @@ def parse_json_object(text: str) -> dict:
     return obj
 
 
-_FILE_BLOCK = re.compile(r"<<<FILE\s+(?P<path>[^>\s]+)\s*>>>\n(?P<body>.*?)\n?<<<END>>>", re.S)
+# The header tolerates a damaged close (`>>` plus stray text on the line): one corrupted token cost a
+# whole tests file and a repair round.
+_FILE_BLOCK = re.compile(r"<<<FILE\s+(?P<path>[^>\s]+)\s*>>[^\n]*\n(?P<body>.*?)\n?<<<END>>>", re.S)
 
 
 def parse_file_blocks(text: str) -> dict[str, str]:
