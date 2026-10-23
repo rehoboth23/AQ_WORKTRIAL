@@ -1,0 +1,376 @@
+{
+  "name": "session-store-live-migration",
+  "description": "Migrate a running session service from SQLite to an append-only log store under load with zero failed or stale responses",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": [
+    "migration",
+    "sqlite",
+    "append-only-log",
+    "live-migration",
+    "load-testing",
+    "ttl"
+  ],
+  "expert_time_estimate_min": 35.0,
+  "junior_time_estimate_min": 120.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A Python session service (stdlib http.server + SQLite) runs on port 8080 managing sessions with TTL and TTL-refresh-on-read. Operations has decided to move to an append-only log store for durability. A load generator is available for practice. The migration must happen live: traffic continues, no connections drop, no stale reads, no lost writes. The runbook documents the procedure and rules. The agent must implement the log store, wire it into the service with a dual-write migration path, and ensure correctness under a graded load stream the agent never sees.",
+  "environment_setup": "Dockerfile builds python:3.12-slim-bookworm, installs sqlite3, copies session_svc.py (working service, SQLite-backed, /admin/migrate returns 501), loadgen.py (practice load generator without checker), RUNBOOK.md (migration procedure and rules), scenario.json (practice scenario). A pre-generated practice_stream.json is created at build time from seed 1. The SQLite database /app/data/sessions.db is populated with 20 initial sessions. A public smoke test ships in /app/tests_public/test_smoke.py. No external Python packages; everything uses stdlib.",
+  "instruction_summary": "Implement an append-only log store at /app/data/session_log.jsonl and migrate the running session service to it via the /admin/migrate endpoint. Read /app/RUNBOOK.md for the procedure. The service must keep its port (8080), API, cookie format, and TTL behaviour (including TTL refresh on read). PUT updates data but does NOT refresh TTL \u2014 only read refreshes TTL. SQLite must not be used after migration. The log store must compact to under 2 MB. The migration must be recorded in /app/data/access.log. A practice load generator is at /app/loadgen.py; a smoke test is at /app/tests_public/test_smoke.py. The service keeps its port and API; no restart that drops connections\u2014use /admin/migrate on the live process. Ends with: Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+  "solution_outline": [
+    "Create logstore.py implementing an append-only JSON-lines store: each entry has session_id, data, expires_at, ts, op (write/touch/delete). Read returns the entry with the highest ts for a session (not the latest by file position). Touch appends a new entry with refreshed expires_at = now + TTL and data copied from the latest write. Compact rewrites the file keeping only the latest entry per session_id.",
+    "Modify session_svc.py: import logstore, add dual-write mode flag, add LogStore wrapper, implement /admin/migrate (start dual-write, copy existing sessions using their original SQLite updated_at as ts, switch reads to logstore, stop SQLite writes, append migration record to access.log), implement /admin/compact, add /admin/store returning current backend, add X-Service-PID header to all responses.",
+    "Ensure TTL refresh on read is implemented in the log store path: GET /sessions/<id> appends a touch entry with expires_at = now + TTL. PUT /sessions/<id> appends a write entry with new data but preserves the existing expires_at (does NOT refresh TTL).",
+    "Ensure the copy step uses original updated_at and expires_at from SQLite so dual-written entries (with higher ts) are preferred over copied entries.",
+    "Ensure expired sessions are NOT copied: check expires_at < now before copying; skip expired sessions so they return 404 from the log store.",
+    "Run practice load generator (seed 1) to verify no obvious failures; run the public smoke test.",
+    "Leave the modified code in place; the test starts the service fresh and exercises the migration."
+  ],
+  "test_plan": [
+    "test_smoke_migration: start service, create session, call /admin/migrate, verify /admin/store returns logstore, verify session still readable, create new session on log store. Common path only.",
+    "test_migration_load_seed42: start service fresh, run /tests/loadgen.py with seed 42 (~10000 requests, low write rate, fresh sessions, read-heavy mix), run /tests/checker.py on the output log, assert 0 failures and 0 stale reads.",
+    "test_migration_load_seed256: same but seed 256 (~10000 requests, burst writes at switch time, near-expiry and expiring-during-switch sessions, same-session read-after-write mix). Assert 0 failures and 0 stale reads.",
+    "test_sqlite_not_used: migrate, create a new session via API, open SQLite with Python sqlite3 module and assert the session_id is NOT in the sessions table, assert the session IS in the log file.",
+    "test_compaction: migrate, create 200 sessions with 100 updates each (20,000 log entries, ~4 MB uncompacted), call /admin/compact, assert log file size < 2 MB, assert all 200 sessions still readable with correct latest data.",
+    "test_ttl_refresh_on_read: create session with ttl=10, migrate, read 5 times with 3-second gaps (12 seconds total), assert every read returns 200 with correct data (without TTL refresh the session would expire after 10s; reads 4-5 would return 404).",
+    "test_read_your_writes: migrate, create session, update it, immediately read it, assert data matches the update.",
+    "test_no_restart: record X-Service-PID from /admin/store before migrate, migrate, record PID after, assert they are equal.",
+    "test_migration_recorded: migrate, assert /app/data/access.log exists and contains a migration record.",
+    "test_put_no_ttl_refresh: create session with ttl=5, migrate, wait 4 seconds, PUT update the session (does not refresh TTL), wait 3 more seconds (7 total > 5 TTL), GET the session \u2014 must return 404 because PUT did not refresh TTL. If PUT refreshed TTL, the session would survive and return 200 (stale).",
+    "test_practice_covers_hidden_cases: read /app/practice_stream.json, assert >= 3 sessions with ttl=300, >= 3 with ttl=5, >= 3 with ttl=2, >= 3 read ops, >= 3 write ops, >= 3 read-after-write pairs, >= 3 writes within 100 requests of the migration point.",
+    "test_loadgen_determinism: generate stream with seed 42 twice, assert identical; generate with seed 43, assert different."
+  ],
+  "anti_cheat": "The graded load generator (/tests/loadgen.py) and checker (/tests/checker.py) are in tests/ and never visible to the agent. The checker independently simulates the service's session store, TTL, TTL-refresh-on-read (only), and PUT-preserves-expires_at to compute expected responses for every request in the log\u2014it does not import or read the agent's code. SQLite-not-used is verified at run time by creating a session post-migration and directly inspecting the SQLite file. The agent cannot fake the correctness log because the checker recomputes expected values from the recorded request stream alone. The X-Service-PID header prevents silent restarts.",
+  "failure_modes": "1. Using current timestamp instead of original SQLite updated_at for copied entries: dual-written updates during the copy window get shadowed by stale copies \u2192 stale reads on graded burst-write seed. 2. Not implementing TTL refresh on read in the log store: near-expiry sessions expire during the graded run \u2192 404 where 200 expected. 3. Restarting the service to apply code changes: X-Service-PID changes \u2192 test_no_restart fails. 4. Not implementing compaction: with 20,000 entries the log file exceeds 2 MB after the compaction test. 5. Forgetting to stop SQLite writes: new sessions appear in SQLite \u2192 test_sqlite_not_used fails. 6. Not recording migration in access.log. 7. Refreshing TTL on PUT (update) in addition to read: sessions survive longer than expected \u2192 stale reads detected by checker on seed 256. 8. Copying expired sessions from SQLite without checking expiry: expired sessions return 200 instead of 404. All of these are stated in the runbook or instruction; missing them is the agent's fault for not reading carefully.",
+  "shape": "live system changed under load; graded by the load generator's correctness log",
+  "hidden_evaluation": "The graded load generator in tests/ uses two seeds (42 and 256) not present in the image. Each seed produces ~10,000 requests with different quirk combinations (write rate, session age, request mix). The checker in tests/ replays the recorded request/response log, simulates the correct session store behaviour (including TTL refresh on read only, PUT preserving expires_at, and expiry), and reports failures and stale reads. The agent never sees the graded seeds or the checker. The practice load generator (seed 1) covers all quirk dimensions but does not combine them the way the graded seeds do.",
+  "checks": [
+    {
+      "requirement": "RUNBOOK: 'Sessions written during the switch-over must not be lost.' Dual-write or replay ensures writes arriving mid-switch are persisted to the log store.",
+      "assumed_instead": "A simple copy-then-switch without dual-write loses writes that arrive during the copy.",
+      "hidden_test_input": "Seed 256: burst of 50 writes in the 100-request window around the /admin/migrate call, followed by reads for those sessions.",
+      "why_missed": "The practice seed (1) has only a few writes in the migration window; the agent's manual run may not lose any, so the bug is invisible until the graded burst seed.",
+      "caught_by_tests": [
+        "test_migration_load_seed256"
+      ]
+    },
+    {
+      "requirement": "RUNBOOK: 'Each copied entry must carry its original updated_at timestamp from SQLite, so the log store can determine which entry is newer when a dual-written update exists.'",
+      "assumed_instead": "Using the current time as ts for copied entries makes them newer than dual-written updates, causing stale reads.",
+      "hidden_test_input": "Seed 256: a write to an existing session during the copy window, then a read after migration; the read must return the updated value, not the pre-migration value.",
+      "why_missed": "The practice run has few overlapping writes during copy; the stale read only appears on the burst seed. No runtime error \u2014 responses look normal but contain old data.",
+      "caught_by_tests": [
+        "test_migration_load_seed256"
+      ]
+    },
+    {
+      "requirement": "RUNBOOK: 'TTL refresh on read: reading a session resets its expiry to now + TTL.' Must be implemented in the log store, not just SQLite.",
+      "assumed_instead": "The agent preserves TTL refresh in SQLite but forgets to implement it in the log store (appending a touch entry on read).",
+      "hidden_test_input": "test_ttl_refresh_on_read: session with ttl=10, read 5 times at 3-second intervals (12 seconds total). Without refresh it expires after 10s; with refresh it survives all 5 reads.",
+      "why_missed": "If the agent's practice run uses only ttl=300 sessions, expiry is never hit and the missing refresh is invisible.",
+      "caught_by_tests": [
+        "test_ttl_refresh_on_read",
+        "test_migration_load_seed256"
+      ]
+    },
+    {
+      "requirement": "Instruction: 'The service keeps its port (8080) and API; no restart that drops connections. Use the /admin/migrate endpoint to trigger migration on the live process.'",
+      "assumed_instead": "The agent stops the service, edits code, and restarts it, which changes the PID and may drop in-flight connections.",
+      "hidden_test_input": "test_no_restart checks X-Service-PID before and after /admin/migrate; load seeds check for connection errors in the log.",
+      "why_missed": "The agent may not include X-Service-PID in responses or may not realize the test checks PID continuity.",
+      "caught_by_tests": [
+        "test_no_restart",
+        "test_migration_load_seed42",
+        "test_migration_load_seed256"
+      ]
+    },
+    {
+      "requirement": "RUNBOOK: 'After compaction, the log file must be under 2 MB.' Compaction merges entries for the same session, keeping only the latest.",
+      "assumed_instead": "The agent does not implement /admin/compact or implements it incorrectly, so the file grows unbounded.",
+      "hidden_test_input": "test_compaction: 200 sessions \u00d7 100 updates = 20,000 entries (~4 MB uncompacted), then /admin/compact, then assert file < 2 MB and all 200 sessions readable.",
+      "why_missed": "The practice run does not create enough entries to approach the cap. Without compaction, 20,000 entries at ~200 bytes each = ~4 MB, exceeding the 2 MB cap.",
+      "caught_by_tests": [
+        "test_compaction"
+      ]
+    },
+    {
+      "requirement": "RUNBOOK: 'After migration, SQLite must not be used for reads or writes.'",
+      "assumed_instead": "The agent switches reads to the log store but forgets to stop writing to SQLite, or leaves a fallback path.",
+      "hidden_test_input": "test_sqlite_not_used: create a session after migration, then inspect the SQLite file directly; the session must not be there.",
+      "why_missed": "The agent's manual tests check the API response but not the SQLite file contents.",
+      "caught_by_tests": [
+        "test_sqlite_not_used"
+      ]
+    },
+    {
+      "requirement": "RUNBOOK: 'Append a migration record to /app/data/access.log with the timestamp and the number of sessions migrated.'",
+      "assumed_instead": "The agent performs the migration but does not write to the access log.",
+      "hidden_test_input": "test_migration_recorded: after /admin/migrate, assert /app/data/access.log exists and contains a migration entry.",
+      "why_missed": "The agent may consider logging optional.",
+      "caught_by_tests": [
+        "test_migration_recorded"
+      ]
+    },
+    {
+      "requirement": "RUNBOOK: 'Sessions expiring during the switch must be handled correctly: an expired session must return 404, not stale data.'",
+      "assumed_instead": "The agent copies all sessions from SQLite without checking expiry; expired sessions appear live in the log store.",
+      "hidden_test_input": "Seed 256: sessions with ttl=2 created just before migration; reads after migration expect 404 because they have expired.",
+      "why_missed": "The practice run has few short-TTL sessions; expiry during the brief migration window is rare. No error \u2014 the log store returns 200 with stale data.",
+      "caught_by_tests": [
+        "test_migration_load_seed256"
+      ]
+    },
+    {
+      "requirement": "Contract: 'PUT /sessions/<id>: Updates data; does NOT refresh TTL (expires_at unchanged).' Only read refreshes TTL.",
+      "assumed_instead": "The agent refreshes TTL on both read and PUT (a common default for session services), causing sessions to survive longer than expected.",
+      "hidden_test_input": "test_put_no_ttl_refresh: session with ttl=5, wait 4s, PUT update, wait 3s more (7s total > 5s TTL), GET \u2014 must return 404. If PUT refreshed TTL, session survives and returns 200 (stale).",
+      "why_missed": "The agent may assume PUT refreshes TTL and not read the contract carefully. No runtime error \u2014 the session simply lives longer than it should.",
+      "caught_by_tests": [
+        "test_put_no_ttl_refresh",
+        "test_migration_load_seed256"
+      ]
+    },
+    {
+      "requirement": "Instruction: 'Preserve the HTTP API (endpoints, response formats, cookie format) and TTL behaviour.'",
+      "assumed_instead": "The agent changes the cookie format or response JSON structure during the rewrite.",
+      "hidden_test_input": "test_smoke_migration and test_read_your_writes verify Set-Cookie header format and JSON response structure.",
+      "why_missed": "The agent may clean up the API and inadvertently change a format.",
+      "caught_by_tests": [
+        "test_smoke_migration",
+        "test_read_your_writes"
+      ]
+    },
+    {
+      "requirement": "Instruction: 'no failed or stale responses during migration.' The checker verifies every response against an independent simulation.",
+      "assumed_instead": "The agent tests only that the service responds (not that the data is correct), or tests only on the practice seed.",
+      "hidden_test_input": "Two graded seeds (42, 256) with ~10,000 requests each, exercising different quirk combinations. The checker simulates TTL, refresh-on-read-only, PUT-preserves-expires_at, expiry, and read-your-writes.",
+      "why_missed": "The agent has no checker and cannot verify correctness beyond obvious failures. Writing a correct checker requires getting every semantic detail right.",
+      "caught_by_tests": [
+        "test_migration_load_seed42",
+        "test_migration_load_seed256"
+      ]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "POST /sessions returns 201 with JSON body {session_id, data} and Set-Cookie: session_id=<uuid>; Path=/",
+      "hidden_test_input": "test_smoke_migration creates a session and checks status 201, body shape, and cookie header."
+    },
+    {
+      "behaviour": "GET /sessions/<id> returns 200 with {session_id, data} when the session exists and is unexpired, 404 otherwise. Reading refreshes TTL.",
+      "hidden_test_input": "test_read_your_writes reads a session after update and checks 200 + correct data."
+    },
+    {
+      "behaviour": "PUT /sessions/<id> updates session data and returns 200 with {session_id, data}. Does NOT refresh TTL; expires_at is unchanged.",
+      "hidden_test_input": "test_put_no_ttl_refresh updates a session and verifies it still expires at the original time."
+    },
+    {
+      "behaviour": "DELETE /sessions/<id> returns 204.",
+      "hidden_test_input": "test_smoke_migration deletes a session and checks 204."
+    },
+    {
+      "behaviour": "TTL refresh on read only: reading a session resets expires_at to now + TTL. PUT does not refresh.",
+      "hidden_test_input": "test_ttl_refresh_on_read reads a ttl=10 session five times at 3-second intervals; all reads must return 200."
+    },
+    {
+      "behaviour": "The service listens on port 8080 and accepts connections throughout.",
+      "hidden_test_input": "All load tests connect to port 8080; any connection refusal is a failure."
+    }
+  ],
+  "ground_truth": "The checker (/tests/checker.py) reads the load generator's recorded log (request + response + timestamp for each operation), maintains an in-memory simulation of the session store, and computes the expected status and data for every request. The simulation implements: create (stores data + expires_at = ts + ttl), read (checks expiry, refreshes expires_at = ts + ttl, returns data), update (checks expiry, overwrites data, preserves expires_at \u2014 does NOT refresh TTL), delete, and migration (no-op in the simulation since a correct migration is transparent). Expected values are compared to actual recorded responses. The load generator (/tests/loadgen.py) uses a seeded random.Random to deterministically generate the operation stream; same seed always produces the same bytes (verified by test_loadgen_determinism).",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "quirk_evidence": [
+    {
+      "quirk": "write_rate_during_switch: low / medium / burst",
+      "evidence": "RUNBOOK.md switch-over section describes dual-write; /app/practice_stream.json shows writes around the migration point; /app/loadgen.py source shows the stream generator."
+    },
+    {
+      "quirk": "session_age: fresh / near_expiry / expiring_during_switch",
+      "evidence": "RUNBOOK.md expiry rule section; /app/practice_stream.json includes sessions with ttl=300, ttl=5, and ttl=2."
+    },
+    {
+      "quirk": "request_mix: reads / read_write / same_session_read_after_write",
+      "evidence": "/app/practice_stream.json includes read-only, write, and read-after-write-pair operations; /app/scenario.json describes the mix."
+    },
+    {
+      "quirk": "put_does_not_refresh_ttl: PUT preserves expires_at, only read refreshes",
+      "evidence": "Contract states 'PUT does NOT refresh TTL'; RUNBOOK states 'TTL refresh on read'; /app/practice_stream.json includes PUT operations on near-expiry sessions followed by reads."
+    }
+  ],
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "Compaction cap: log file must be under 2 MB after compaction.",
+      "why": "The practice run does not create enough entries to approach any cap; the cap is an operational requirement stated in the runbook."
+    },
+    {
+      "fact": "Access log path: /app/data/access.log.",
+      "why": "The data cannot show where the migration should be recorded; it is a stated path in the runbook."
+    },
+    {
+      "fact": "No restart: the migration must happen via /admin/migrate on the live process.",
+      "why": "The data cannot show what happens if the service restarts; it is a stated constraint in the instruction."
+    },
+    {
+      "fact": "Log store path: /app/data/session_log.jsonl, append-only JSON lines.",
+      "why": "The data cannot show the file format; it is stated in the runbook."
+    },
+    {
+      "fact": "Port 8080 and the cookie format session_id=<uuid>; Path=/ must be preserved.",
+      "why": "These are configuration values the data cannot demonstrate; they are stated in the instruction."
+    },
+    {
+      "fact": "PUT does NOT refresh TTL. Only read (GET) refreshes TTL. PUT updates data but preserves the existing expires_at.",
+      "why": "The RUNBOOK states 'TTL refresh on read' but does not explicitly say 'read only.' Whether PUT refreshes TTL depends on the original service implementation, which the agent can read in session_svc.py. Stated explicitly to avoid ambiguity between two reasonable implementations."
+    }
+  ],
+  "reference_binary": "",
+  "sample_file": "",
+  "spec_document": "",
+  "knobs": [
+    {
+      "knob": "drift during the episode",
+      "where": "The load generator continues issuing requests during and after the /admin/migrate call. The service must handle live traffic while switching stores.",
+      "fairness": "Instruction says 'Traffic continues during migration' and states the final-state rule: 'all sessions in the log store, SQLite retired.'"
+    },
+    {
+      "knob": "irreversible, audited steps",
+      "where": "The migration is recorded in /app/data/access.log and the test verifies the record. Once migration is triggered, SQLite is retired and cannot be brought back (the test creates sessions post-migration and checks SQLite).",
+      "fairness": "Instruction says 'The switch-over is recorded and graded from /app/data/access.log.' The runbook states the access log format and path."
+    },
+    {
+      "knob": "convention traps",
+      "where": "PUT does not refresh TTL (only read does). Timestamps in the log store determine entry precedence (highest ts wins, not file position). Copied entries use original SQLite updated_at as ts, not current time.",
+      "fairness": "Contract states 'PUT does NOT refresh TTL.' RUNBOOK states 'TTL refresh on read' and 'Each copied entry must carry its original updated_at timestamp.'"
+    }
+  ],
+  "dial": "allowed failed or stale responses during migration; fair range 0-3 of ~20,000, start 0. Currently set to 0: zero failures and zero stale reads are allowed across all graded seeds.",
+  "quirk_matrix": "{\"dimensions\": {\"write_rate_during_switch\": [\"low\", \"medium\", \"burst\"], \"session_age\": [\"fresh\", \"near_expiry\", \"expiring_during_switch\"], \"request_mix\": [\"reads\", \"read_write\", \"same_session_read_after_write\"]}, \"mix\": \"about 30% easy cells. Seed 42: low/fresh/reads (easy). Seed 256: burst/expiring_during_switch/same_session_read_after_write (hard). Practice seed 1 covers all cells >= 3 times each.\"}",
+  "public_tests": "About 30%: a smoke test at /app/tests_public/test_smoke.py that starts the service, creates a session, triggers /admin/migrate, verifies /admin/store returns 'logstore', reads the session back, and creates a new session on the log store. Covers only the idle common path. Runs in under 30 seconds.",
+  "anti_cheese": "Paired gate: (1) the load generator's correctness log is verified by the independent checker in /tests/checker.py, which recomputes expected responses from the request stream alone\u2014it does not read the agent's code, so faking the log or hard-coding responses fails. (2) SQLite-not-used is verified at run time by creating a session post-migration and inspecting the SQLite file directly with Python's sqlite3 module. Both are enforced by hidden tests that run the service and load generator live, not by static source scan.",
+  "graded_instances": "The graded load generator (/tests/loadgen.py) generates request streams from seeds 42 and 256, which are not present in the image. Each seed produces ~10,000 requests with different quirk combinations. The practice seed (1) and its stream (/app/practice_stream.json) cover all quirk dimensions >= 3 times but do not combine them the way the graded seeds do. test_loadgen_determinism verifies that the same seed always produces the same stream bytes and that different seeds produce different streams.",
+  "self_check_gap": "A migration that passes the practice load run (seed 1) can still fail on the graded seeds because: (a) seed 256 has burst writes during the copy window\u2014the practice seed has only a few, so a race condition or stale-copy bug may not manifest; (b) seed 256 has sessions with ttl=2 that expire during the migration\u2014the practice seed has them but they may not expire at the exact right moment; (c) the agent has no checker and would need to write their own simulation to detect stale reads\u2014while the agent has the load generator source (/app/loadgen.py) and could run it with arbitrary seeds and write a checker from the stated rules, doing so correctly requires getting every semantic detail right (PUT does not refresh TTL, touch uses request timestamp, expiry boundary, copy uses original updated_at), and an agent that misunderstands a rule will replicate the same error in both service and checker. The practice stream nonetheless determines the right answer because it shows every quirk dimension (dual-write need, TTL refresh, expiry handling, read-after-write, PUT-no-refresh) at least 3 times\u2014reading the runbook and the practice stream together reveals every rule the graded instances test.",
+  "margins": [
+    {
+      "test": "test_migration_load_seed42",
+      "bar": "0 failures, 0 stale reads out of ~10,000",
+      "oracle_value": "0 failures, 0 stale reads",
+      "baseline": "N/A (absolute check)"
+    },
+    {
+      "test": "test_migration_load_seed256",
+      "bar": "0 failures, 0 stale reads out of ~10,000",
+      "oracle_value": "0 failures, 0 stale reads",
+      "baseline": "N/A (absolute check)"
+    },
+    {
+      "test": "test_compaction",
+      "bar": "log file < 2 MB after compaction of 20,000 entries (~4 MB uncompacted)",
+      "oracle_value": "~40 KB (200 sessions, 1 entry each after compaction)",
+      "baseline": "N/A (absolute check); without compaction the file is ~4 MB, exceeding the bar by 100%"
+    },
+    {
+      "test": "test_ttl_refresh_on_read",
+      "bar": "session with ttl=10 survives 5 reads at 3-second intervals (12 seconds total)",
+      "oracle_value": "all 5 reads return 200",
+      "baseline": "without TTL refresh, session expires after 10s; reads 4-5 (at t=12, t=15) return 404; margin is 7 seconds (10s TTL - 3s gap), safe on 1-CPU"
+    },
+    {
+      "test": "test_put_no_ttl_refresh",
+      "bar": "session with ttl=5 returns 404 at t=7 after PUT at t=4 (PUT does not refresh)",
+      "oracle_value": "404 at t=7",
+      "baseline": "if PUT refreshed TTL, session would survive to t=9 and return 200 (stale); margin is 2 seconds (7s elapsed - 5s TTL)"
+    }
+  ],
+  "contract": [
+    "Entry point: /app/session_svc.py started with /usr/local/bin/python3, listens on 0.0.0.0:8080.",
+    "POST /sessions: body {data: {...}, ttl?: int}. Returns 201 {session_id, data}. Set-Cookie: session_id=<uuid>; Path=/. Default TTL 300s.",
+    "GET /sessions/<id>: returns 200 {session_id, data} if valid, 404 {error: 'not found'} if expired or missing. Reading refreshes TTL (expires_at = now + TTL).",
+    "PUT /sessions/<id>: body {data: {...}}. Returns 200 {session_id, data} if valid, 404 if expired or missing. Updates data; does NOT refresh TTL (expires_at unchanged).",
+    "DELETE /sessions/<id>: returns 204 always.",
+    "POST /admin/migrate: performs live migration (dual-write \u2192 copy \u2192 switch reads \u2192 stop SQLite \u2192 record). Returns 200 {status: 'migrated', sessions_migrated: N}. Must not restart the process.",
+    "GET /admin/store: returns 200 {store: 'sqlite'|'logstore'}.",
+    "POST /admin/compact: compacts the log store. Returns 200 {status: 'compacted', entries: N}.",
+    "All responses include header X-Service-PID: <pid>.",
+    "Log store: /app/data/session_log.jsonl, append-only JSON lines. Each entry: {session_id, data, expires_at, ts, op}. op is 'write', 'touch', or 'delete'. Read returns the entry with the highest ts for a session.",
+    "Compaction cap: file must be < 2 MB after /admin/compact.",
+    "Access log: /app/data/access.log, append-only text. Migration record includes timestamp and session count.",
+    "Precedence: when dual-write is active, reads come from SQLite until the switch; after the switch, reads come from the log store only."
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Using current time as ts for copied entries during migration copy. Dual-written updates (with ts = write time) appear older than the copied entry (ts = copy time), so the log store returns stale data. No runtime error; responses look normal but contain old data.",
+      "stated_in": "RUNBOOK: 'Each copied entry must carry its original updated_at timestamp from SQLite, so the log store can determine which entry is newer when a dual-written update exists.'"
+    },
+    {
+      "trap": "Not implementing TTL refresh on read in the log store. Sessions near expiry expire silently; reads return 404 instead of 200. No error is logged; the session simply vanishes.",
+      "stated_in": "RUNBOOK: 'TTL refresh on read: reading a session resets its expiry to now + TTL.'"
+    },
+    {
+      "trap": "Copying expired sessions from SQLite to the log store without checking expiry. The log store returns the stale session data with 200 instead of 404. No error; the response looks correct but violates expiry semantics.",
+      "stated_in": "RUNBOOK: 'Sessions expiring during the switch must be handled correctly: an expired session must return 404, not stale data.'"
+    },
+    {
+      "trap": "Refreshing TTL on PUT (update) in addition to read. The RUNBOOK states 'TTL refresh on read.' If the agent also refreshes on PUT, sessions survive longer than expected. No error; the 200 response looks correct, but the checker detects the session should have expired.",
+      "stated_in": "Contract: 'PUT /sessions/<id>: Updates data; does NOT refresh TTL (expires_at unchanged).' RUNBOOK: 'TTL refresh on read: reading a session resets its expiry to now + TTL.'"
+    },
+    {
+      "trap": "Restarting the service to apply code changes. The PID changes; the X-Service-PID header reveals it. No request fails, but the test catches the PID change.",
+      "stated_in": "Instruction: 'The service keeps its port (8080) and API; no restart that drops connections. Use the /admin/migrate endpoint to trigger migration on the live process.'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "Seed 42 (graded load, ~10,000 requests)",
+      "quirks": "low write rate, fresh sessions, read-heavy mix",
+      "purpose": "Tests the common migration path under light load: dual-write, copy, switch, and basic correctness."
+    },
+    {
+      "instance": "Seed 256 (graded load, ~10,000 requests)",
+      "quirks": "burst writes at switch time, near-expiry + expiring-during-switch sessions, same-session read-after-write, PUT on near-expiry sessions",
+      "purpose": "Tests race conditions, TTL refresh, expiry handling, PUT-no-refresh, and read-your-writes under stress. The hardest combination."
+    },
+    {
+      "instance": "test_ttl_refresh_on_read (direct API test)",
+      "quirks": "near_expiry session, repeated reads",
+      "purpose": "Isolates TTL refresh on read in the log store without load noise. Uses ttl=10 with 3-second gaps (7-second margin)."
+    },
+    {
+      "instance": "test_put_no_ttl_refresh (direct API test)",
+      "quirks": "near_expiry session, PUT update, delayed read",
+      "purpose": "Isolates PUT-does-not-refresh-TTL behaviour. Session with ttl=5, PUT at t=4, GET at t=7 must return 404."
+    },
+    {
+      "instance": "test_compaction (direct API test)",
+      "quirks": "200 sessions, 100 updates each, 20,000 entries, compaction trigger",
+      "purpose": "Isolates compaction correctness and file-size cap. Uncompacted file ~4 MB exceeds 2 MB cap; compacted ~40 KB."
+    },
+    {
+      "instance": "test_sqlite_not_used (direct API + file inspection)",
+      "quirks": "post-migration session creation, SQLite inspection",
+      "purpose": "Verifies SQLite is truly retired, not just shadowed."
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Increase graded request count from 10,000 to 20,000 per seed.",
+      "Add a third graded seed with a different quirk combination (e.g., medium write rate, near-expiry, read-write mix).",
+      "Tighten compaction cap from 2 MB to 500 KB.",
+      "Reduce default TTL from 300s to 60s to stress expiry handling.",
+      "Add concurrent request support to the load generator (multiple threads), making race conditions more likely."
+    ],
+    "too_hard": [
+      "Allow dial up to 3: tolerate 1-3 failures or stale reads across all graded seeds.",
+      "Reduce graded request count from 10,000 to 5,000.",
+      "Remove the burst-write seed (256) and keep only the easy seed (42).",
+      "Ship a partial checker in /app/tests_public/ that covers stale-read detection for the common path.",
+      "Remove the PUT-no-TTL-refresh check (make PUT refresh TTL, matching the common default)."
+    ]
+  },
+  "seed_card": "topic: Move a running session service from its SQLite store to an append-only log store with no failed\n  or stale responses while a load generator keeps reading and writing.\nshape: live system changed under load; graded by the load generator's correctness log\nagent_cannot_verify: Stale reads only appear for sessions written during the switch-over window, and the\n  agent's own manual tests do not hit that window; the load generator records every response.\ndial: allowed failed or stale responses during migration; fair range 0-3 of ~20,000, start 0.\nquirk_matrix:\n  write rate during switch:\n  - low\n  - medium\n  - burst at switch time\n  session age:\n  - fresh\n  - near expiry\n  - expiring during switch\n  request mix:\n  - reads\n  - read/write\n  - same-session read-after-write\n  mix: about 30% easy cells\nself_check_gap: a migration that passes the practice load run can still lose a write that arrives during\n  the switch-over or expire a session early; the runbook states both rules\nanswer_source: stated\nreference_access: none\nquirk_evidence:\n- quirk: write rate during switch\n  evidence: the runbook's switch-over section; the practice load run\n- quirk: session age\n  evidence: the runbook's expiry rule\n- quirk: request mix\n  evidence: the practice load generator's scenario file\npublic_tests: 'about 30%: a visible smoke test that the service answers through the new store when idle'\nanti_cheese: the load generator's correctness log during migration AND SQLite no longer used afterwards\nground_truth: the load generator (in tests/ and a copy in the image without its checker) issues a seeded\n  request stream; the checker replays the stream to compute expected responses.\nchecks:\n- dual-write or replay so sessions written mid-switch are not lost\n- read-your-writes for the same session id across the switch\n- expiry semantics preserved (TTL refresh on read is documented)\n- the service keeps its port and API; no restart that drops connections\n- the log store compacts so disk use stays under the stated cap\nknobs:\n- knob: drift during the episode\n  fairness: 'instruction says traffic continues and states the final-state rule: all sessions in the log\n    store, SQLite retired'\n- knob: irreversible, audited steps\n  fairness: instruction says the switch-over is recorded and graded from the access log\nmust_keep:\n- the HTTP API, the session cookie format, TTL behaviour\nenvironment: python:3.12-slim service with sqlite3; a local load generator; no network.\nout_of_bounds:\n- wall-clock-dependent pass/fail\n- load the 1-CPU container cannot sustain\nprecheck:\n- run the load generator against the unmodified service; confirm 0 failures before migration\n",
+  "crux": "The switch-over window is the crux: writes arriving during the copy step must be dual-written with the correct original SQLite updated_at as ts (not current time), and sessions expiring during the switch must not be copied to the log store. The agent's practice run has few overlapping writes and short-TTL sessions that may not expire at the exact right moment, so these bugs are invisible until the graded burst-write seed. Additionally, PUT must not refresh TTL (only read does) \u2014 a convention that is easy to get wrong because many session services refresh on all writes.",
+  "expected_agent_steps": null
+}

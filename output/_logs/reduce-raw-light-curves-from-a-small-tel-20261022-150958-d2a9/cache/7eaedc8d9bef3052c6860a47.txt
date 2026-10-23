@@ -1,0 +1,1666 @@
+Looking at the error, the `tests/test_outputs.py` file is missing. I need to create it along with a `tests/simulator.py` that generates test data and computes ground truth. I also need to fix a bug in the practice data generator where C006 (variable comp at mag 11.0) has flux >50,000 ADU, making it also saturated, which defeats the purpose of the variable-comp test.
+
+Let me fix the data generator and create the test infrastructure.
+
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""Generate practice variable star observation data from seed 42.
+
+Produces:
+  catalogue.csv  — star_id, ra_deg, dec_deg, catalog_mag, star_type
+  night_001.csv .. night_010.csv — star_id, jd, flux, flux_err, airmass
+
+Usage:
+  python3 generate_data.py [SEED] [OUTPUT_DIR]
+  (defaults: seed=42, output_dir=/app/data)
+"""
+
+import sys
+import os
+import csv
+import math
+import numpy as np
+
+# ── Physical constants ──────────────────────────────────────────────
+K_EXT = 0.15            # extinction coefficient, mag/airmass
+ZP = 2_000_000_000.0    # instrumental zero point, ADU
+READ_NOISE = 25.0       # read-noise variance, ADU²
+
+# ── Night JDs (spanning ~90 days, ~1-day spacing for aliasing) ─────
+NIGHT_JDS = [
+    2459000.5,          # night_001
+    2459001.5,          # night_002
+    2459002.5,          # night_003
+    2459003.5,          # night_004
+    2459005.5,          # night_005  (1-day gap)
+    2459008.5,          # night_006  (2-day gap)
+    2459015.5,          # night_007  (7-day gap)
+    2459030.5,          # night_008  (15-day gap)
+    2459060.5,          # night_009  (30-day gap)
+    2459090.5,          # night_010  (30-day gap)
+]
+
+# ── Star definitions ────────────────────────────────────────────────
+# Comparison stars: (id, ra, dec, cat_mag, saturated, variable,
+#                    var_amp, var_period, var_phase)
+#
+# C006 is the brightest non-saturated comp but is intrinsically variable
+# (σ(m_inst) ≈ 0.05 mag > 0.03 threshold).  catalog_mag=11.5 keeps its
+# flux well below 50 000 ADU so it is NOT rejected by the saturation
+# check — only the variability check catches it.
+COMP_STARS = [
+    ('C001', 120.00, 30.00, 12.5, False, False, 0.0, 0.0, 0.0),
+    ('C002', 120.10, 30.10, 13.0, False, False, 0.0, 0.0, 0.0),
+    ('C003', 120.20, 30.00, 13.5, False, False, 0.0, 0.0, 0.0),
+    ('C004', 119.90, 30.20, 14.0, False, False, 0.0, 0.0, 0.0),
+    ('C005', 120.30, 29.90, 14.5, False, False, 0.0, 0.0, 0.0),
+    # C006: intrinsically variable (σ(m_inst) ≈ 0.05 mag > 0.03 threshold)
+    # Brightest non-saturated comp, so it would be chosen if variability
+    # check is skipped.
+    ('C006', 120.10, 29.80, 11.5, False, True,  0.07, 3.0, 0.5),
+    # C007: brightest (mag 10.5), flux > 50 000 ADU on good nights
+    ('C007', 119.80, 30.10, 10.5, True,  False, 0.0, 0.0, 0.0),
+    ('C008', 120.20, 30.20, 12.0, False, False, 0.0, 0.0, 0.0),
+]
+
+# Target stars: (id, ra, dec, mean_mag, period, amplitude,
+#                phase_offset_radians, night_indices)
+TARGET_STARS = [
+    # near-alias (8 nights each)
+    ('V001', 120.05, 30.05, 12.5, 0.77, 0.30, 0.0, [0,1,2,3,4,5,6,7]),
+    ('V002', 120.15, 30.15, 13.0, 0.55, 0.25, 0.5, [0,1,2,3,4,5,6,7]),
+    ('V003', 120.25, 30.05, 12.8, 0.91, 0.35, 1.0, [0,1,2,3,4,5,6,8]),
+    # almost-exactly-1-day (8 nights each)
+    ('V004', 119.95, 30.25, 13.2, 1.06, 0.28, 1.5, [0,1,2,3,4,5,6,9]),
+    ('V005', 120.35, 29.95, 12.3, 1.10, 0.32, 2.0, [0,1,2,3,4,5,6,8]),
+    ('V006', 120.15, 29.85, 13.5, 0.99, 0.20, 2.5, [0,1,2,3,4,5,6,9]),
+    # clean, far from aliases
+    ('V007', 120.05, 30.15, 12.0, 3.50, 0.40, 3.0, [0,1,2,3,4,5,6]),
+    ('V008', 120.25, 30.15, 12.7, 5.20, 0.30, 0.0, [0,1,2,3,5,6,7]),
+    ('V009', 119.85, 30.05, 13.8, 12.0, 0.45, 0.5, [0,1,2,3,4,5,6,7]),
+    # sparse: <3 nights  (period must be NA; mean_mag still reported)
+    ('V010', 120.35, 30.05, 12.4, 2.00, 0.25, 1.0, [0,7]),     # 30-day gap
+    ('V011', 119.95, 29.95, 13.3, 4.00, 0.30, 1.5, [0,8]),     # 60-day gap
+    ('V012', 120.05, 29.85, 12.9, 6.00, 0.22, 2.0, [0,9]),     # 90-day gap
+]
+
+
+def deg2rad(deg):
+    return deg * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    """JD → HJD using the heliocentric correction (conventions §1)."""
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X_sun = R * math.cos(lam)
+    Y_sun = R * math.cos(eps) * math.sin(lam)
+    Z_sun = R * math.sin(eps) * math.sin(lam)
+    corr = (X_sun * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y_sun * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z_sun * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def mag_to_flux(mag, airmass, transparency):
+    """Apparent magnitude → expected flux (ADU)."""
+    m_obs = mag + K_EXT * airmass
+    return ZP * (10.0 ** (-0.4 * m_obs)) * transparency
+
+
+def generate_field(seed, output_dir):
+    rng = np.random.default_rng(seed)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Write catalogue ─────────────────────────────────────────────
+    cat_path = os.path.join(output_dir, 'catalogue.csv')
+    with open(cat_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['star_id', 'ra_deg', 'dec_deg', 'catalog_mag', 'star_type'])
+        for cs in COMP_STARS:
+            w.writerow([cs[0], f'{cs[1]:.6f}', f'{cs[2]:.6f}',
+                        f'{cs[3]:.3f}', 'comp'])
+        for ts in TARGET_STARS:
+            w.writerow([ts[0], f'{ts[1]:.6f}', f'{ts[2]:.6f}',
+                        f'{ts[3]:.3f}', 'target'])
+
+    # ── Per-night observing conditions ──────────────────────────────
+    night_cond = []
+    for _ in NIGHT_JDS:
+        night_cond.append({
+            'transparency': 0.98 + 0.04 * rng.random(),   # 0.98 – 1.02
+            'base_airmass': 1.15 + 0.50 * rng.random(),   # 1.15 – 1.65
+        })
+
+    # ── Write night files ───────────────────────────────────────────
+    for ni, jd in enumerate(NIGHT_JDS):
+        nc = night_cond[ni]
+        t = nc['transparency']
+        ba = nc['base_airmass']
+
+        path = os.path.join(output_dir, f'night_{ni+1:03d}.csv')
+        with open(path, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['star_id', 'jd', 'flux', 'flux_err', 'airmass'])
+
+            # Comparison stars (observed every night)
+            for cs in COMP_STARS:
+                sid, ra_d, dec_d, cat_mag, is_sat, is_var, va, vp, vph = cs
+                airmass = ba + 0.05 * (2.0 * rng.random() - 1.0)
+                ra_r = deg2rad(ra_d)
+                de_r = deg2rad(dec_d)
+                hjd = compute_hjd(jd, ra_r, de_r)
+
+                if is_var:
+                    m_true = cat_mag + va * math.sin(2*math.pi * hjd / vp + vph)
+                else:
+                    m_true = cat_mag
+
+                flux = mag_to_flux(m_true, airmass, t)
+                ferr = math.sqrt(abs(flux) + READ_NOISE)
+                fobs = flux + rng.normal(0.0, ferr)
+
+                w.writerow([sid, f'{jd:.6f}', f'{fobs:.2f}',
+                            f'{ferr:.2f}', f'{airmass:.4f}'])
+
+            # Target stars (only on assigned nights)
+            for ts in TARGET_STARS:
+                sid, ra_d, dec_d, mmag, per, amp, ph_off, nights = ts
+                if ni not in nights:
+                    continue
+                airmass = ba + 0.10 * (2.0 * rng.random() - 1.0)
+                ra_r = deg2rad(ra_d)
+                de_r = deg2rad(dec_d)
+                hjd = compute_hjd(jd, ra_r, de_r)
+
+                phase = 2.0 * math.pi * hjd / per + ph_off
+                m_true = mmag + amp * math.sin(phase)
+
+                flux = mag_to_flux(m_true, airmass, t)
+                ferr = math.sqrt(abs(flux) + READ_NOISE)
+                fobs = flux + rng.normal(0.0, ferr)
+
+                w.writerow([sid, f'{jd:.6f}', f'{fobs:.2f}',
+                            f'{ferr:.2f}', f'{airmass:.4f}'])
+
+
+if __name__ == '__main__':
+    seed = int(sys.argv[1]) if len(sys.argv) > 1 else 42
+    out = sys.argv[2] if len(sys.argv) > 2 else '/app/data'
+    generate_field(seed, out)
+<<<END>>>
+
+<<<FILE tests/simulator.py>>>
+#!/usr/bin/env python3
+"""Seeded simulator for variable-star observation data.
+
+Generates catalogue.csv + night_*.csv for a given seed, computes
+ground-truth, and writes both to files.
+
+Usage:
+    /usr/local/bin/python3 simulator.py --seed SEED --output-dir DIR --truth-output FILE
+    /usr/local/bin/python3 simulator.py --analyze DATA_DIR --truth-output FILE
+"""
+
+import sys, os, csv, json, math, argparse
+import numpy as np
+
+K_EXT = 0.15
+ZP = 2_000_000_000.0
+READ_NOISE = 25.0
+
+
+def deg2rad(d):
+    return d * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X_sun = R * math.cos(lam)
+    Y_sun = R * math.cos(eps) * math.sin(lam)
+    Z_sun = R * math.sin(eps) * math.sin(lam)
+    corr = (X_sun * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y_sun * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z_sun * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def mag_to_flux(mag, airmass, transparency):
+    m_obs = mag + K_EXT * airmass
+    return ZP * 10 ** (-0.4 * m_obs) * transparency
+
+
+# ── Night-JD templates ──────────────────────────────────────────────
+ALIAS_NIGHTS = [2459000.5, 2459001.5, 2459002.5, 2459003.5,
+                2459005.5, 2459008.5, 2459015.5, 2459030.5]
+
+LONG_NIGHTS = [2459000.5 + 6.0 * i for i in range(30)]
+
+SPARSE_3 = [2459000.5, 2459020.5, 2459050.5]
+SPARSE_2 = [2459000.5, 2459060.5]
+SPARSE_2_LONG = [2459000.5, 2459090.5]
+
+VERY_LONG_NIGHTS = [2459000.5 + 12.0 * i for i in range(15)]
+
+# WIDE_SPACING: 2-5 day gaps to avoid 1-day aliasing
+WIDE_NIGHTS = [2459000.5, 2459002.5, 2459005.5,
+               2459009.5, 2459014.5, 2459020.5, 2459028.5, 2459040.5]
+
+
+def _c(sid, ra, dec, mag, sat=False, var=False, va=0.0, vp=0.0, vph=0.0):
+    return dict(id=sid, ra_deg=ra, dec_deg=dec, catalog_mag=mag,
+                saturated=sat, variable=var, var_amp=va, var_period=vp,
+                var_phase=vph)
+
+
+def _t(sid, ra, dec, mmag, per, amp, ph, nights, am_off=0.1):
+    return dict(id=sid, ra_deg=ra, dec_deg=dec, mean_mag=mmag,
+                period=per, amplitude=amp, phase_offset=ph,
+                night_indices=nights, airmass_offset=am_off)
+
+
+def get_field_config(seed):
+    """Return (comp_stars, target_stars, night_jds) for *seed*."""
+    rng = np.random.default_rng(seed + 10000)
+    ra0 = 120.0
+    dec0 = 30.0
+
+    def rra(): return ra0 + 0.1 * (rng.random() - 0.5)
+    def rdec(): return dec0 + 0.1 * (rng.random() - 0.5)
+    def rmag(): return 12.0 + rng.random()
+    def ramp(): return 0.20 + 0.20 * rng.random()
+    def rph(): return 2 * math.pi * rng.random()
+
+    # ── Graded instances (seeds 43-54) ──────────────────────────────
+    if seed == 43:  # near alias, many nights, stable comp
+        per = 0.77 + 0.02 * rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 44:  # almost exactly 1 day, many nights, stable comp
+        per = 1.06 + 0.04 * rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 45:  # near alias, 3 nights, stable comp
+        per = 0.65 + 0.05 * rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), [0, 1, 2])],
+                SPARSE_3)
+
+    if seed == 46:  # near alias, many nights, one saturated comp
+        per = 0.77 + 0.02 * rng.random()
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True), _c('C002', rra(), rdec(), 11.5), _c('C003', rra(), rdec(), 12.0)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 47:  # far alias, 2 nights → period NA
+        per = 3.5 + rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), [0, 1])],
+                SPARSE_2)
+
+    if seed == 48:  # far alias, 2 nights long gap → period NA
+        per = 4.0 + rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), [0, 1])],
+                SPARSE_2_LONG)
+
+    if seed == 49:  # far alias, 2 nights, variable comp → period NA
+        per = 3.5 + rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5, var=True, va=0.10, vp=3.0, vph=0.5),
+                 _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), [0, 1])],
+                SPARSE_2)
+
+    if seed == 50:  # far alias, 2 nights, saturated comp → period NA, mean_mag OK
+        per = 4.0 + rng.random()
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), [0, 1])],
+                SPARSE_2_LONG)
+
+    if seed == 51:  # far alias, many nights, saturated comp
+        per = 3.5 + rng.random()
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True), _c('C002', rra(), rdec(), 11.5), _c('C003', rra(), rdec(), 12.0)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 52:  # far alias, many nights, variable comp
+        per = 3.5 + rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5, var=True, va=0.10, vp=3.0, vph=0.5),
+                 _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 53:  # near alias, many nights, variable comp
+        per = 0.77 + 0.02 * rng.random()
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True),
+                 _c('C002', rra(), rdec(), 11.5, var=True, va=0.10, vp=3.0, vph=0.5),
+                 _c('C003', rra(), rdec(), 12.0), _c('C004', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 54:  # near alias, many nights, stable comp, long baseline (HJD)
+        per = 0.55 + 0.02 * rng.random()
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(len(LONG_NIGHTS))))],
+                LONG_NIGHTS)
+
+    # ── Specific test seeds 100+ ────────────────────────────────────
+    if seed in (100, 101):  # clean stars
+        pers = {100: 3.5, 101: 7.2}
+        per = pers[seed]
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                WIDE_NIGHTS)
+
+    if seed in (102, 103, 104, 105):  # near-alias
+        pers = {102: 0.77, 103: 0.55, 104: 0.91, 105: 0.68}
+        per = pers[seed]
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed in (106, 107):  # HJD-sensitive long-baseline near-alias
+        pers = {106: 0.55, 107: 0.77}
+        per = pers[seed]
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), per, ramp(), rph(), list(range(len(LONG_NIGHTS))))],
+                LONG_NIGHTS)
+
+    if seed == 108:  # saturated comp
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True), _c('C002', rra(), rdec(), 11.5), _c('C003', rra(), rdec(), 12.0)],
+                [_t('V001', rra(), rdec(), rmag(), 3.5, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 109:  # variable comp (brightest non-saturated)
+        return ([_c('C001', rra(), rdec(), 11.5, var=True, va=0.10, vp=3.0, vph=0.5),
+                 _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), 3.5, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 110:  # large airmass difference
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), 3.5, ramp(), rph(), list(range(8)), am_off=0.5)],
+                ALIAS_NIGHTS)
+
+    if seed == 111:  # alias rejection specific
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), 0.77, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 112:  # long period (35 days)
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), 35.0, ramp(), rph(), list(range(15)))],
+                VERY_LONG_NIGHTS)
+
+    if seed == 113:  # oversampling test
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), 4.733, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 114:  # no valid comp (all saturated or variable)
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True),
+                 _c('C002', rra(), rdec(), 11.5, var=True, va=0.10, vp=3.0, vph=0.5),
+                 _c('C003', rra(), rdec(), 12.0, var=True, va=0.08, vp=5.0, vph=1.0)],
+                [_t('V001', rra(), rdec(), rmag(), 3.5, ramp(), rph(), list(range(8)))],
+                ALIAS_NIGHTS)
+
+    if seed == 115:  # sparse (2 nights)
+        return ([_c('C001', rra(), rdec(), 11.5), _c('C002', rra(), rdec(), 12.0), _c('C003', rra(), rdec(), 12.5)],
+                [_t('V001', rra(), rdec(), rmag(), 2.0, ramp(), rph(), [0, 1])],
+                SPARSE_2)
+
+    if seed == 116:  # all-NA field (no valid comp + sparse)
+        return ([_c('C001', rra(), rdec(), 10.5, sat=True),
+                 _c('C002', rra(), rdec(), 11.5, var=True, va=0.10, vp=3.0, vph=0.5),
+                 _c('C003', rra(), rdec(), 12.0, var=True, va=0.08, vp=5.0, vph=1.0)],
+                [_t('V001', rra(), rdec(), 13.0, 3.5, 0.25, 0.0, [0, 1])],
+                SPARSE_2)
+
+    raise ValueError(f"No configuration for seed {seed}")
+
+
+# ── Data generation ─────────────────────────────────────────────────
+def generate_field(seed, output_dir):
+    """Write CSV files and return (comp_stars, target_stars, night_jds, observations)."""
+    rng = np.random.default_rng(seed)
+    comp_stars, target_stars, night_jds = get_field_config(seed)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Catalogue
+    with open(os.path.join(output_dir, 'catalogue.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['star_id', 'ra_deg', 'dec_deg', 'catalog_mag', 'star_type'])
+        for cs in comp_stars:
+            w.writerow([cs['id'], f"{cs['ra_deg']:.6f}", f"{cs['dec_deg']:.6f}",
+                        f"{cs['catalog_mag']:.3f}", 'comp'])
+        for ts in target_stars:
+            w.writerow([ts['id'], f"{ts['ra_deg']:.6f}", f"{ts['dec_deg']:.6f}",
+                        f"{ts['mean_mag']:.3f}", 'target'])
+
+    # Night conditions
+    night_conds = []
+    for _ in night_jds:
+        night_conds.append({
+            'transparency': 0.98 + 0.04 * rng.random(),
+            'base_airmass': 1.15 + 0.50 * rng.random(),
+        })
+
+    # Generate observations (also stored for ground-truth computation)
+    all_obs = {}  # star_id -> list of dicts
+
+    for ni, jd in enumerate(night_jds):
+        nc = night_conds[ni]
+        t = nc['transparency']
+        ba = nc['base_airmass']
+        rows = []
+
+        # Comp stars
+        for cs in comp_stars:
+            am = ba + 0.05 * (2.0 * rng.random() - 1.0)
+            ra_r = deg2rad(cs['ra_deg'])
+            de_r = deg2rad(cs['dec_deg'])
+            hjd = compute_hjd(jd, ra_r, de_r)
+            if cs['variable']:
+                m_true = cs['catalog_mag'] + cs['var_amp'] * math.sin(2 * math.pi * hjd / cs['var_period'] + cs['var_phase'])
+            else:
+                m_true = cs['catalog_mag']
+            flux = mag_to_flux(m_true, am, t)
+            ferr = math.sqrt(abs(flux) + READ_NOISE)
+            fobs = flux + rng.normal(0.0, ferr)
+            obs = dict(star_id=cs['id'], jd=jd, flux=fobs, flux_err=ferr, airmass=am, hjd=hjd, m_true=m_true)
+            all_obs.setdefault(cs['id'], []).append(obs)
+            rows.append(obs)
+
+        # Target stars
+        for ts in target_stars:
+            if ni not in ts['night_indices']:
+                continue
+            am = ba + ts['airmass_offset'] + 0.05 * (2.0 * rng.random() - 1.0)
+            ra_r = deg2rad(ts['ra_deg'])
+            de_r = deg2rad(ts['dec_deg'])
+            hjd = compute_hjd(jd, ra_r, de_r)
+            phase = 2.0 * math.pi * hjd / ts['period'] + ts['phase_offset']
+            m_true = ts['mean_mag'] + ts['amplitude'] * math.sin(phase)
+            flux = mag_to_flux(m_true, am, t)
+            ferr = math.sqrt(abs(flux) + READ_NOISE)
+            fobs = flux + rng.normal(0.0, ferr)
+            obs = dict(star_id=ts['id'], jd=jd, flux=fobs, flux_err=ferr, airmass=am, hjd=hjd, m_true=m_true)
+            all_obs.setdefault(ts['id'], []).append(obs)
+            rows.append(obs)
+
+        # Write night file
+        path = os.path.join(output_dir, f'night_{ni+1:03d}.csv')
+        with open(path, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['star_id', 'jd', 'flux', 'flux_err', 'airmass'])
+            for r in rows:
+                w.writerow([r['star_id'], f"{r['jd']:.6f}", f"{r['flux']:.2f}",
+                            f"{r['flux_err']:.2f}", f"{r['airmass']:.4f}"])
+
+    return comp_stars, target_stars, night_jds, all_obs
+
+
+# ── Ground-truth computation ────────────────────────────────────────
+def compute_truth(comp_stars, target_stars, all_obs):
+    """Compute the ground-truth output a correct reduce.py should produce."""
+    # Vet comp stars
+    valid_comps = []
+    for cs in comp_stars:
+        sid = cs['id']
+        obs_list = all_obs.get(sid, [])
+        # Saturation check
+        if any(o['flux'] > 50000 for o in obs_list):
+            continue
+        # Variability check
+        m_insts = [-2.5 * math.log10(o['flux']) for o in obs_list if o['flux'] > 0]
+        if len(m_insts) < 2:
+            continue
+        sigma = float(np.std(m_insts, ddof=0))
+        if sigma > 0.03:
+            continue
+        valid_comps.append(cs)
+
+    # Select brightest valid comp
+    if valid_comps:
+        valid_comps.sort(key=lambda c: c['catalog_mag'])
+        sel_comp = valid_comps[0]
+    else:
+        sel_comp = None
+
+    truth = {}
+    for ts in target_stars:
+        sid = ts['id']
+        if sel_comp is None:
+            truth[sid] = dict(period_days=None, amplitude_mag=None, mean_mag=None,
+                              period_is_na=True, all_na=True, true_period=ts['period'],
+                              true_amplitude=ts['amplitude'], true_mean_mag=ts['mean_mag'])
+            continue
+
+        comp_obs = all_obs.get(sel_comp['id'], [])
+        target_obs = all_obs.get(sid, [])
+
+        # Match by JD
+        comp_by_jd = {}
+        for co in comp_obs:
+            comp_by_jd[round(co['jd'], 4)] = co
+
+        cal_mags = []
+        for to in target_obs:
+            jd_key = round(to['jd'], 4)
+            co = comp_by_jd.get(jd_key)
+            if co is None:
+                continue
+            if to['flux'] <= 0 or co['flux'] <= 0:
+                continue
+            m_inst_t = -2.5 * math.log10(to['flux'])
+            m_inst_c = -2.5 * math.log10(co['flux'])
+            delta_m = m_inst_t - m_inst_c
+            delta_m_corr = delta_m - 0.15 * (to['airmass'] - co['airmass'])
+            m_cal = delta_m_corr + sel_comp['catalog_mag']
+            cal_mags.append(m_cal)
+
+        n_nights = len(cal_mags)
+        if n_nights == 0:
+            truth[sid] = dict(period_days=None, amplitude_mag=None, mean_mag=None,
+                              period_is_na=True, all_na=True, true_period=ts['period'],
+                              true_amplitude=ts['amplitude'], true_mean_mag=ts['mean_mag'])
+            continue
+
+        mean_mag_val = float(np.mean(cal_mags))
+        period_is_na = n_nights < 3
+
+        truth[sid] = dict(
+            period_days=None if period_is_na else ts['period'],
+            amplitude_mag=None if period_is_na else ts['amplitude'],
+            mean_mag=mean_mag_val,
+            period_is_na=period_is_na,
+            all_na=False,
+            true_period=ts['period'],
+            true_amplitude=ts['amplitude'],
+            true_mean_mag=ts['mean_mag'],
+            n_nights=n_nights,
+            valid_comp_id=sel_comp['id'],
+        )
+
+    return truth, sel_comp
+
+
+# ── Analyze mode ────────────────────────────────────────────────────
+def analyze_data(data_dir):
+    """Read existing data and report coverage of hidden-case kinds."""
+    cat_path = os.path.join(data_dir, 'catalogue.csv')
+    comp_ids = []
+    target_ids = []
+    with open(cat_path) as f:
+        for row in csv.DictReader(f):
+            if row['star_type'] == 'comp':
+                comp_ids.append(row['star_id'])
+            else:
+                target_ids.append(row['star_id'])
+
+    # Read all observations
+    all_obs = {}
+    for fname in sorted(os.listdir(data_dir)):
+        if fname.startswith('night_') and fname.endswith('.csv'):
+            with open(os.path.join(data_dir, fname)) as f:
+                for row in csv.DictReader(f):
+                    sid = row['star_id']
+                    all_obs.setdefault(sid, []).append({
+                        'jd': float(row['jd']),
+                        'flux': float(row['flux']),
+                        'flux_err': float(row['flux_err']),
+                        'airmass': float(row['airmass']),
+                    })
+
+    # Count targets with <3 nights
+    sparse_targets = 0
+    many_night_targets = 0
+    for tid in target_ids:
+        n = len(all_obs.get(tid, []))
+        if n < 3:
+            sparse_targets += 1
+        elif n >= 3:
+            many_night_targets += 1
+
+    # Check for saturated comp
+    saturated_comp_count = 0
+    for cid in comp_ids:
+        obs = all_obs.get(cid, [])
+        if any(o['flux'] > 50000 for o in obs):
+            saturated_comp_count += 1
+
+    # Check for variable comp
+    variable_comp_count = 0
+    for cid in comp_ids:
+        obs = all_obs.get(cid, [])
+        if any(o['flux'] > 50000 for o in obs):
+            continue  # already saturated
+        m_insts = [-2.5 * math.log10(o['flux']) for o in obs if o['flux'] > 0]
+        if len(m_insts) >= 2:
+            sigma = float(np.std(m_insts, ddof=0))
+            if sigma > 0.03:
+                variable_comp_count += 1
+
+    # Count near-alias targets (targets with >=3 nights observed at ~1-day spacing)
+    near_alias_targets = 0
+    almost_one_day_targets = 0
+    for tid in target_ids:
+        obs = all_obs.get(tid, [])
+        if len(obs) < 3:
+            continue
+        jds = sorted(o['jd'] for o in obs)
+        gaps = [jds[i+1] - jds[i] for i in range(len(jds)-1)]
+        # Check if most gaps are ~1 day
+        one_day_gaps = sum(1 for g in gaps if 0.8 < g < 1.5)
+        if one_day_gaps >= len(gaps) * 0.5:
+            near_alias_targets += 1
+
+    # Targets with period near 1 day (heuristic: observed at ~1-day intervals with many nights)
+    for tid in target_ids:
+        obs = all_obs.get(tid, [])
+        if len(obs) < 3:
+            continue
+        jds = sorted(o['jd'] for o in obs)
+
+    # Report
+    result = {
+        'sparse_targets': sparse_targets,
+        'many_night_targets': many_night_targets,
+        'saturated_comp_count': saturated_comp_count,
+        'variable_comp_count': variable_comp_count,
+        'near_alias_targets': near_alias_targets,
+        'targets_affected_by_saturated_comp': sum(1 for t in target_ids if saturated_comp_count > 0),
+        'targets_affected_by_variable_comp': sum(1 for t in target_ids if variable_comp_count > 0),
+    }
+    return result
+
+
+# ── Main ────────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--output-dir', default=None)
+    parser.add_argument('--truth-output', required=True)
+    parser.add_argument('--analyze', default=None,
+                        help='Analyze existing data in this directory')
+    args = parser.parse_args()
+
+    if args.analyze:
+        result = analyze_data(args.analyze)
+        with open(args.truth_output, 'w') as f:
+            json.dump(result, f, indent=2)
+        return
+
+    if args.seed is None or args.output_dir is None:
+        parser.error('--seed and --output-dir required (unless --analyze)')
+
+    comp_stars, target_stars, night_jds, all_obs = generate_field(args.seed, args.output_dir)
+    truth, sel_comp = compute_truth(comp_stars, target_stars, all_obs)
+
+    out = {
+        'valid_comp_id': sel_comp['id'] if sel_comp else None,
+        'stars': truth,
+    }
+    with open(args.truth_output, 'w') as f:
+        json.dump(out, f, indent=2)
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+
+<<<FILE tests/test_outputs.py>>>
+"""Tests for the variable-star reduction pipeline.
+
+The verifier runs this with its own Python (pytest only).
+Code that needs numpy/scipy calls the image's Python at
+/usr/local/bin/python3 via subprocess.
+"""
+
+import csv
+import hashlib
+import json
+import math
+import os
+import shutil
+import subprocess
+import tempfile
+
+import pytest
+
+# Paths
+IMAGE_PYTHON = "/usr/local/bin/python3"
+SIMULATOR = os.path.join(os.path.dirname(__file__), "simulator.py")
+REDUCE = "/app/reduce.py"
+PRACTICE_DATA = "/app/data"
+OUT_CSV = "/app/out/stars.csv"
+
+
+# ── Helpers ─────────────────────────────────────────────────────────
+def _run(cmd, timeout=300):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return r
+
+
+def generate_and_truth(seed, tmpdir):
+    """Generate a field from *seed* into *tmpdir*, return ground-truth dict."""
+    truth_file = os.path.join(tmpdir, "_truth.json")
+    r = _run([IMAGE_PYTHON, SIMULATOR,
+              "--seed", str(seed),
+              "--output-dir", tmpdir,
+              "--truth-output", truth_file])
+    assert r.returncode == 0, f"Simulator failed (seed {seed}): {r.stderr[:500]}"
+    with open(truth_file) as f:
+        return json.load(f)
+
+
+def run_reduce(nights_dir):
+    """Run reduce.py on *nights_dir*, return (returncode, rows)."""
+    out_dir = "/app/out"
+    os.makedirs(out_dir, exist_ok=True)
+    if os.path.exists(OUT_CSV):
+        os.remove(OUT_CSV)
+
+    r = _run([IMAGE_PYTHON, REDUCE, nights_dir])
+    rows = []
+    if os.path.exists(OUT_CSV):
+        with open(OUT_CSV) as f:
+            rows = list(csv.DictReader(f))
+    return r.returncode, rows
+
+
+def _float_or_none(s):
+    if s == "NA":
+        return None
+    return float(s)
+
+
+# ── Catalogue unchanged ─────────────────────────────────────────────
+class TestCatalogueUnchanged:
+    def test_catalogue_unchanged(self, tmp_path):
+        truth = generate_and_truth(100, str(tmp_path))
+        cat = os.path.join(str(tmp_path), "catalogue.csv")
+        with open(cat, "rb") as f:
+            h_before = hashlib.sha256(f.read()).hexdigest()
+        run_reduce(str(tmp_path))
+        with open(cat, "rb") as f:
+            h_after = hashlib.sha256(f.read()).hexdigest()
+        assert h_before == h_after, "catalogue.csv was modified"
+
+
+# ── Output format ───────────────────────────────────────────────────
+class TestOutputFormat:
+    def test_output_format(self, tmp_path):
+        generate_and_truth(100, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        assert rows, "No data rows"
+        for row in rows:
+            assert "star_id" in row
+            assert "period_days" in row
+            assert "amplitude_mag" in row
+            assert "mean_mag" in row
+            # period: float or NA
+            p = row["period_days"]
+            if p != "NA":
+                float(p)
+            # amplitude: float with <=3 decimals or NA
+            a = row["amplitude_mag"]
+            if a != "NA":
+                val = float(a)
+                # Check 3 decimal places
+                assert abs(val - round(val, 3)) < 1e-9, f"amplitude not 3 dp: {a}"
+            # mean_mag: float with <=3 decimals or NA
+            m = row["mean_mag"]
+            if m != "NA":
+                val = float(m)
+                assert abs(val - round(val, 3)) < 1e-9, f"mean_mag not 3 dp: {m}"
+
+
+# ── All stars present ───────────────────────────────────────────────
+class TestAllStarsPresent:
+    def test_all_stars_present(self, tmp_path):
+        truth = generate_and_truth(100, str(tmp_path))
+        cat_ids = set(truth["stars"].keys())
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        out_ids = [r["star_id"] for r in rows]
+        for sid in cat_ids:
+            assert sid in out_ids, f"Star {sid} missing from output"
+        # Each star exactly once
+        assert len(out_ids) == len(set(out_ids)), "Duplicate star_id in output"
+
+
+# ── Sorted by star_id ───────────────────────────────────────────────
+class TestSortedById:
+    def test_sorted_by_id(self, tmp_path):
+        generate_and_truth(100, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        ids = [r["star_id"] for r in rows]
+        assert ids == sorted(ids), "Rows not sorted by star_id"
+
+
+# ── Exit code zero ──────────────────────────────────────────────────
+class TestExitCodeZero:
+    def test_exit_code_zero(self, tmp_path):
+        generate_and_truth(116, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0, f"Exit code {rc} for all-NA field"
+
+
+# ── Period NA for sparse stars ──────────────────────────────────────
+class TestPeriodNaSparse:
+    @pytest.mark.parametrize("seed", [47, 48, 115])
+    def test_period_na_sparse(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if star_truth.get("period_is_na"):
+                assert row["period_days"] == "NA", \
+                    f"Star {sid}: period should be NA but got {row['period_days']}"
+
+
+# ── No valid comp → all NA ─────────────────────────────────────────
+class TestNoValidCompNa:
+    def test_no_valid_comp_na(self, tmp_path):
+        truth = generate_and_truth(114, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if star_truth.get("all_na"):
+                assert row["period_days"] == "NA", f"Star {sid}: period should be NA"
+                assert row["amplitude_mag"] == "NA", f"Star {sid}: amplitude should be NA"
+                assert row["mean_mag"] == "NA", f"Star {sid}: mean_mag should be NA"
+
+
+# ── Clean period ────────────────────────────────────────────────────
+class TestPeriodClean:
+    @pytest.mark.parametrize("seed", [100, 101])
+    def test_period_clean(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: period {found_per} not within 0.5% of {true_per}"
+
+
+# ── Near-alias period ───────────────────────────────────────────────
+class TestPeriodNearAlias:
+    @pytest.mark.parametrize("seed", [102, 103, 104, 105])
+    def test_period_near_alias(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: period {found_per} not within 0.5% of {true_per}"
+
+
+# ── HJD-sensitive period ────────────────────────────────────────────
+class TestPeriodHjdSensitive:
+    @pytest.mark.parametrize("seed", [106, 107])
+    def test_period_hjd_sensitive(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: period {found_per} not within 0.5% of {true_per}"
+
+
+# ── Mean mag: correct comp ──────────────────────────────────────────
+class TestMeanMagCorrectComp:
+    def test_mean_mag_correct_comp(self, tmp_path):
+        truth = generate_and_truth(100, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("all_na") and star_truth.get("mean_mag") is not None:
+                true_mm = star_truth["mean_mag"]
+                found_mm = float(row["mean_mag"])
+                assert abs(found_mm - true_mm) <= 0.02, \
+                    f"Star {sid}: mean_mag {found_mm} not within 0.02 of {true_mm}"
+
+
+# ── Mean mag: saturated comp rejected ───────────────────────────────
+class TestMeanMagSaturatedComp:
+    def test_mean_mag_saturated_comp(self, tmp_path):
+        truth = generate_and_truth(108, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("all_na") and star_truth.get("mean_mag") is not None:
+                true_mm = star_truth["mean_mag"]
+                found_mm = float(row["mean_mag"])
+                assert abs(found_mm - true_mm) <= 0.02, \
+                    f"Star {sid}: mean_mag {found_mm} not within 0.02 of {true_mm} (saturated comp test)"
+
+
+# ── Mean mag: variable comp rejected ────────────────────────────────
+class TestMeanMagVariableComp:
+    def test_mean_mag_variable_comp(self, tmp_path):
+        truth = generate_and_truth(109, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("all_na") and star_truth.get("mean_mag") is not None:
+                true_mm = star_truth["mean_mag"]
+                found_mm = float(row["mean_mag"])
+                assert abs(found_mm - true_mm) <= 0.02, \
+                    f"Star {sid}: mean_mag {found_mm} not within 0.02 of {true_mm} (variable comp test)"
+
+
+# ── Mean mag: airmass correction ────────────────────────────────────
+class TestMeanMagAirmass:
+    def test_mean_mag_airmass(self, tmp_path):
+        truth = generate_and_truth(110, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("all_na") and star_truth.get("mean_mag") is not None:
+                true_mm = star_truth["mean_mag"]
+                found_mm = float(row["mean_mag"])
+                assert abs(found_mm - true_mm) <= 0.02, \
+                    f"Star {sid}: mean_mag {found_mm} not within 0.02 of {true_mm} (airmass test)"
+
+
+# ── Amplitude accuracy ─────────────────────────────────────────────
+class TestAmplitudeAccuracy:
+    @pytest.mark.parametrize("seed", [100, 101])
+    def test_amplitude_accuracy(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and row["amplitude_mag"] != "NA":
+                true_amp = star_truth["true_amplitude"]
+                found_amp = float(row["amplitude_mag"])
+                tol = max(0.05, 0.20 * true_amp)
+                assert abs(found_amp - true_amp) <= tol, \
+                    f"Star {sid}: amplitude {found_amp} not within tol of {true_amp}"
+
+
+# ── Amplitude from model, not raw data ──────────────────────────────
+class TestAmplitudeFromModel:
+    def test_amplitude_from_model(self, tmp_path):
+        """The 3-harmonic model amplitude should be close to the true amplitude;
+        the raw-data half-range would be larger due to noise."""
+        truth = generate_and_truth(100, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and row["amplitude_mag"] != "NA":
+                true_amp = star_truth["true_amplitude"]
+                found_amp = float(row["amplitude_mag"])
+                # Model amplitude should be within 30% of true; raw range would
+                # often be much larger
+                assert abs(found_amp - true_amp) / true_amp <= 0.30, \
+                    f"Star {sid}: amplitude {found_amp} too far from true {true_amp}"
+
+
+# ── Alias rejection specific ────────────────────────────────────────
+class TestAliasRejectionSpecific:
+    def test_alias_rejection_specific(self, tmp_path):
+        truth = generate_and_truth(111, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: alias rejection failed; period {found_per} vs true {true_per}"
+
+
+# ── HJD applied ─────────────────────────────────────────────────────
+class TestHjdApplied:
+    @pytest.mark.parametrize("seed", [106, 107])
+    def test_hjd_applied(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                # Without HJD, the alias would win on these long-baseline near-alias stars
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: HJD not applied? period {found_per} vs true {true_per}"
+
+
+# ── Period 6 significant figures ────────────────────────────────────
+class TestPeriod6SigFigs:
+    def test_period_6_sig_figs(self, tmp_path):
+        truth = generate_and_truth(100, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            p = row["period_days"]
+            if p == "NA":
+                continue
+            val = float(p)
+            if val == 0:
+                continue
+            # Count significant figures: format as full string and check
+            # Parse the string representation to count sig figs
+            s = p.strip()
+            # Remove leading minus, leading zeros, trailing decimal zeros
+            # Simple check: re-read as float and format with enough precision
+            # The period string should have at least 6 sig figs
+            # Check that formatting with 6 sig figs matches to 6 digits
+            mag = math.floor(math.log10(abs(val)))
+            for n_sig in range(6, 0, -1):
+                n_dec = n_sig - 1 - mag
+                if n_dec >= 0:
+                    formatted = f"{val:.{n_dec}f}"
+                else:
+                    formatted = f"{val:.{n_sig - 1}e}"
+                if float(formatted) == val:
+                    # Found the precision of the string
+                    actual_sig = n_sig
+                    break
+            else:
+                actual_sig = 0
+            assert actual_sig >= 6, \
+                f"Period {p} has only {actual_sig} significant figures (need 6)"
+
+
+# ── Period search range (0.1-50 days) ──────────────────────────────
+class TestPeriodSearchRange:
+    def test_period_search_range(self, tmp_path):
+        truth = generate_and_truth(112, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: long-period star not found; {found_per} vs {true_per}"
+
+
+# ── Oversampling ────────────────────────────────────────────────────
+class TestOversampling:
+    def test_oversampling(self, tmp_path):
+        truth = generate_and_truth(113, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if not star_truth.get("period_is_na") and star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Star {sid}: oversampling insufficient; {found_per} vs {true_per}"
+
+
+# ── Determinism ─────────────────────────────────────────────────────
+class TestDeterminism:
+    def test_determinism(self, tmp_path):
+        d1 = os.path.join(str(tmp_path), "run1")
+        d2 = os.path.join(str(tmp_path), "run2")
+        generate_and_truth(100, d1)
+        generate_and_truth(100, d2)
+        # Compare catalogue
+        with open(os.path.join(d1, "catalogue.csv"), "rb") as f:
+            h1 = hashlib.sha256(f.read()).hexdigest()
+        with open(os.path.join(d2, "catalogue.csv"), "rb") as f:
+            h2 = hashlib.sha256(f.read()).hexdigest()
+        assert h1 == h2, "Same seed produced different catalogues"
+        # Compare all night files
+        for fname in sorted(os.listdir(d1)):
+            if fname.startswith("night_"):
+                with open(os.path.join(d1, fname), "rb") as f:
+                    c1 = f.read()
+                with open(os.path.join(d2, fname), "rb") as f:
+                    c2 = f.read()
+                assert c1 == c2, f"Same seed produced different {fname}"
+
+
+# ── Seed sensitivity ────────────────────────────────────────────────
+class TestSeedSensitivity:
+    def test_seed_sensitivity(self, tmp_path):
+        t1 = generate_and_truth(100, os.path.join(str(tmp_path), "s1"))
+        t2 = generate_and_truth(101, os.path.join(str(tmp_path), "s2"))
+        # Different seeds should produce different star properties
+        stars1 = t1["stars"]
+        stars2 = t2["stars"]
+        # At least one star should have a different period or mean_mag
+        all_same = True
+        for sid in stars1:
+            if sid in stars2:
+                if abs(stars1[sid]["true_period"] - stars2[sid]["true_period"]) > 0.01:
+                    all_same = False
+                    break
+                if stars1[sid].get("mean_mag") and stars2[sid].get("mean_mag"):
+                    if abs(stars1[sid]["mean_mag"] - stars2[sid]["mean_mag"]) > 0.01:
+                        all_same = False
+                        break
+        assert not all_same, "Different seeds produced identical star properties"
+
+
+# ── Practice data covers hidden cases ───────────────────────────────
+class TestPracticeCoversHiddenCases:
+    def test_practice_covers_hidden_cases(self, tmp_path):
+        """Verify the shipped practice data has >=3 examples of each hidden-case kind."""
+        truth_file = os.path.join(str(tmp_path), "_coverage.json")
+        r = _run([IMAGE_PYTHON, SIMULATOR,
+                  "--analyze", PRACTICE_DATA,
+                  "--truth-output", truth_file])
+        assert r.returncode == 0, f"Analyzer failed: {r.stderr[:500]}"
+        with open(truth_file) as f:
+            cov = json.load(f)
+
+        # Sparse targets (<3 nights)
+        assert cov["sparse_targets"] >= 3, \
+            f"Only {cov['sparse_targets']} sparse targets (need 3)"
+
+        # Targets with many nights (for period analysis)
+        assert cov["many_night_targets"] >= 3, \
+            f"Only {cov['many_night_targets']} many-night targets (need 3)"
+
+        # Saturated comp exists
+        assert cov["saturated_comp_count"] >= 1, \
+            "No saturated comp in practice data"
+
+        # Variable comp exists
+        assert cov["variable_comp_count"] >= 1, \
+            "No variable comp in practice data"
+
+        # Targets affected by saturated comp
+        assert cov["targets_affected_by_saturated_comp"] >= 3, \
+            f"Only {cov['targets_affected_by_saturated_comp']} targets affected by saturated comp"
+
+        # Targets affected by variable comp
+        assert cov["targets_affected_by_variable_comp"] >= 3, \
+            f"Only {cov['targets_affected_by_variable_comp']} targets affected by variable comp"
+
+        # Near-alias targets (observed at ~1-day spacing)
+        assert cov["near_alias_targets"] >= 3, \
+            f"Only {cov['near_alias_targets']} near-alias targets (need 3)"
+
+
+# ── Graded instances (seeds 43-54) ──────────────────────────────────
+class TestGradedInstances:
+    @pytest.mark.parametrize("seed", list(range(43, 55)))
+    def test_graded_period(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if star_truth.get("period_is_na"):
+                assert row["period_days"] == "NA", \
+                    f"Seed {seed} star {sid}: period should be NA"
+            elif star_truth.get("period_days") is not None:
+                true_per = star_truth["true_period"]
+                found_per = float(row["period_days"])
+                assert abs(found_per - true_per) / true_per <= 0.005, \
+                    f"Seed {seed} star {sid}: period {found_per} not within 0.5% of {true_per}"
+
+    @pytest.mark.parametrize("seed", list(range(43, 55)))
+    def test_graded_mean_mag(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if star_truth.get("all_na"):
+                assert row["mean_mag"] == "NA", \
+                    f"Seed {seed} star {sid}: mean_mag should be NA"
+            elif star_truth.get("mean_mag") is not None:
+                true_mm = star_truth["mean_mag"]
+                found_mm = float(row["mean_mag"])
+                assert abs(found_mm - true_mm) <= 0.02, \
+                    f"Seed {seed} star {sid}: mean_mag {found_mm} not within 0.02 of {true_mm}"
+
+    @pytest.mark.parametrize("seed", list(range(43, 55)))
+    def test_graded_amplitude(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        for row in rows:
+            sid = row["star_id"]
+            star_truth = truth["stars"].get(sid, {})
+            if star_truth.get("period_is_na"):
+                assert row["amplitude_mag"] == "NA", \
+                    f"Seed {seed} star {sid}: amplitude should be NA"
+            elif row["amplitude_mag"] != "NA":
+                true_amp = star_truth["true_amplitude"]
+                found_amp = float(row["amplitude_mag"])
+                tol = max(0.05, 0.20 * true_amp)
+                assert abs(found_amp - true_amp) <= tol, \
+                    f"Seed {seed} star {sid}: amplitude {found_amp} not within tol of {true_amp}"
+
+    @pytest.mark.parametrize("seed", list(range(43, 55)))
+    def test_graded_all_stars_present(self, seed, tmp_path):
+        truth = generate_and_truth(seed, str(tmp_path))
+        rc, rows = run_reduce(str(tmp_path))
+        assert rc == 0
+        cat_ids = set(truth["stars"].keys())
+        out_ids = set(r["star_id"] for r in rows)
+        assert cat_ids == out_ids, \
+            f"Seed {seed}: missing {cat_ids - out_ids}, extra {out_ids - cat_ids}"
+<<<END>>>
+
+Now I also need to update the solution's solve.sh to handle the airmass_offset in the target data correctly (the simulator adds `airmass_offset` to the target's airmass, and the solve.sh reduce.py needs to handle the matching correctly). Let me also update the instruction.md to reflect C006's corrected magnitude.
+
+<<<FILE instruction.md>>>
+# Variable Star Light Curve Reducer
+
+The observatory's automated reduction pipeline is broken and the original author has left. You must write a working `reduce.py` that processes raw nightly observation CSVs into calibrated magnitudes and period estimates for each variable star.
+
+## Interface
+
+```
+python3 /app/reduce.py NIGHTS_DIR
+```
+
+- `NIGHTS_DIR` is a directory containing `catalogue.csv` and one or more `night_*.csv` files.
+- The program writes its output to `/app/out/stars.csv`.
+- Exit status is 0 in all cases, including when some or all output values are NA.
+
+## Output Format
+
+A CSV file with header row `star_id,period_days,amplitude_mag,mean_mag` and one row per target star from the catalogue, sorted by `star_id` in lexicographic order.
+
+- `period_days`: 6 significant figures (e.g., `0.770000`, `1.23457`, or `1.23457e+01`) or the literal string `NA`
+- `amplitude_mag`: 3 decimal places (e.g., `0.300`) or `NA`
+- `mean_mag`: 3 decimal places (e.g., `12.500`) or `NA`
+
+## Contract
+
+- One row per target star from the catalogue, sorted by `star_id`.
+- Stars with fewer than 3 nights of data: `period_days = NA`, `amplitude_mag = NA`; `mean_mag` is still computed if a valid comparison star exists.
+- Stars with no valid comparison star after vetting per the conventions: all three values are `NA`.
+- Exit status is 0 in all cases.
+- The field catalogue (`catalogue.csv`) must not be modified.
+- Every step of the reduction follows `/app/docs/conventions.md` v3.2.
+
+## Data
+
+Practice data is in `/app/data/`:
+- `catalogue.csv`: 8 comparison stars (C001–C008) and 12 target stars (V001–V012) with RA, Dec, and catalogue magnitudes.
+- `night_001.csv` through `night_010.csv`: raw observations with columns `star_id, jd, flux, flux_err, airmass`.
+
+## Verification
+
+A public test script is available at `/app/tests_public/run_public_tests.py`. It checks basic pipeline correctness on two clean stars.
+
+Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.
+<<<END>>>
+
+<<<FILE solution/solve.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat > /app/reduce.py << 'PYEOF'
+#!/usr/bin/env python3
+"""Variable star light curve reducer — full implementation."""
+
+import sys
+import os
+import csv
+import math
+import numpy as np
+from scipy.signal import lombscargle
+
+
+def deg2rad(deg):
+    return deg * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    """Convert JD to HJD (conventions §1)."""
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X = R * math.cos(lam)
+    Y = R * math.cos(eps) * math.sin(lam)
+    Z = R * math.sin(eps) * math.sin(lam)
+    corr = (X * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def format_period(val, sig_figs=6):
+    """Format a float with the specified number of significant figures."""
+    if val == 0:
+        return '0.00000'
+    mag = math.floor(math.log10(abs(val)))
+    n_dec = sig_figs - 1 - mag
+    if n_dec < 0:
+        return f'{val:.{sig_figs - 1}e}'
+    return f'{val:.{n_dec}f}'
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(0)
+
+    nights_dir = sys.argv[1]
+    output_dir = "/app/out"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Read catalogue ──────────────────────────────────────────────
+    cat_path = os.path.join(nights_dir, "catalogue.csv")
+    comp_stars = []
+    target_stars = []
+
+    with open(cat_path) as f:
+        for row in csv.DictReader(f):
+            sid = row['star_id']
+            ra = float(row['ra_deg'])
+            dec = float(row['dec_deg'])
+            cmag = float(row['catalog_mag'])
+            stype = row['star_type']
+            entry = {'star_id': sid, 'ra_deg': ra, 'dec_deg': dec, 'catalog_mag': cmag}
+            if stype == 'comp':
+                comp_stars.append(entry)
+            elif stype == 'target':
+                target_stars.append(entry)
+
+    # ── Read night observations ─────────────────────────────────────
+    all_obs = {}
+    if os.path.isdir(nights_dir):
+        for fname in sorted(os.listdir(nights_dir)):
+            if fname.startswith("night_") and fname.endswith(".csv"):
+                with open(os.path.join(nights_dir, fname)) as f:
+                    for row in csv.DictReader(f):
+                        sid = row['star_id']
+                        if sid not in all_obs:
+                            all_obs[sid] = []
+                        all_obs[sid].append({
+                            'jd': float(row['jd']),
+                            'flux': float(row['flux']),
+                            'flux_err': float(row['flux_err']),
+                            'airmass': float(row['airmass']),
+                        })
+
+    # ── Vet comparison stars (§2) ───────────────────────────────────
+    valid_comps = []
+    for cs in comp_stars:
+        sid = cs['star_id']
+        obs_list = all_obs.get(sid, [])
+
+        # Saturation check: reject if ANY observation has flux > 50000
+        if any(o['flux'] > 50000 for o in obs_list):
+            continue
+
+        # Variability check: σ(m_inst) across nights
+        m_insts = []
+        for o in obs_list:
+            if o['flux'] > 0:
+                m_insts.append(-2.5 * math.log10(o['flux']))
+        if len(m_insts) < 2:
+            continue
+        sigma = float(np.std(m_insts, ddof=0))
+        if sigma > 0.03:
+            continue
+
+        valid_comps.append(cs)
+
+    # Select brightest valid comp (lowest catalog_mag)
+    if valid_comps:
+        valid_comps.sort(key=lambda c: c['catalog_mag'])
+        selected_comp = valid_comps[0]
+    else:
+        selected_comp = None
+
+    # ── Process each target star ────────────────────────────────────
+    results = []
+    for ts in target_stars:
+        sid = ts['star_id']
+
+        if selected_comp is None:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA', 'mean_mag': 'NA'})
+            continue
+
+        target_obs = all_obs.get(sid, [])
+        comp_obs = all_obs.get(selected_comp['star_id'], [])
+
+        # Match by JD
+        comp_by_jd = {}
+        for co in comp_obs:
+            jd_key = round(co['jd'], 4)
+            comp_by_jd[jd_key] = co
+
+        cal_mags = []
+        cal_mag_errs = []
+        hjds_target = []
+
+        for to in target_obs:
+            jd_key = round(to['jd'], 4)
+            if jd_key not in comp_by_jd:
+                continue
+            co = comp_by_jd[jd_key]
+            if to['flux'] <= 0 or co['flux'] <= 0:
+                continue
+
+            # §3: Instrumental magnitudes
+            m_inst_t = -2.5 * math.log10(to['flux'])
+            m_inst_c = -2.5 * math.log10(co['flux'])
+
+            # Differential magnitude
+            delta_m = m_inst_t - m_inst_c
+
+            # Airmass correction
+            delta_m_corr = delta_m - 0.15 * (to['airmass'] - co['airmass'])
+
+            # Calibrated magnitude
+            m_cal = delta_m_corr + selected_comp['catalog_mag']
+
+            # Error propagation
+            sigma_m_t = 1.0857 * to['flux_err'] / to['flux']
+            sigma_m_c = 1.0857 * co['flux_err'] / co['flux']
+            sigma_m_cal = math.sqrt(sigma_m_t ** 2 + sigma_m_c ** 2)
+
+            # §1: HJD
+            hjd = compute_hjd(to['jd'], deg2rad(ts['ra_deg']),
+                               deg2rad(ts['dec_deg']))
+
+            cal_mags.append(m_cal)
+            cal_mag_errs.append(sigma_m_cal)
+            hjds_target.append(hjd)
+
+        if not cal_mags:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA', 'mean_mag': 'NA'})
+            continue
+
+        mean_mag_val = float(np.mean(cal_mags))
+        n_nights = len(cal_mags)
+
+        # §4: <3 nights → period=NA, amplitude=NA
+        if n_nights < 3:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA',
+                            'mean_mag': f'{mean_mag_val:.3f}'})
+            continue
+
+        # ── Period analysis (§4) ────────────────────────────────────
+        t = np.array(hjds_target)
+        y = np.array(cal_mags)
+        yerr = np.array(cal_mag_errs)
+
+        T_base = float(t.max() - t.min())
+        if T_base <= 0:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA',
+                            'mean_mag': f'{mean_mag_val:.3f}'})
+            continue
+
+        # Lomb-Scargle periodogram with 10x oversampling
+        freq_res = 1.0 / T_base
+        min_freq = 1.0 / 50.0
+        max_freq = 1.0 / 0.1
+        oversampling = 10
+        n_freq = int(oversampling * (max_freq - min_freq) / freq_res) + 1
+        freqs = np.linspace(min_freq, max_freq, n_freq)
+
+        y_centered = y - y.mean()
+        angular_freqs = 2.0 * np.pi * freqs
+        pgram = lombscargle(t, y_centered, angular_freqs, normalize=True)
+
+        best_idx = int(np.argmax(pgram))
+        best_freq = freqs[best_idx]
+        best_power = pgram[best_idx]
+        P_best = 1.0 / best_freq
+
+        # Alias rejection (§4)
+        candidates = [(P_best, best_power)]
+        for sign in [+1, -1]:
+            f_alias = abs(best_freq + sign * 1.0)
+            if f_alias > 0:
+                P_alias = 1.0 / f_alias
+                if 0.1 <= P_alias <= 50.0:
+                    alias_idx = int(np.argmin(np.abs(freqs - f_alias)))
+                    alias_power = pgram[alias_idx]
+                    if alias_power > 0.5 * best_power:
+                        candidates.append((P_alias, alias_power))
+
+        if len(candidates) <= 1:
+            final_period = P_best
+        else:
+            best_chi2_red = float('inf')
+            best_period = P_best
+            for P_cand, _ in candidates:
+                phi = (t / P_cand) % 1.0
+                A = np.column_stack([
+                    np.ones(len(phi)),
+                    np.sin(2 * np.pi * phi),
+                    np.cos(2 * np.pi * phi),
+                    np.sin(4 * np.pi * phi),
+                    np.cos(4 * np.pi * phi),
+                    np.sin(6 * np.pi * phi),
+                    np.cos(6 * np.pi * phi),
+                ])
+                W = np.diag(1.0 / (yerr ** 2))
+                try:
+                    coeffs = np.linalg.solve(A.T @ W @ A, A.T @ W @ y)
+                except np.linalg.LinAlgError:
+                    continue
+                y_model = A @ coeffs
+                chi2 = float(np.sum(((y - y_model) / yerr) ** 2))
+                chi2_red = chi2 / (len(y) - 7)
+                if chi2_red < best_chi2_red:
+                    best_chi2_red = chi2_red
+                    best_period = P_cand
+            final_period = best_period
+
+        # ── Amplitude from 3-harmonic model (§5) ───────────────────
+        phi_data = (t / final_period) % 1.0
+        A_data = np.column_stack([
+            np.ones(len(phi_data)),
+            np.sin(2 * np.pi * phi_data),
+            np.cos(2 * np.pi * phi_data),
+            np.sin(4 * np.pi * phi_data),
+            np.cos(4 * np.pi * phi_data),
+            np.sin(6 * np.pi * phi_data),
+            np.cos(6 * np.pi * phi_data),
+        ])
+        W = np.diag(1.0 / (yerr ** 2))
+        coeffs = np.linalg.solve(A_data.T @ W @ A_data, A_data.T @ W @ y)
+
+        phi_eval = np.linspace(0, 1, 100, endpoint=False)
+        A_eval = np.column_stack([
+            np.ones(100),
+            np.sin(2 * np.pi * phi_eval),
+            np.cos(2 * np.pi * phi_eval),
+            np.sin(4 * np.pi * phi_eval),
+            np.cos(4 * np.pi * phi_eval),
+            np.sin(6 * np.pi * phi_eval),
+            np.cos(6 * np.pi * phi_eval),
+        ])
+        model_vals = A_eval @ coeffs
+        amplitude = float(0.5 * (model_vals.max() - model_vals.min()))
+
+        period_str = format_period(final_period, 6)
+        results.append({
+            'star_id': sid,
+            'period_days': period_str,
+            'amplitude_mag': f'{amplitude:.3f}',
+            'mean_mag': f'{mean_mag_val:.3f}',
+        })
+
+    # Sort by star_id
+    results.sort(key=lambda r: r['star_id'])
+
+    # Write output
+    output_path = os.path.join(output_dir, "stars.csv")
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['star_id', 'period_days', 'amplitude_mag', 'mean_mag'])
+        for r in results:
+            writer.writerow([r['star_id'], r['period_days'],
+                             r['amplitude_mag'], r['mean_mag']])
+
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
+PYEOF
+<<<END>>>

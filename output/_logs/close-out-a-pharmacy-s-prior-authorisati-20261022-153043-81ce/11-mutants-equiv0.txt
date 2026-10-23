@@ -1,0 +1,7 @@
+```json
+{
+  "equivalent": false,
+  "distinguishing_case": "Create a queue case where step_therapy_required is true, formulary lists prior_drugs=['DRUG-A'], the case's prior_drugs field does NOT contain DRUG-A with outcome failed, the case's notes field contains the string 'drug-a' (case-insensitive match), and the prescriber service has NO record of DRUG-A with outcome failed for that patient. Correct solution: queries prescriber, finds no match → DENIED / STEP_THERAPY_NOT_MET. Mutant: finds 'drug-a' in notes, treats step therapy as met → APPROVED / MEETS_CRITERIA.",
+  "reason": "The mutant inserts a notes-based fallback between the queue prior_drugs check and the prescriber service check. When notes mention a prior drug ID but the prescriber service doesn't confirm a failed outcome, the mutant approves (MEETS_CRITERIA) while the correct solution denies (STEP_THERAPY_NOT_MET). Even when the prescriber would confirm it, the reason code differs (MEETS_CRITERIA vs STEP_THERAPY_MET_VIA_PRESCRIBER)."
+}
+```

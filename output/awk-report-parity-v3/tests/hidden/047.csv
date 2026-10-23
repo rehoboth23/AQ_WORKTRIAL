@@ -1,0 +1,14 @@
+branch,posted,amount,units,code
+São Paulo,,-0.0,abc,x
+berlin,20240105,-12.345,0,12345
+  ,abc,-0,10
+Österreich,10,12abc,0,Ünï
+x,2024-01-05,0.2,-2.5
+Malmö,20240105,3.,3,extra
+NYC-West,,+3,3,AB12
+a b c d e,2024/1/5,-0,3
+NYC-West,20240105,-5,
+  ,9,1000000000,4e2,ZZTOP
+london,9,250,0,AB12
+ lon, 20231231 ,0.2,
+Zürich,20240105,10,1,AB12

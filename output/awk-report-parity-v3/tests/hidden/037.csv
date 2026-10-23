@@ -1,0 +1,13 @@
+branch,posted,amount,units,code
+
+  ,20240105,-0,-2.5,AB12
+a b c d e,10,250,10,,extra
+ lon,, 7 ,4e2
+NYC-West,,+3,0,12345
+garbage
+NYC-West,2024/1/5,12.50, 2 ,12345,extra
+Zürich,20240131,12abc,abc,
+x,,-0,10,
+São Paulo,,0.2,abc
+  ,2024-01-05,99.999, 2 ,ZZTOP
+Zürich,20240105,10,1,AB12

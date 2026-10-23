@@ -1,0 +1,6 @@
+[
+  {"name": "spirits", "duty_rate": 25.00, "unit": "L"},
+  {"name": "tobacco", "duty_rate": 50.00, "unit": "kg"},
+  {"name": "beer", "duty_rate": 5.00, "unit": "L"},
+  {"name": "wine", "duty_rate": 15.00, "unit": "L"}
+]

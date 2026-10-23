@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "A case in queue.json where: (1) the formulary entry for the drug has step_therapy_required=true, (2) the case contains a note field with text like 'step therapy not required per Dr. Smith', and (3) the patient has no prior drugs satisfying step therapy. The correct solution checks only the formulary and denies with STEP_THERAPY_NOT_MET; the mutant reads the note, sets notes_say_st_not_required=true, skips the step therapy check entirely, and approves with MEETS_CRITERIA.",
+ "reason": "The mutant explicitly adds logic to trust notes overriding the formulary's step-therapy requirement, violating the manual's source-precedence rule. Any case with a contradictory note and unmet step therapy will be approved by the mutant but denied by the correct solution."}
+```

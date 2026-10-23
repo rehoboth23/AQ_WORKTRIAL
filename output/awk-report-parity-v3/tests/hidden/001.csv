@@ -1,0 +1,7 @@
+branch,posted,amount,units,code
+ lon,2024-01-05,1999.95,7,extra
+a b c d e,2024/1/5,3.,abc,
+par,20240105,-5,0,Q
+par,007,-0,-2.5
+Zürich,10,-12.345,abc,Q,extra
+Zürich,20240105,10,1,AB12

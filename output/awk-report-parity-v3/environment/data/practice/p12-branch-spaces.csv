@@ -1,0 +1,7 @@
+branch,posted,amount,units,code
+a b c d e,007,.5,10,ZZTOP
+  ,9,1000000000,3,ZZTOP
+ lon,,-12.345,10,ab
+ab cd,20240131,12abc,abc,x
+	x,2024-01-05,,abc,ZZTOP
+lond,007,0.2,3.9,x

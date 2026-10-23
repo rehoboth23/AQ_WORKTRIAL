@@ -1,0 +1,25 @@
+branch,posted,amount,units,code
+Malmö,10,abc,3,x
+los angeles,2024-01-31,250,
+x,2024-01-31,99.999,3.9
+  , 20231231 ,-0,4e2,12345
+london,2024-01-05,abc,-2.5
+los angeles,007,0.2,3.9
+NYC-West,20240131,-5, 2 ,12345
+los angeles,10,2500000000.75,10,Ünï
+Österreich,9,-0.0, 2 ,Q
+Österreich,2024-01-05,3.,4e2,ZZTOP,extra
+  ,9,0.1, 2 ,
+Zürich,abc,-5,
+par, 20231231 , -3 , 2 ,AB12
+Malmö,,-0.0,7,AB12
+berlin,10,,7,ab
+garbage
+los angeles, 20231231 ,0.1,3.9,AB12
+london,2024-01-31,.5, 2 ,x
+berlin,2024/1/5,1000000000,abc
+PAR1,2024-01-31, 7 ,3.9,Q,extra
+São Paulo,007,0.2,0
+Malmö,10,0x1A,abc
+london,abc,12.50,0,x
+Zürich,20240105,10,1,AB12

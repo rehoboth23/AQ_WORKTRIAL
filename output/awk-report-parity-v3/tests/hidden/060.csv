@@ -1,0 +1,7 @@
+branch,posted,amount,units,code
+berlin,2024-01-05,1000000000, 2 
+NYC-West,abc,0x1A,,12345
+nyc-east,abc, 7 ,-2.5
+Malmö,20240131,-0.0,4e2
+São Paulo,20240131,-0.0,4e2,ZZTOP,extra
+Zürich,20240105,10,1,AB12

@@ -1,0 +1,14 @@
+branch,posted,amount,units,code
+  ,abc,,3,Q
+nyc-east,2024/1/5,-0.0,3.9,ab
+NYC-West,,12abc, 2 ,x
+par,2024-01-05,12.50,10,x
+x,20240131, -3 ,abc,ab,extra
+par,20240131,1999.95,-2.5,x
+a b c d e,20240131,12.50, 2 ,Ünï
+Zürich,abc,+3,3
+berlin,2024/1/5,,7
+,,-0.0,4e2,
+los angeles,abc,1E2,-2.5
+Zürich,abc, -3 ,3,12345
+london,20240105,10,1,AB12

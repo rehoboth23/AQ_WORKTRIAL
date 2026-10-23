@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+ , , 
+a b c d e,9,99.999,,Ünï
+Österreich,10,1999.95,3
+  ,, -3 ,,x
+los angeles,2024-01-31,0.2,7,AB12
+,10,3.,3,Q
+par,2024/1/5, -3 ,7
+NYC-West, 20231231 ,99.999,0
+Zürich,abc,2500000000.75,3.9,x
+nyc-east,007,99.999,
+ny,007,0x1A,3.9,
+Österreich,20240131,-5,3.9,x,extra
+par,2024-01-05,-12.345,3.9,ab
+NYC-West,2024-01-31,1999.95,7,x
+  ,20240131,99.999,
+,,250,0,12345
+Österreich,,12abc,,AB12,extra
+nyc-east,20240105,10,1,AB12

@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+ny,10, -3 ,0,
+Malmö, 20231231 ,,7,ZZTOP
+london,20240131,1000000000,4e2,ZZTOP
+Zürich,2024-01-05, -3 ,3,ab
+ ,abc,abc,abc,12345
+los angeles,2024/1/5,abc, 2 ,ab
+Zürich,007,-0.0,0,x
+london,2024-01-05, ,10,12345
+Zürich,9,-12.345,abc,ZZTOP
+PAR1,007,-5,-2.5,Q
+par,2024-01-31,,3,Ünï
+São Paulo,20240131, 7 , 2 ,AB12
+,abc, 7 ,0,ab
+ lon,2024/1/5,12.50,3.9,Ünï
+  ,2024/1/5,1E2, 2 ,ab

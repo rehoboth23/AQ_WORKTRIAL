@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Add a case to queue.json with a drug_id whose formulary entry has step_therapy_required=true and step_therapy_prior_drugs=[\"DRUG001\"], empty prior_drugs list, a patient_id with no matching failed DRUG001 in prescriber history, and notes field containing 'DRUG001'. Correct solution: DENIED/STEP_THERAPY_NOT_MET. Mutant: falls through the notes check (DRUG001 found in notes), continues to APPROVED/MEETS_CRITERIA.",
+ "reason": "The mutant adds a notes-as-fallback check that can incorrectly approve a case when a prior drug ID string appears in the notes field but no actual failed prior drug exists in either authoritative source. Any queue case with step_therapy_required, no matching failed prior drug in queue or prescriber, and a notes field containing a required prior drug ID will produce APPROVED instead of the correct DENIED/STEP_THERAPY_NOT_MET."}
+```

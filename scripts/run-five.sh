@@ -31,10 +31,15 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
     exit 0
 fi
 
-# Dashboard in the background for as long as this script runs.
-bash scripts/dashboard.sh 15 > /dev/null 2>&1 &
-DASH=$!
-trap 'kill "$DASH" 2>/dev/null || true' EXIT
+# Dashboard in the background for as long as this script runs, unless one is already running.
+DASH=""
+if pgrep -f "scripts/dashboard.sh" >/dev/null 2>&1; then
+    echo "dashboard loop already running; leaving it as it is"
+else
+    bash scripts/dashboard.sh 15 > /dev/null 2>&1 &
+    DASH=$!
+    trap '[ -n "$DASH" ] && kill "$DASH" 2>/dev/null || true' EXIT
+fi
 sleep 3
 echo "dashboard: $ROOT_DIR/jobs/dashboard.html (reloads itself)"
 command -v open >/dev/null 2>&1 && open "jobs/dashboard.html" || true

@@ -1,0 +1,14 @@
+branch,posted,amount,units,code
+Zürich, 20231231 ,2500000000.75,3
+ lon,, 7 ,4e2
+,9,12abc,3.9,
+los angeles,, 7 , 2 
+Malmö,2024-01-05, -3 ,10
+nyc-east,9,0.1,abc
+Österreich,007,-5,3.9,Q,extra
+nyc-east,abc,1000000000,abc
+par,10,-0.0,7
+london,,.5, 2 ,x
+berlin,abc,abc,10,12345
+los angeles,10,-0,0
+Zürich,20240105,10,1,AB12

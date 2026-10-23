@@ -1,0 +1,14 @@
+branch,posted,amount,units,code
+ lon,20240105,1999.95,3,ZZTOP
+Österreich,10,1000000000,,12345
+los angeles,2024/1/5,1000000000,abc
+,2024/1/5,2500000000.75,3.9,ZZTOP
+nyc-east,10,,3,Q
+ , , 
+Malmö,2024-01-31,99.999,4e2,ZZTOP
+PAR1,20240105,1999.95,3,ZZTOP
+,9,-0, 2 
+São Paulo,2024-01-05,abc,4e2
+los angeles,10,.5,7,Q
+Zürich,9, -3 ,7,Q
+Zürich,20240105,10,1,AB12

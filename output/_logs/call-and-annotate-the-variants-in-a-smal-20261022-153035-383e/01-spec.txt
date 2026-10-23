@@ -1,0 +1,377 @@
+```json
+{
+  "name": "amplicon-variant-annotation",
+  "description": "Call variants from amplicon reads against a reference and annotate them in the lab's HGVS-style notation with protein consequences.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["bioinformatics", "variant-calling", "hgvs-notation", "annotation", "pipeline"],
+  "expert_time_estimate_min": 90,
+  "junior_time_estimate_min": 240,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A small diagnostic lab sequences a panel of three genes (ALPHA, BETA, GAMMA) by targeted amplicon sequencing. The lab's old variant-annotation pipeline broke when the LIMS was upgraded, and the bioinformatician who maintained it left. You are given the reference genome, the gene annotation, the lab's nomenclature guide and SOP, a vendored read aligner, six practice samples with their expected reports, and an outdated summary file from the previous pipeline. Your job is to build a Python script that takes amplicon reads, calls variants, and produces a report in the lab's exact HGVS-style notation with protein consequences — correct enough that the LIMS can ingest it directly.",
+  "environment_setup": "The Dockerfile builds from python:3.12-slim-bookworm with numpy installed. It copies: (1) ref/reference.fa — a 1500bp single-contig reference with three genes; (2) ref/genes.tsv — gene annotation with CDS coordinates, strands, and exon structure; (3) docs/nomenclature.md — the lab's HGVS-style nomenclature rules (coding coordinates, 3' rule, strand handling, protein notation); (4) docs/sop.md — the SOP (report columns, VAF format, sorting, depth/VAF thresholds, instruction to annotate from reads not old summary); (5) tools/align.py — a vendored simple ungapped/gapped aligner producing a pileup TSV; (6) samples/practice/P01–P06/ — each with reads.fq and expected_report.tsv (18 variants total, 3 per kind, plus one below-threshold negative per sample); (7) results/old_summary.tsv — outdated annotations with wrong strand notation, unshifted indels, wrong protein consequences, and outdated column format. WORKDIR is /app.",
+  "instruction_summary": "instruction.md asks the agent to create /app/annotate.py with CLI: python3 /app/annotate.py --reads <fq> --reference <fa> --annotation <tsv> --sample <name> --output <tsv>. The script must align reads (using tools/align.py or its own method), call variants at depth≥20 and VAF≥0.20, annotate each in the lab's c. notation with protein consequences per docs/nomenclature.md, and output a TSV with columns Sample, Gene, HGVS_cDNA, HGVS_Protein, Type, Depth, Alt_Depth, VAF, sorted by c. coordinate within gene then gene name. VAF is decimal rounded to 2 places. The SOP says to annotate from reads, not from results/old_summary.tsv. The instruction ends with the tamper sentence.",
+  "solution_outline": [
+    "Write /app/annotate.py that parses ref/reference.fa, ref/genes.tsv, and the input FASTQ.",
+    "Run tools/align.py (or equivalent) to produce a pileup: for each reference position, counts of A/C/G/T, insertions (seq:count), and deletions (len:count).",
+    "Call variants: SNVs where a non-ref base has depth≥20 and VAF≥0.20; insertions and deletions with the same thresholds. Merge adjacent single-base calls into multi-base deletions when they are contiguous and above threshold.",
+    "For each called variant, determine which gene it falls in using ref/genes.tsv.",
+    "Convert genomic position to coding (c.) coordinate: for plus strand, c. = genomic_pos - cds_start + 1 (summing exon lengths for multi-exon genes, skipping introns); for minus strand, c. = cds_end - genomic_pos + 1 (with exon-aware accounting).",
+    "For minus-strand genes, reverse-complement the ref and alt alleles so they are in transcript orientation.",
+    "Apply the 3' rule: if an indel falls within a repeat (same base or motif repeated ≥2 times on either side), shift the position to the most 3' coding-coordinate position that produces the same net change.",
+    "Compute the protein consequence: determine affected codon(s) from c. coordinate, translate reference and mutant codons using the standard codon table, classify as synonymous (p.=), missense (p.RefAA#NewAA), nonsense (p.RefAA#*), or frameshift (p.RefAA#fs) using 3-letter amino acid codes.",
+    "Format HGVS_cDNA: c.POSREF>ALT for SNVs, c.POS_POSinsSEQ for insertions, c.START_ENDdel for deletions (single-base: c.POSdelREF).",
+    "Classify Type: SNV, INS, DEL, MNV (adjacent SNVs in same codon merged), or COMPLEX.",
+    "Sort by numeric c. coordinate within gene, then gene name alphabetically.",
+    "Write the TSV with header: Sample\\tGene\\tHGVS_cDNA\\tHGVS_Protein\\tType\\tDepth\\tAlt_Depth\\tVAF, with VAF = round(alt_depth/depth, 2). Output header only if no variants pass threshold.",
+    "chmod +x /app/annotate.py."
+  ],
+  "test_plan": [
+    "test_practice_covers_hidden_cases: reads samples/practice/*/expected_report.tsv, classifies each variant by (type, position, strand), asserts each hidden-case kind has ≥3 practice examples and each negative kind has ≥3.",
+    "test_public_sample: runs /app/annotate.py on samples/practice/P01/reads.fq, compares output to samples/practice/P01/expected_report.tsv (SNVs only, plus strand).",
+    "test_snv_missense_plus: hidden sample with a missense SNV at a novel position in Gene ALPHA; checks HGVS_cDNA and HGVS_Protein match the reference annotator.",
+    "test_snv_synonymous_plus: hidden sample with a synonymous SNV; checks p.= is emitted, not a missense string.",
+    "test_3prime_rule_deletion: hidden sample with a 1bp deletion inside a homopolymer repeat in Gene ALPHA; checks the c. coordinate is at the most 3' position of the repeat, not the leftmost.",
+    "test_3prime_rule_insertion: hidden sample with a 1bp insertion inside a repeat; checks 3' positioning.",
+    "test_3prime_rule_minus_strand: hidden sample with a deletion inside a repeat in Gene BETA (minus strand); checks the deletion is at the most 3' coding position (lowest genomic position), not the highest.",
+    "test_codon_boundary_deletion: hidden sample with a 2bp deletion spanning a codon boundary; checks range notation c.X_Ydel, not two separate calls.",
+    "test_frameshift_annotation: hidden sample with a 1bp insertion causing a frameshift; checks p.RefAA#fs notation.",
+    "test_nonsense_annotation: hidden sample with a SNV creating a stop codon; checks p.RefAA#* notation.",
+    "test_minus_strand_bases: hidden sample with a SNV in Gene BETA; checks ref and alt alleles are reverse-complemented in the HGVS_cDNA string.",
+    "test_minus_strand_coordinate: hidden sample with a variant in Gene BETA; checks the c. coordinate is counted from the 3' genomic end (cds_end - pos + 1), not from the 5' end.",
+    "test_minus_strand_frameshift: hidden sample with a 1bp deletion in Gene BETA causing a frameshift; checks both coordinate direction and frameshift notation.",
+    "test_multi_exon_coordinate: hidden sample with a SNV near the exon 1/2 boundary in Gene GAMMA; checks the c. coordinate skips the intron (c.151 = first base of exon 2).",
+    "test_insertion_notation: hidden sample with a 2bp insertion; checks c.X_YinsSEQ format with correct flanking positions.",
+    "test_report_columns: runs on any hidden sample, checks the output TSV header is exactly 'Sample\\tGene\\tHGVS_cDNA\\tHGVS_Protein\\tType\\tDepth\\tAlt_Depth\\tVAF' in that order.",
+    "test_vaf_format: checks VAF is a decimal with exactly 2 decimal places (e.g. 0.45 not 45 or 0.449).",
+    "test_sorting: hidden sample with 2+ variants in different genes; checks rows are sorted by c. coordinate within gene then gene name.",
+    "test_threshold_filtering: hidden sample containing a below-threshold variant (VAF 0.12, depth 15); checks it does not appear in the output while the above-threshold variant does.",
+    "test_no_false_positives: hidden sample with only below-threshold noise; checks output is header-only.",
+    "test_not_using_old_summary: scans /app/annotate.py source for direct reads of old_summary.tsv; also runs a hidden sample not covered by the old summary and checks output is non-empty and correct.",
+    "test_anti_cheese_no_tests_import: scans for imports of /tests or reference_annotator; also runs with a Python import hook blocking /tests imports."
+  ],
+  "anti_cheat": "The expected annotations are computed at test time by a reference annotator module in tests/ (pure Python, standard library only) that implements the same nomenclature rules. The hidden samples are generated by a seeded read simulator in tests/ from sibling seeds not present in the environment. The old summary file (results/old_summary.tsv) does not cover hidden samples and contains deliberate errors. An agent that copies from the old summary will fail on hidden samples not in the summary and on cases where the summary is wrong. The agent never sees the reference annotator or the simulator. A static scan plus a runtime import hook block access to /tests.",
+  "failure_modes": "A capable agent will likely: (1) correctly call variants and match practice outputs for SNVs on the plus strand; (2) fail on the 3' rule for indels in repeats — the vendored aligner places gaps at the leftmost position, and the agent must shift to the most 3' position in coding coordinates, which for minus-strand genes means the lowest genomic position; (3) report minus-strand variants in forward genomic notation (c.100G>A instead of c.100C>T) if it forgets to reverse-complement; (4) compute minus-strand coding coordinates from the wrong end; (5) copy the old summary for practice samples where it happens to be correct, then fail on hidden samples; (6) get synonymous vs missense wrong by not translating codons carefully (especially when the 3rd base changes); (7) report frameshifts as p.X#Yyfs instead of p.X#fs (using the new amino acid instead of the reference); (8) not merge adjacent deletions into a single range deletion. These are the agent's fault because every rule is stated in docs/nomenclature.md and shown in the practice data.",
+  "shape": "domain pipeline with conventions; graded on hidden samples",
+  "hidden_evaluation": "The tests generate 6 hidden amplicon samples from sibling seeds (seed offset +1000 from the practice generator). Each hidden sample has 1–3 true variants (drawn from the quirk matrix, one level per dimension) plus one below-threshold noise variant. The read simulator (tests/read_simulator.py, pure Python) introduces variants at known positions, simulates 150bp reads at ~80x depth with 0.1% substitution error, and writes FASTQ. The reference annotator (tests/reference_annotator.py, pure Python) takes the known variants and the reference/annotation, applies all nomenclature rules (3' shifting, strand complementation, coordinate conversion, protein consequence), and produces the expected TSV. The tests run /app/annotate.py on each hidden sample and compare the output TSV to the expected TSV, checking each column. Determinism is verified: same seed produces identical FASTQ bytes, and a different seed changes at least one variant position.",
+  "checks": [
+    {
+      "requirement": "nomenclature.md §3' Rule: 'When an indel occurs within a repetitive sequence (same base repeated ≥2 times), assign it to the most 3' position in coding coordinates.'",
+      "assumed_instead": "Place the indel at the position where the aligner first observed it (leftmost), since the pileup shows the gap there.",
+      "hidden_test_input": "1bp deletion in a CCCCCC repeat (6 C's) at c.46–51 in Gene ALPHA; the aligner places the gap at c.46.",
+      "why_missed": "The practice set has 3 repeat-indel examples, all on the plus strand; the agent's own test passes because it checks against the practice expected report which already has the 3' position. But if the agent hard-codes the shift direction as 'higher genomic position', it fails on the minus-strand repeat.",
+      "caught_by_tests": ["test_3prime_rule_deletion", "test_3prime_rule_insertion"]
+    },
+    {
+      "requirement": "nomenclature.md §3' Rule applied to minus strand: 'Most 3' in coding coordinates = highest c. number = lowest genomic position for minus-strand genes.'",
+      "assumed_instead": "Shift the indel to the highest genomic position (same direction as plus strand).",
+      "hidden_test_input": "1bp deletion in a GGGGG repeat in Gene BETA (minus strand); correct 3' position is the lowest genomic position in the repeat.",
+      "why_missed": "The practice set shows minus-strand repeats 3 times, but the agent may implement the shift in genomic coordinates rather than coding coordinates, getting the direction wrong for minus strand.",
+      "caught_by_tests": ["test_3prime_rule_minus_strand"]
+    },
+    {
+      "requirement": "nomenclature.md §Deletions: 'Deletions spanning multiple positions use range notation c.START_ENDdel.'",
+      "assumed_instead": "Report two separate 1bp deletions, or use only the first position (c.POSdel).",
+      "hidden_test_input": "2bp deletion at c.36_37 spanning the boundary of codons 12 and 13 in Gene ALPHA.",
+      "why_missed": "The pileup shows two adjacent deleted positions; the agent may call them as two separate 1bp deletions rather than merging into one range deletion.",
+      "caught_by_tests": ["test_codon_boundary_deletion"]
+    },
+    {
+      "requirement": "nomenclature.md §Protein Consequences: 'If the amino acid is unchanged, the annotation is p.=.'",
+      "assumed_instead": "Report the codon change as a missense (e.g. p.Leu12Leu) because the codon sequence changed.",
+      "hidden_test_input": "SNV at c.36 T>C in a CTT codon (Leu); CTC is still Leu.",
+      "why_missed": "The agent may not translate codons and instead assume any codon change is a missense.",
+      "caught_by_tests": ["test_snv_synonymous_plus"]
+    },
+    {
+      "requirement": "nomenclature.md §Protein Consequences: 'If the amino acid changes, use p.RefAAcodonNumNewAA with three-letter codes.'",
+      "assumed_instead": "Use one-letter codes, or use the new amino acid as the prefix instead of the reference.",
+      "hidden_test_input": "SNV at c.35 T>A in a CTT codon (Leu→His); expected p.Leu12His.",
+      "why_missed": "The agent may use one-letter codes (p.L12H) or swap ref/new AA order.",
+      "caught_by_tests": ["test_snv_missense_plus"]
+    },
+    {
+      "requirement": "nomenclature.md §Protein Consequences: 'For frameshifts (indel length not divisible by 3), use p.RefAAcodonNumfs (short notation).'",
+      "assumed_instead": "Use the new amino acid as prefix (p.Ile12fs) or use extended notation (p.Leu12Hisfs*8).",
+      "hidden_test_input": "1bp insertion at c.35 in Gene ALPHA causing a frameshift at codon 12.",
+      "why_missed": "The agent may compute the new amino acid at the affected codon and use it as the prefix, or attempt extended notation with a premature stop position it computes incorrectly.",
+      "caught_by_tests": ["test_frameshift_annotation"]
+    },
+    {
+      "requirement": "nomenclature.md §Protein Consequences: 'If the variant creates a stop codon, use p.RefAAcodonNum*.'",
+      "assumed_instead": "Report as a missense with 'Ter' or 'Stop', or as a frameshift.",
+      "hidden_test_input": "SNV creating TAG stop codon at codon 22 in Gene ALPHA.",
+      "why_missed": "The agent may not check for stop codons in the new codon, or may use a non-standard symbol.",
+      "caught_by_tests": ["test_nonsense_annotation"]
+    },
+    {
+      "requirement": "nomenclature.md §Reverse-Strand Genes: 'For genes on the minus strand, reference and alternate alleles are reported in transcript orientation (reverse-complemented).'",
+      "assumed_instead": "Report the alleles as they appear on the genomic forward strand.",
+      "hidden_test_input": "SNV at genomic position 600 in Gene BETA (CDS 400–699, minus strand); genomic G→A should be reported as c.100C>T.",
+      "why_missed": "The agent may not reverse-complement the alleles, producing c.100G>A.",
+      "caught_by_tests": ["test_minus_strand_bases"]
+    },
+    {
+      "requirement": "nomenclature.md §Reverse-Strand Genes: 'c.1 corresponds to the 3'-most base of the genomic CDS (highest genomic position for minus-strand genes).'",
+      "assumed_instead": "Count c. from the 5' genomic end (position 400), same as plus strand.",
+      "hidden_test_input": "Variant at genomic position 650 in Gene BETA; correct c. = 699 - 650 + 1 = c.50.",
+      "why_missed": "The agent may use the same coordinate formula as plus-strand genes (pos - start + 1 = 251).",
+      "caught_by_tests": ["test_minus_strand_coordinate"]
+    },
+    {
+      "requirement": "nomenclature.md §Reverse-Strand Genes + §Protein Consequences: frameshift on a minus-strand gene must have correct coordinate direction and p.RefAA#fs notation.",
+      "assumed_instead": "Correct coordinate but wrong protein, or correct protein but wrong coordinate.",
+      "hidden_test_input": "1bp deletion in Gene BETA causing a frameshift; both c. coordinate (from 3' end) and p.RefAA#fs must be correct.",
+      "why_missed": "The agent may get the coordinate right (from practice) but compute the protein using the forward-strand codon table, or vice versa.",
+      "caught_by_tests": ["test_minus_strand_frameshift"]
+    },
+    {
+      "requirement": "nomenclature.md §Multi-Exon Genes: 'For genes with multiple exons, coding coordinates are continuous; intron bases are not counted.'",
+      "assumed_instead": "Count intron bases in the coordinate, or use genomic offset without exon awareness.",
+      "hidden_test_input": "SNV at genomic position 1005 in Gene GAMMA (exon 1: 800–949, exon 2: 1000–1149); correct c. = 1005 - 1000 + 151 = c.156.",
+      "why_missed": "The agent may compute c. = 1005 - 800 + 1 = c.206 (counting through the intron).",
+      "caught_by_tests": ["test_multi_exon_coordinate"]
+    },
+    {
+      "requirement": "nomenclature.md §Insertions: 'Insertions are notated as c.POS_POSinsSEQ, where POS and POS+1 are the flanking reference bases.'",
+      "assumed_instead": "Use c.POSinsSEQ (single position) or place the insertion at the wrong flanking position.",
+      "hidden_test_input": "2bp insertion 'AT' between c.35 and c.36 in Gene ALPHA; expected c.35_36insAT.",
+      "why_missed": "The agent may use a single-position format or not apply the 3' rule to insertions in repeats.",
+      "caught_by_tests": ["test_insertion_notation"]
+    },
+    {
+      "requirement": "sop.md §Report Format: 'The report is a tab-separated file with header: Sample Gene HGVS_cDNA HGVS_Protein Type Depth Alt_Depth VAF.'",
+      "assumed_instead": "Use different column names (e.g. 'CDNA_Change', 'AA_Change') or different order.",
+      "hidden_test_input": "Any hidden sample; the test checks the header line exactly.",
+      "why_missed": "The agent may use column names from the old summary file or from common bioinformatics conventions.",
+      "caught_by_tests": ["test_report_columns"]
+    },
+    {
+      "requirement": "sop.md §Report Format: 'VAF is Alt_Depth divided by Depth, reported as a decimal rounded to two decimal places.'",
+      "assumed_instead": "Report VAF as a percentage (45), or with 3 decimal places (0.450), or unrounded.",
+      "hidden_test_input": "Variant with depth 80, alt_depth 36; VAF should be 0.45.",
+      "why_missed": "The agent may use a different rounding or format, which the LIMS rejects.",
+      "caught_by_tests": ["test_vaf_format"]
+    },
+    {
+      "requirement": "sop.md §Report Format: 'Variants are sorted by HGVS_cDNA coordinate within each gene, then alphabetically by gene name.'",
+      "assumed_instead": "Sort by genomic position, or by gene name first, or by VAF.",
+      "hidden_test_input": "Hidden sample with variants in Gene BETA at c.50 and Gene ALPHA at c.100; ALPHA c.100 should come first (gene alphabetical, then c. coordinate within gene).",
+      "why_missed": "The agent may sort by genomic position (BETA variant at genomic 650 before ALPHA at genomic 150) or by gene name but with wrong coordinate ordering.",
+      "caught_by_tests": ["test_sorting"]
+    },
+    {
+      "requirement": "sop.md §Variant Calling: 'Call variants only at positions with depth ≥ 20 and VAF ≥ 0.20.'",
+      "assumed_instead": "Call all positions with any alternate reads, or use a different threshold.",
+      "hidden_test_input": "Hidden sample with a true variant (VAF 0.45, depth 80) and a noise variant (VAF 0.12, depth 15); only the true variant should appear.",
+      "why_missed": "The agent may call the noise variant if it doesn't apply thresholds, or use thresholds inferred from practice (e.g. 0.15) that are wrong.",
+      "caught_by_tests": ["test_threshold_filtering", "test_no_false_positives"]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "The vendored aligner (tools/align.py) must remain functional and produce correct pileups; the agent's pipeline may call it but must not break it.",
+      "hidden_test_input": "The tests call tools/align.py on a hidden FASTQ and verify the pileup has the expected depth at known variant positions."
+    },
+    {
+      "behaviour": "The reference FASTA and gene annotation (ref/reference.fa, ref/genes.tsv) must not be modified.",
+      "hidden_test_input": "The tests checksum ref/reference.fa and ref/genes.tsv before and after the agent's run."
+    },
+    {
+      "behaviour": "The report columns must match the LIMS ingestion schema exactly (8 columns in the specified order).",
+      "hidden_test_input": "Every hidden sample's output is checked for the exact header string."
+    }
+  ],
+  "ground_truth": "Expected annotations are computed by tests/reference_annotator.py, a pure-Python module (standard library only) that: (1) reads ref/reference.fa and ref/genes.tsv; (2) takes a list of known variants (gene, genomic_pos, ref_allele, alt_allele, depth, alt_depth) from the seeded read simulator; (3) for each variant, converts to c. coordinates with exon awareness, reverse-complements alleles for minus strand, applies the 3' rule by scanning the reference for repeats, computes the protein consequence by translating reference and mutant codons, and formats the HGVS strings; (4) outputs a TSV in the SOP format. The read simulator (tests/read_simulator.py) is seeded (seed = base_seed + sample_offset) and deterministic: same seed → identical FASTQ bytes. A determinism test verifies this and that a different seed changes at least one variant. The reference annotator's codon table and 3' rule implementation are independent of the agent's code.",
+  "dial": "Number of hidden samples and variant classes: 6 hidden samples drawn from the quirk_matrix (fair range 4–8; chosen value 6). Each sample has 1–3 true variants covering one quirk-matrix cell plus one negative (below-threshold) variant. About 33% of samples are easy cells (SNV × mid-codon × plus, SNV × codon boundary × plus).",
+  "quirk_matrix": {
+    "dimensions": {
+      "variant_type": ["SNV", "indel", "indel_in_repeat"],
+      "position": ["mid_codon", "codon_boundary", "near_exon_edge"],
+      "strand": ["plus", "minus", "minus_with_frameshift"]
+    },
+    "mix": "6 hidden instances, one level per dimension per instance. 2 easy (SNV × mid-codon × plus, SNV × codon_boundary × plus), 2 medium (SNV × near_exon_edge × plus, SNV × mid-codon × minus), 2 hard (indel_in_repeat × mid_codon × plus, indel × mid_codon × minus_with_frameshift). About 33% easy.",
+    "cells": [
+      {"variant_type": "SNV", "position": "mid_codon", "strand": "plus", "difficulty": "easy"},
+      {"variant_type": "SNV", "position": "codon_boundary", "strand": "plus", "difficulty": "easy"},
+      {"variant_type": "indel_in_repeat", "position": "mid_codon", "strand": "plus", "difficulty": "hard"},
+      {"variant_type": "SNV", "position": "near_exon_edge", "strand": "plus", "difficulty": "medium"},
+      {"variant_type": "SNV", "position": "mid_codon", "strand": "minus", "difficulty": "medium"},
+      {"variant_type": "indel", "position": "mid_codon", "strand": "minus_with_frameshift", "difficulty": "hard"}
+    ]
+  },
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "Coding coordinates are 1-based with c.1 = first base of the start codon (ATG).",
+      "why": "The practice data shows specific c. coordinates but never states the coordinate origin or that it is 1-based; an agent could assume 0-based or a different origin."
+    },
+    {
+      "fact": "For minus-strand genes, c.1 is the 3'-most genomic position of the CDS (highest genomic coordinate), and alleles are reverse-complemented to transcript orientation.",
+      "why": "The practice data shows examples, but the direction of coordinate counting and allele complementation cannot be inferred unambiguously from a single sample without the stated rule — an agent could assume forward-strand coordinates with a sign flip."
+    },
+    {
+      "fact": "The 3' rule shifts indels to the most 3' position in coding coordinates; for minus-strand genes this is the lowest genomic position, not the highest.",
+      "why": "The practice data shows the result of 3' shifting, but the direction in genomic coordinates for minus-strand genes is the opposite of the plus-strand case and cannot be inferred without the stated rule about coordinate direction."
+    },
+    {
+      "fact": "Minimum depth to call a variant is 20x; minimum VAF is 0.20.",
+      "why": "The practice data shows called variants above threshold and uncalled below, but the exact thresholds could be anywhere between the lowest called VAF and highest uncalled VAF; the exact values must be stated."
+    },
+    {
+      "fact": "VAF is reported as a decimal rounded to 2 decimal places (e.g. 0.45, not 45 or 0.449).",
+      "why": "The practice reports show 2 decimal places, but this could be coincidental; the format requirement must be stated."
+    },
+    {
+      "fact": "Three-letter amino acid codes are used in protein annotations (e.g. p.Leu12His, not p.L12H).",
+      "why": "The practice data shows 3-letter codes, but the convention could be inferred as either 1-letter or 3-letter; the format must be stated."
+    }
+  ],
+  "quirk_evidence": [
+    {
+      "quirk": "variant_type: SNV (missense, synonymous, nonsense)",
+      "evidence": "samples/practice/P01/expected_report.tsv (2 SNVs: missense + synonymous), samples/practice/P03/expected_report.tsv (3 SNVs on minus strand including nonsense), samples/practice/P04/expected_report.tsv (1 nonsense SNV)"
+    },
+    {
+      "quirk": "variant_type: indel (insertion, deletion, frameshift)",
+      "evidence": "samples/practice/P02/expected_report.tsv (insertion + deletion in repeat), samples/practice/P04/expected_report.tsv (2 frameshift indels on minus strand), samples/practice/P06/expected_report.tsv (1 frameshift on minus strand)"
+    },
+    {
+      "quirk": "variant_type: indel_in_repeat (3' rule)",
+      "evidence": "samples/practice/P02/expected_report.tsv (deletion in CCCCCC repeat at 3' position), samples/practice/P02/expected_report.tsv (insertion in repeat at 3' position), samples/practice/P06/expected_report.tsv (deletion in repeat)"
+    },
+    {
+      "quirk": "position: codon_boundary",
+      "evidence": "samples/practice/P01/expected_report.tsv (synonymous SNV at 3rd codon position), samples/practice/P04/expected_report.tsv (missense at codon boundary), samples/practice/P06/expected_report.tsv (missense at codon boundary)"
+    },
+    {
+      "quirk": "position: near_exon_edge",
+      "evidence": "samples/practice/P05/expected_report.tsv (3 SNVs near exon 1/2 boundary in Gene GAMMA at c.148, c.149, c.153)"
+    },
+    {
+      "quirk": "strand: minus (base complementation + coordinate direction)",
+      "evidence": "docs/nomenclature.md §Reverse-Strand Genes; samples/practice/P03/expected_report.tsv (3 minus-strand SNVs with complemented alleles), samples/practice/P04/expected_report.tsv (2 minus-strand indels), samples/practice/P05/expected_report.tsv (1 minus-strand SNV)"
+    },
+    {
+      "quirk": "strand: minus_with_frameshift",
+      "evidence": "samples/practice/P04/expected_report.tsv (2 frameshift indels on Gene BETA), samples/practice/P06/expected_report.tsv (1 frameshift on Gene BETA); docs/nomenclature.md §Reverse-Strand Genes states coordinate direction, §Protein Consequences states frameshift notation"
+    },
+    {
+      "quirk": "negative: below-threshold variant not called",
+      "evidence": "Each practice sample (P01–P06) contains one below-threshold variant in reads.fq that does NOT appear in expected_report.tsv; the reads show ~5-8 reads with an alternate base (VAF 0.05-0.12) that must be filtered."
+    }
+  ],
+  "public_tests": "One visible test in tests_public/test_public_sample.py runs /app/annotate.py on samples/practice/P01/reads.fq and compares the output to samples/practice/P01/expected_report.tsv. P01 contains 3 SNVs on the plus strand (missense, synonymous, codon-boundary synonymous) and one below-threshold negative. This covers about 30% of the hidden checks (SNV annotation, report format, threshold filtering on the plus strand). No hidden quirk (repeat, minus strand, multi-exon, frameshift) appears in the public test.",
+  "anti_cheese": "Two gates: (1) Hidden samples are generated from sibling seeds (offset +1000) not present in the environment, so the old summary file has no entries for them; an agent that reads old_summary.tsv will produce no output for hidden samples and fail. (2) The tests install a Python import hook (sitecustomize in a tmpdir prepended to PYTHONPATH) that blocks imports from /tests, /solution, and any module named 'reference_annotator' or 'read_simulator'; an agent that tries to import the reference annotator will get ImportError. A static scan of /app/annotate.py source for the strings 'old_summary', '/tests', 'reference_annotator', 'read_simulator' is also performed.",
+  "graded_instances": "6 hidden instances generated in tests/ by the seeded read simulator (seed = 42 + 1000*sample_index). Each instance draws one quirk-matrix cell and generates 1–3 true variants at positions different from any practice sample, plus one below-threshold noise variant. The read simulator writes FASTQ; the reference annotator computes expected output from the known variants. The determinism self-check (test_determinism) verifies that the same seed produces byte-identical FASTQ and that seed+1 changes at least one variant position or type. The graded instances differ from practice in: variant positions (drawn from different codons), repeat sequences (different homopolymer or dinucleotide repeats), and gene contexts (variants in different exons or different genes than practice).",
+  "self_check_gap": "A solution that reproduces every practice sample can still fail on graded instances because: (1) The 3' rule direction for minus-strand repeats: practice shows 3 minus-strand repeat examples, but the agent may implement the shift in genomic coordinates (always to higher position) rather than coding coordinates; the hidden minus-strand repeat variant requires shifting to the lowest genomic position. (2) The codon-boundary deletion range: practice shows deletions at specific boundaries, but the hidden instance uses a different boundary; the agent must generalise the range-notation rule, not hard-code the specific range. (3) Multi-exon coordinate: practice shows variants at c.148-153, but the hidden instance uses c.155 (deeper into exon 2); the agent must use the general exon-aware formula, not a lookup table. The practice set nonetheless determines the right answer because the nomenclature doc states every rule and the practice set shows each rule in action at least 3 times, so a correct generalisation passes all hidden instances.",
+  "margins": [
+    {
+      "test": "test_threshold_filtering",
+      "bar": "VAF ≥ 0.20 and depth ≥ 20 to call; below-threshold variant must not appear",
+      "oracle_value": "True variants at VAF 0.40-0.55, depth 60-90; noise variant at VAF 0.10-0.14, depth 12-18",
+      "baseline": "Same sample, same reads; the noise variant is in the same amplicon as the true variant"
+    },
+    {
+      "test": "test_no_false_positives",
+      "bar": "Output is header-only (0 variants) when all positions are below threshold",
+      "oracle_value": "0 variants in output; 1 noise variant in reads at VAF 0.11",
+      "baseline": "Same sample reads; the only alternate-allele position is below threshold"
+    }
+  ],
+  "contract": [
+    "Entry point: python3 /app/annotate.py --reads <fastq_path> --reference <fasta_path> --annotation <tsv_path> --sample <sample_name> --output <tsv_path>",
+    "Output: TSV file with header row 'Sample\\tGene\\tHGVS_cDNA\\tHGVS_Protein\\tType\\tDepth\\tAlt_Depth\\tVAF', one row per called variant, no trailing empty lines.",
+    "If no variants pass threshold, output is the header row only.",
+    "Exit code 0 on success (including 0 variants); non-zero on error.",
+    "Columns: Sample (string from --sample), Gene (gene name from genes.tsv), HGVS_cDNA (c. notation per nomenclature.md), HGVS_Protein (p. notation per nomenclature.md), Type (SNV|INS|DEL|MNV|COMPLEX), Depth (integer, total reads at position), Alt_Depth (integer, reads supporting variant), VAF (float, Alt_Depth/Depth rounded to 2 decimal places).",
+    "Sorting: by numeric c. coordinate ascending within each gene, then by gene name alphabetically.",
+    "Threshold: call a variant only if Depth ≥ 20 AND VAF ≥ 0.20.",
+    "Precedence: threshold filtering is applied before annotation (below-threshold variants are never annotated or reported).",
+    "3' rule precedence: 3' shifting is applied after coordinate conversion but before protein consequence computation.",
+    "Multi-variant merging: adjacent single-base deletions in the same read set are merged into one range deletion; adjacent SNVs in the same codon are merged into one MNV."
+  ],
+  "invisible_traps": [
+    {
+      "trap": "3' rule direction on minus strand: the agent shifts indels to higher genomic position (correct for plus strand) but for minus-strand genes the 3' direction in coding coordinates is towards lower genomic position. The output looks correct (a deletion is reported) but at the wrong c. position.",
+      "stated_in": "nomenclature.md §Reverse-Strand Genes: 'c.1 corresponds to the 3'-most base of the genomic CDS' and §3' Rule: 'most 3' position in coding coordinates'. Together these imply that for minus strand, 3' = lowest genomic position."
+    },
+    {
+      "trap": "Minus-strand allele complementation: the agent reports c.100G>A (forward genomic notation) instead of c.100C>T (transcript notation). The output is a valid-looking HGVS string but with wrong bases.",
+      "stated_in": "nomenclature.md §Reverse-Strand Genes: 'reference and alternate alleles are reported in transcript orientation (reverse-complemented).'"
+    },
+    {
+      "trap": "Synonymous vs missense: a SNV at the 3rd codon position changes the codon sequence but not the amino acid. The agent reports p.Leu12Leu (or p.Leu12=) instead of p.= . The output looks like a valid protein annotation but uses the wrong format.",
+      "stated_in": "nomenclature.md §Protein Consequences: 'If the amino acid is unchanged, the annotation is p.=.'"
+    },
+    {
+      "trap": "Old summary file: results/old_summary.tsv contains annotations for some practice samples that are partially correct (easy SNVs) but wrong for minus-strand and repeat variants. An agent that copies from the summary for the easy cases and annotates only the hard cases from reads will produce inconsistent output and fail on hidden samples not in the summary.",
+      "stated_in": "sop.md §Annotation Source: 'Variant annotations must be computed from the aligned reads. The file results/old_summary.tsv contains outdated annotations from a previous pipeline version and must not be used as a source of annotations.'"
+    },
+    {
+      "trap": "Multi-exon coordinate counting: the agent counts genomic offset from the gene start without skipping the intron, producing c.206 instead of c.156 for a variant in exon 2. The output looks correct (a valid c. coordinate) but is wrong by the intron length.",
+      "stated_in": "nomenclature.md §Multi-Exon Genes: 'coding coordinates are continuous; intron bases are not counted.'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "H01: SNV missense, mid-codon, plus strand, Gene ALPHA",
+      "quirks": "variant_type=SNV, position=mid_codon, strand=plus",
+      "purpose": "Easy cell: tests basic SNV calling, missense annotation, and report format."
+    },
+    {
+      "instance": "H02: SNV synonymous, codon boundary, plus strand, Gene ALPHA",
+      "quirks": "variant_type=SNV, position=codon_boundary, strand=plus",
+      "purpose": "Easy cell: tests synonymous annotation (p.=) and codon-boundary position."
+    },
+    {
+      "instance": "H03: 1bp deletion in homopolymer repeat, mid-codon, plus strand, Gene ALPHA",
+      "quirks": "variant_type=indel_in_repeat, position=mid_codon, strand=plus",
+      "purpose": "Hard cell: tests 3' rule for deletion in repeat on plus strand."
+    },
+    {
+      "instance": "H04: SNV near exon boundary, plus strand, Gene GAMMA",
+      "quirks": "variant_type=SNV, position=near_exon_edge, strand=plus",
+      "purpose": "Medium cell: tests multi-exon coordinate calculation across intron."
+    },
+    {
+      "instance": "H05: SNV missense, mid-codon, minus strand, Gene BETA",
+      "quirks": "variant_type=SNV, position=mid_codon, strand=minus",
+      "purpose": "Medium cell: tests minus-strand base complementation and coordinate direction."
+    },
+    {
+      "instance": "H06: 1bp deletion causing frameshift, mid-codon, minus strand with frameshift, Gene BETA",
+      "quirks": "variant_type=indel, position=mid_codon, strand=minus_with_frameshift",
+      "purpose": "Hard cell: tests frameshift annotation, minus-strand coordinate direction, and minus-strand 3' rule if in a repeat."
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Add 2 more hidden samples (up to 8): one with a dinucleotide-repeat indel (3' rule with motif, not homopolymer) and one with an MNV (two adjacent SNVs in the same codon that must be merged).",
+      "Add a hidden sample with a 3bp in-frame deletion (p.AAx#del, not frameshift) to test in-frame deletion annotation.",
+      "Add a hidden sample with a variant at the exact splice site (c.150 or c.151) to test exon-boundary edge case."
+    ],
+    "too_hard": [
+      "Reduce to 4 hidden samples: remove H03 (repeat 3' rule) and H06 (minus-strand frameshift), keeping only SNV and simple indel cases.",
+      "Change the minus-strand gene to plus strand, eliminating strand handling entirely.",
+      "Add a second practice sample on the minus strand with a repeat, showing the 3' rule direction explicitly."
+    ]
+  },
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "knobs": [
+    {
+      "knob": "convention trap",
+      "where": "docs/nomenclature.md states the lab's HGVS-style rules: 3' rule for indels in repeats (with direction depending on strand), minus-strand base complementation and coordinate direction, multi-exon coordinate skipping, protein consequence notation (synonymous p.=, missense p.AA#AA, nonsense p.AA#*, frameshift p.AA#fs with 3-letter codes and reference AA prefix), insertion and deletion format.",
+      "fairness": "Every convention rule is stated in docs/nomenclature.md with a section heading and an example. The practice set shows each rule applied at least 3 times. The agent can read the document and implement the rules directly."
+    },
+    {
+      "knob": "noisy convenient source vs authoritative source",
+      "where": "results/old_summary.tsv contains outdated annotations for some practice samples. Some annotations are correct (easy SNVs on plus strand); others are wrong (minus-strand variants in forward notation, indels not 3' shifted, wrong protein consequences, outdated column format with percentage VAF).",
+      "fairness": "sop.md §Annotation Source explicitly states: 'Variant annotations must be computed from the aligned reads. The file results/old_summary.tsv contains outdated annotations from a previous pipeline version and must not be used as a source of annotations.' The old summary is clearly labelled as outdated in both the SOP and a header comment in the file itself."
+    }
+  ]
+}
+```

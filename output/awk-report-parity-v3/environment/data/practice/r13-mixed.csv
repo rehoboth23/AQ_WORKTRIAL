@@ -1,0 +1,13 @@
+branch,posted,amount,units,code
+nyc-east, 20231231 ,1999.95,-2.5,
+Malmö,20240131,.5, 2 ,
+Österreich,10,12abc,7,x
+a b c d e,20240105,-12.345,3.9,Ünï
+ny,2024/1/5,0.1, 2 ,x
+Zürich,2024-01-05,.5,3.9,ZZTOP
+a b c d e,,-12.345,7,AB12
+ lon,abc,-12.345,10,
+x,007,99.999,abc,AB12
+ny, ,1999.95,abc,Q
+ lon,007,-12.345,-2.5,x
+ny,,0.1, 2 ,12345

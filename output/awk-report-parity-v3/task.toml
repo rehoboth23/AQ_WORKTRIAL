@@ -1,0 +1,27 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/awk-report-parity-v3"
+description = "Port a legacy mawk report script to Python with byte-identical output on any input of the same layout, including mawk-specific number formatting, comparisons and byte handling."
+keywords = [ "awk", "porting", "parity", "legacy", "python",]
+
+[metadata]
+difficulty = "hard"
+category = "legacy-migration"
+tags = [ "awk", "mawk", "behavioural-parity", "porting",]
+expert_time_estimate_min = 90.0
+junior_time_estimate_min = 300.0
+generator_model = "hand-written"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 7200.0
+network_mode = "no-network"
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

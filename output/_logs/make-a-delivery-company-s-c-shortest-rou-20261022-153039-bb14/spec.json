@@ -1,0 +1,356 @@
+{
+  "name": "fast-c-route-library",
+  "description": "Implement a fast shortest-route C library achieving 10x fewer relaxations than the O(V\u00b2) baseline, with byte-identical tie-breaking on hidden road graphs.",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": [
+    "c",
+    "dijkstra",
+    "performance",
+    "graph-algorithm",
+    "tie-breaking"
+  ],
+  "expert_time_estimate_min": 60.0,
+  "junior_time_estimate_min": 180.0,
+  "base_image": "debian:12-slim",
+  "scenario": "SpeedyDeliver Inc.'s route-planning C library used a naive O(V\u00b2) Dijkstra. It worked correctly but was too slow for production. The old algorithm implementation has been removed from route.c; only the infrastructure (graph loading, memory management, CLI) remains. Your job is to write a new route_find implementation that is at least 10x faster (measured by the library's own relaxation counter) while producing byte-identical output, including on graphs with many equal-cost routes where tie-breaking matters. The tie-breaking rule and relaxation-counter definition are documented in route.h.",
+  "environment_setup": "A C library in /app/ with route.h (public header documenting the API, the lexicographic tie-breaking rule, and the relaxation-counter definition), route.c (~300 lines, infrastructure only: RouteGraph struct definition, route_load parsing graph files, route_free, and stubs for route_find/route_relaxations/route_last_cost returning -1/0/0), main.c (CLI: ./route GRAPH_FILE SRC DST), and Makefile. Benchmark graphs in /app/benchmark/ (5 graph files, seeds 0\u20134, V\u2248200\u2013600) with frozen expected output per graph in /app/benchmark/expected/ and baseline O(V\u00b2) relaxation counts in /app/benchmark/baseline_relaxations.txt. README.md documents the API, output format, unreachable behaviour, and references route.h for the tie-breaking and counter semantics. gcc and make are installed.",
+  "instruction_summary": "Implement the shortest-route algorithm in route.c so that: (1) route_relaxations() returns at least 10x fewer than the baseline count on each benchmark graph (see baseline_relaxations.txt); (2) output is byte-identical to the frozen expected files on the benchmark graphs; (3) among equal-cost routes the lexicographically smallest node-id sequence is returned (see route.h); (4) unreachable destinations print 'unreachable' and exit 1 (see README); (5) the public C API (route_find, route_relaxations, route_last_cost, route_load, route_free) and CLI remain unchanged. Recompile with 'make'. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+  "solution_outline": [
+    "Read route.h and README.md to understand the API, tie-breaking rule, and relaxation-counter definition.",
+    "Implement a binary-min-heap Dijkstra in route.c keyed by distance.",
+    "On equal-cost edge relaxation (dist[u]+w == dist[v]), reconstruct the full candidate path through u and compare it lexicographically with the current best path to v; update pred[v] if the candidate is smaller.",
+    "Do NOT terminate early when dst is extracted: zero-weight edges from later-processed nodes can yield lexicographically smaller equal-cost paths.",
+    "Count relaxations: increment the counter for each distance-value comparison (heap sift-up/down comparisons and edge-relaxation distance checks). Node-id comparisons for tie-breaking or heap ordering are NOT distance comparisons.",
+    "Compile with 'make', verify against /app/benchmark/expected/, and check route_relaxations() \u2264 baseline/10 for each graph.",
+    "Generate custom test graphs (grids with unit weights, graphs with zero-weight edges) and verify output consistency."
+  ],
+  "test_plan": [
+    "test_tie_breaking_grid: Generate 4 grid graphs (seeds 100\u2013103) with many equal-cost routes; compare agent output byte-by-byte against reference library output on multiple src\u2192dst queries.",
+    "test_tie_breaking_zero_weight: Generate 4 sparse random graphs (seeds 104\u2013107) with zero-weight edges creating equal-cost paths of different lengths; byte-identical comparison with reference.",
+    "test_early_termination: Generate 2 graphs (seeds 112\u2013113) where zero-weight edges from nodes extracted AFTER dst provide lexicographically smaller equal-cost paths; verify the agent returns the lex-smallest path, not the first-found path.",
+    "test_unreachable_disconnected: Generate 2 graphs (seeds 108\u2013109) with disconnected components; verify 'unreachable' output, exit code 1 for cross-component queries, and correct routes within components.",
+    "test_large_sparse_correctness: Generate 2 large sparse graphs (seeds 110\u2013111, V\u22481500\u20132000); byte-identical comparison with reference.",
+    "test_relaxation_count: Run both original and agent library on each benchmark graph; assert agent's relaxation count \u2264 original/10 for each.",
+    "test_relaxation_counter_semantics: Run agent library on a small known graph (5 nodes, specific structure); verify the count matches the expected count computed from the distance-comparison definition in route.h (each heap sift comparison + each edge-relaxation distance check).",
+    "test_api_preservation: Compile a test C program that calls route_find, route_relaxations, route_last_cost, route_load, route_free with the documented signatures; link against agent's route.o; assert it compiles and runs.",
+    "test_self_loops: Graph with self-loop edges; verify correct shortest path and no infinite loop.",
+    "test_src_equals_dst: Query with src==dst; verify path=[src] cost=0.",
+    "test_output_format: Parse agent output on reachable and unreachable queries; verify exact format (nodes space-separated, then space then cost then newline; or 'unreachable' then newline).",
+    "test_determinism: Run same query twice; verify identical output.",
+    "test_practice_covers_hidden_cases: Load benchmark graphs and expected outputs, count queries producing equal-cost alternatives (\u22653), involving zero-weight edges on shortest path (\u22653), unreachable pairs (\u22653), and verify coverage."
+  ],
+  "anti_cheat": "The answer (correct tie-breaking on hidden graphs) is not visible because hidden graphs are generated from different seeds in tests/ and never shipped. The relaxation counter is checked both for the 10x target AND for semantic correctness (matching the distance-comparison definition on a known small graph). The reference library source in tests/ is never in the image. The agent cannot run the reference at grade time.",
+  "failure_modes": "A capable agent will likely: (1) implement binary-heap Dijkstra but use (dist, node_id) heap key without full path comparison, passing the benchmark (few ties) but failing hidden tie-heavy graphs; (2) compare only the last predecessor on equal-cost relaxations, which fails on zero-weight-edge graphs where paths differ at internal nodes; (3) add early termination on extracting dst, which is wrong when zero-weight edges from later-processed nodes could provide a lexicographically smaller equal-cost path; (4) count heap key comparisons (including node-id tie-breaking in the heap) as distance comparisons, over-counting relaxations. These are the agent's fault because the tie-breaking rule is stated in route.h and the benchmark contains tie examples, and the relaxation-counter definition is in route.h.",
+  "shape": "performance target with correctness parity; graded on hidden graphs",
+  "hidden_evaluation": "12 graphs generated from seeds 100\u2013113 in tests/ (not in the image) using the same generator that made the benchmark. The reference library (original O(V\u00b2) route.c kept verbatim in tests/reference/) computes ground-truth routes. Tests compile both reference and agent library, run them on the same hidden graphs, and compare output byte-by-byte. The generator is verified deterministic (same seed \u2192 same bytes) and seed-sensitive (different seed \u2192 different graph). The relaxation counter is checked against the distance-comparison definition on a hand-constructed 5-node graph with known expected count.",
+  "checks": [
+    {
+      "requirement": "Among equal-cost routes, the one whose node-id sequence is lexicographically smallest is returned (route.h header comment).",
+      "assumed_instead": "Standard Dijkstra without explicit tie-breaking, or break ties by last-node id only, or use (dist, node_id) heap key.",
+      "hidden_test_input": "Grid graphs (seeds 100\u2013103) with many equal-cost 2\u20136 hop routes between corner and centre nodes, where 3+ alternatives exist and the lex-smallest differs from the smallest-last-node path.",
+      "why_missed": "Benchmark has few ties; a naive heap Dijkstra passes them. Without a runnable reference, the agent cannot easily verify on tie-heavy custom graphs.",
+      "caught_by_tests": [
+        "test_tie_breaking_grid"
+      ]
+    },
+    {
+      "requirement": "Same tie-breaking rule applied to paths of different lengths created by zero-weight edges (route.h: 'node-id sequence \u2026 lexicographically smallest'; standard lexicographic order where a proper prefix is smaller).",
+      "assumed_instead": "Assume equal-cost paths always have the same hop count; compare only the last predecessor node id; or compare path lengths instead of sequences.",
+      "hidden_test_input": "Sparse random graphs (seeds 104\u2013107) with zero-weight edges creating equal-cost paths of lengths 2 and 5+ where the shorter path is NOT lexicographically smallest.",
+      "why_missed": "Zero-weight ties are rare in benchmark; the 2\u20133 examples may be resolved correctly by luck. Full-path comparison is needed but not obviously required from the few examples.",
+      "caught_by_tests": [
+        "test_tie_breaking_zero_weight"
+      ]
+    },
+    {
+      "requirement": "No early termination: the algorithm must explore all reachable nodes because zero-weight edges from later-extracted nodes can yield lexicographically smaller equal-cost paths to already-finalized nodes (implied by the tie-breaking rule; no early-termination exception is stated).",
+      "assumed_instead": "Break the main loop when dst is extracted (common Dijkstra optimisation).",
+      "hidden_test_input": "Graphs (seeds 112\u2013113) where dst is extracted early, but a node with higher id extracted later has a zero-weight edge providing a lex-smaller equal-cost path to dst.",
+      "why_missed": "The benchmark has no such case. Early termination produces valid-looking output on all practice data.",
+      "caught_by_tests": [
+        "test_early_termination"
+      ]
+    },
+    {
+      "requirement": "If dst is unreachable from src: prints 'unreachable', exit 1 (README, route.h).",
+      "assumed_instead": "Return empty path, crash, or exit 0 with empty output.",
+      "hidden_test_input": "Disconnected graphs (seeds 108\u2013109); query node in component A \u2192 node in component B.",
+      "why_missed": "Benchmark graph_04 has only a few unreachable pairs; agent might handle them but with wrong exit code or extra whitespace.",
+      "caught_by_tests": [
+        "test_unreachable_disconnected"
+      ]
+    },
+    {
+      "requirement": "Unreachable output is exactly 'unreachable' followed by a newline (README).",
+      "assumed_instead": "Print 'Unreachable' (capitalised), or 'unreachable ' (trailing space), or no newline.",
+      "hidden_test_input": "Any unreachable query on disconnected graphs.",
+      "why_missed": "Agent might not check exact string casing and trailing whitespace against the frozen example.",
+      "caught_by_tests": [
+        "test_unreachable_disconnected",
+        "test_output_format"
+      ]
+    },
+    {
+      "requirement": "Correct shortest path on large sparse graphs (implicit in route_find contract; algorithm must not have scale-dependent bugs).",
+      "assumed_instead": "Algorithm works on small graphs but has integer overflow, heap index error, or array bounds issue at V\u22481500+.",
+      "hidden_test_input": "Large sparse graphs (seeds 110\u2013111, V\u22481500\u20132000, E\u22484000\u20136000).",
+      "why_missed": "Benchmark graphs max out at V\u2248600; the agent may not test larger sizes.",
+      "caught_by_tests": [
+        "test_large_sparse_correctness"
+      ]
+    },
+    {
+      "requirement": "route_relaxations() must return \u2264 baseline/10 on each benchmark graph (instruction.md, baseline_relaxations.txt).",
+      "assumed_instead": "Optimise for wall-clock only; relaxation count drops only 3\u20135x.",
+      "hidden_test_input": "Each benchmark graph queried with corner-to-corner pair; relaxation count recorded.",
+      "why_missed": "Agent might use an adjacency-matrix scan or Fibonacci heap with high comparison overhead.",
+      "caught_by_tests": [
+        "test_relaxation_count"
+      ]
+    },
+    {
+      "requirement": "The relaxation counter counts distance-value comparisons only: each comparison during heap sift-up/sift-down and each edge-relaxation distance check (route.h). Node-id comparisons in the heap or path comparisons for tie-breaking are NOT counted.",
+      "assumed_instead": "Count every comparison in the heap (including node-id tie-breaking in heap keys), or count only edge relaxations, or return a formula-based value.",
+      "hidden_test_input": "A hand-constructed 5-node graph with known structure; the expected count is computed from the definition (each heap distance comparison + each edge distance check).",
+      "why_missed": "The agent might count heap key comparisons that include node-id parts, over-counting. The baseline file only shows totals, not the per-comparison breakdown.",
+      "caught_by_tests": [
+        "test_relaxation_counter_semantics"
+      ]
+    },
+    {
+      "requirement": "The public C API (route_find, route_relaxations, route_last_cost, route_load, route_free) must stay unchanged (README).",
+      "assumed_instead": "Add or remove a parameter, change return type, rename a function.",
+      "hidden_test_input": "A C test program in tests/ that calls every public function with the documented signatures.",
+      "why_missed": "Agent might change route_find to return cost directly instead of via route_last_cost.",
+      "caught_by_tests": [
+        "test_api_preservation"
+      ]
+    },
+    {
+      "requirement": "Self-loops (u\u2192u with weight w\u22650) must not cause infinite loops or wrong results (implicit: non-negative edge weights, any valid graph).",
+      "assumed_instead": "Skip self-loops silently or assume they don't exist.",
+      "hidden_test_input": "Graph with a self-loop of weight 0 on the source node; query src\u2192dst.",
+      "why_missed": "Self-loops are rare; agent might not test them.",
+      "caught_by_tests": [
+        "test_self_loops"
+      ]
+    },
+    {
+      "requirement": "When src==dst, route_find returns path [src] with cost 0 (implicit in shortest-path semantics).",
+      "assumed_instead": "Return -1 (unreachable), or empty path, or crash.",
+      "hidden_test_input": "Query with src==dst on any graph.",
+      "why_missed": "Agent might add a special-case check that incorrectly rejects src==dst.",
+      "caught_by_tests": [
+        "test_src_equals_dst"
+      ]
+    },
+    {
+      "requirement": "Output is path nodes space-separated then total cost then newline; exit 0 (README).",
+      "assumed_instead": "Extra spaces, cost on separate line, 'cost=3' suffix, missing newline.",
+      "hidden_test_input": "All reachable queries on hidden graphs.",
+      "why_missed": "Agent might reformat output for readability.",
+      "caught_by_tests": [
+        "test_output_format"
+      ]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "route_find on the benchmark graphs produces the exact same output as the reference O(V\u00b2) implementation.",
+      "hidden_test_input": "All benchmark graph queries that produce reachable output."
+    },
+    {
+      "behaviour": "route_relaxations() returns a count that matches the distance-comparison definition: each heap distance comparison + each edge-relaxation distance check.",
+      "hidden_test_input": "A hand-constructed 5-node graph where every comparison can be enumerated."
+    }
+  ],
+  "ground_truth": "The original O(V\u00b2) route.c source is kept verbatim in tests/reference/. The test compiles it with -O2 and runs it on each hidden graph to produce reference output. A seeded Python generator in tests/ (gen_graph function inside test_outputs.py) creates the hidden graphs; determinism is verified by regenerating from the same seed and comparing bytes, and seed-sensitivity by confirming different seeds produce different graphs. The relaxation-counter semantics test uses a hand-constructed graph with a known expected count derived from the definition in route.h, computed by a small helper function in the test that simulates the algorithm step-by-step.",
+  "verifier_packages": [],
+  "verifier_apt": [
+    "gcc",
+    "make"
+  ],
+  "reference_access": "frozen_examples",
+  "quirk_evidence": [
+    {
+      "quirk": "ties: many equal-cost routes",
+      "evidence": "/app/benchmark/expected/graph_02.out (grid with small weights, \u22653 queries where equal-cost alternatives exist, visible as paths choosing specific intermediate nodes); route.h header comment states the tie-breaking rule."
+    },
+    {
+      "quirk": "zero-weight edges creating equal-cost paths of different lengths",
+      "evidence": "/app/benchmark/expected/graph_03.out (sparse graph with zero-weight edges, \u22653 queries where the shortest path includes a zero-weight edge and an equal-cost longer alternative exists); edge weights in /app/benchmark/graph_03.txt include 0."
+    },
+    {
+      "quirk": "reachability: disconnected components",
+      "evidence": "/app/benchmark/expected/graph_04.out (graph with 3 components, \u22653 unreachable pairs outputting 'unreachable'); README states 'unreachable' output format."
+    },
+    {
+      "quirk": "ties: a few equal-cost routes",
+      "evidence": "/app/benchmark/expected/graph_00.out and graph_01.out (2\u20133 equal-cost pairs each)."
+    }
+  ],
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "Among equal-cost routes, the one whose node-id sequence is lexicographically smallest is returned. A shorter sequence that is a prefix of a longer one is considered smaller.",
+      "why": "The data cannot show which of several equal-cost outputs is 'correct' without an external rule; the rule defines correctness. The prefix convention for different-length sequences is a definitional choice not derivable from data."
+    },
+    {
+      "fact": "The relaxation counter counts distance-value comparisons only: each comparison during priority-queue operations (where at least one operand is a distance estimate) and each edge-relaxation distance check. Comparisons of node identifiers, array indices, or path elements for tie-breaking are not distance comparisons.",
+      "why": "Different algorithms perform different non-distance comparisons (heap key tie-breaking on node id, path array comparisons). The counting convention is a specification choice, not derivable from data."
+    },
+    {
+      "fact": "The baseline relaxation counts (in baseline_relaxations.txt) were produced by the original O(V\u00b2) implementation using this same counting definition: each dist[i] < current_min comparison in the scan, plus each dist[u]+w < dist[v] edge check.",
+      "why": "The agent cannot observe how the baseline counts were produced; the counting method must be stated for the 10x target to be meaningful."
+    }
+  ],
+  "reference_binary": "",
+  "sample_file": "",
+  "spec_document": "",
+  "knobs": [
+    {
+      "knob": "preservation constraints",
+      "where": "The public C API (route.h) and CLI output format must not change; the README and route.h list them.",
+      "fairness": "README and route.h document the exact API signatures, output format, exit codes, and relaxation-counter definition."
+    },
+    {
+      "knob": "hidden-edge coverage",
+      "where": "The tie-breaking rule is stated in route.h; the visible benchmark has few ties; hidden graphs have many ties, zero-weight ties, and early-termination traps.",
+      "fairness": "The header comment states the exact lexicographic rule including the prefix convention; benchmark graphs contain \u22653 tie examples and \u22653 zero-weight-edge examples per the test_practice_covers_hidden_cases check."
+    },
+    {
+      "knob": "convention traps",
+      "where": "The relaxation counter definition in route.h specifies that only distance-value comparisons count, not node-id or path comparisons.",
+      "fairness": "route.h gives the exact definition: 'A distance-value comparison is any comparison where at least one operand is a node's current shortest-path distance estimate. Comparisons of node identifiers or path arrays for tie-breaking are NOT counted.' The baseline_relaxations.txt file provides ground-truth counts for the benchmark graphs."
+    }
+  ],
+  "dial": "Relaxation-count speed-up threshold. Fair range 5\u201320x; starting value 10x. Oracle achieves ~14\u201317x on benchmark graphs. Moving the dial changes how much algorithmic improvement is needed; 10x requires a proper binary-heap Dijkstra, not just minor tweaks. The threshold is measured against the deterministic baseline counts, not wall-clock time.",
+  "quirk_matrix": "{\"dimensions\": {\"ties\": [\"none\", \"a_few_equal_cost_routes\", \"many_equal_cost_routes\"], \"graph_shape\": [\"grid\", \"sparse_random\", \"dense_zero_weight\"], \"reachability\": [\"all_reachable\", \"disconnected_components\"]}, \"mix\": \"About 30% easy cells. g1\\u2013g4: many ties \\u00d7 grid \\u00d7 all reachable. g5\\u2013g8: many ties \\u00d7 dense_zero_weight \\u00d7 all reachable. g9\\u2013g10: few ties \\u00d7 sparse_random \\u00d7 disconnected_components. g11\\u2013g12: none ties \\u00d7 sparse_random \\u00d7 all reachable (large, V\\u22481500\\u20132000).\"}",
+  "public_tests": "About 30%: a shell script /app/run_tests.sh that runs ./route on each benchmark graph for 3\u20134 src\u2192dst pairs and compares output against the frozen expected files in /app/benchmark/expected/. These pairs include 1 equal-cost tie case (simple 2-way), 1 unreachable case, and common shortest-path cases. They do NOT cover zero-weight tie-breaking, many-tie grids, early-termination scenarios, or large graphs. The script also checks that route_relaxations() \u2264 baseline/10 on each graph. Runs in under 60s on 1 CPU.",
+  "anti_cheese": "Paired gate: (1) Relaxation counter semantics \u2014 test_relaxation_counter_semantics runs the agent library on a hand-constructed 5-node graph and verifies the count matches the expected count derived from the distance-comparison definition (each heap distance comparison + each edge distance check), not just 'plausible'. A formula-based fake counter or one that counts node-id comparisons will fail. (2) The reference library in tests/ is compiled and run only at test time; it is never in the image. (3) The test C program that checks API preservation is in tests/, not in the image. Hidden test: test_relaxation_counter_semantics.",
+  "graded_instances": "12 graphs generated from seeds 100\u2013113 by the same gen_graph() function that produced the benchmark (seeds 0\u20134). The generator is deterministic (verified: same seed \u2192 identical file bytes across two calls) and seed-sensitive (verified: seed 100 and 101 produce different first lines). The benchmark and hidden graphs share the same generator but use disjoint seed ranges. Seeds 112\u2013113 specifically construct early-termination traps.",
+  "self_check_gap": "A solution byte-identical on all benchmark graphs and achieving 10x relaxation reduction can still fail on hidden graphs because: (a) the benchmark has at most 3\u20134 simple 2-way tie cases; hidden grids have 10+ equal-cost alternatives per query requiring full lexicographic comparison at positions 3\u20135 in the path; (b) zero-weight edges in hidden graphs create equal-cost paths differing at internal nodes (position 3+), while benchmark zero-weight ties differ only at position 2; (c) hidden graphs include early-termination traps (zero-weight edges from nodes extracted after dst) not present in the benchmark. The practice set determines the right answer because route.h states the exact rule and the benchmark provides enough examples to verify the implementation handles the rule, but the agent must implement the FULL rule (not just handle the specific cases shown) to pass hidden tests.",
+  "margins": [
+    {
+      "test": "test_relaxation_count",
+      "bar": "\u2264 baseline_count / 10 (i.e., \u226510x reduction) on each benchmark graph",
+      "oracle_value": "~14x reduction on benchmark (V\u2248500, baseline ~252K, oracle ~18K)",
+      "baseline": "Original O(V\u00b2) library's own relaxation count on the same benchmark graph and query"
+    },
+    {
+      "test": "test_relaxation_counter_semantics",
+      "bar": "Count must equal the expected count \u00b12 for the hand-constructed 5-node graph",
+      "oracle_value": "Expected count is exactly the number of distance comparisons as defined (e.g., 23 for the specific 5-node graph)",
+      "baseline": "Step-by-step simulation of the algorithm on the same graph"
+    }
+  ],
+  "contract": [
+    "Entry point (C API): int route_find(RouteGraph* g, int src, int dst, int** out_path, int* out_len); returns 0 on success, -1 if unreachable.",
+    "Entry point (CLI): ./route GRAPH_FILE SRC DST",
+    "Output on success: the path node ids separated by single spaces, then a single space, then the total cost as a decimal integer, then a newline character (\\n). Exit code 0.",
+    "Output on unreachable: the exact string 'unreachable' then a newline character (\\n). Exit code 1.",
+    "Among equal-cost routes, the one whose node-id sequence is lexicographically smallest (compared element-by-element from the source) is returned. A shorter sequence that is a prefix of a longer sequence is considered smaller.",
+    "long route_relaxations(void) returns the number of distance-value comparisons from the most recent route_find call. A distance-value comparison is any comparison where at least one operand is a node's current shortest-path distance estimate. Comparisons of node identifiers or path arrays for tie-breaking are NOT counted.",
+    "long route_last_cost(void) returns the total cost from the most recent successful route_find call.",
+    "RouteGraph* route_load(const char* filename) and void route_free(RouteGraph* g) remain available.",
+    "Edge weights are non-negative integers (including zero).",
+    "The relaxation count on each benchmark graph must be \u2264 the baseline count in baseline_relaxations.txt divided by 10."
+  ],
+  "invisible_traps": [
+    {
+      "trap": "A binary-heap Dijkstra without explicit equal-cost path comparison returns a valid-looking route that is NOT the lexicographically smallest among equal-cost alternatives. No error, no crash \u2014 just a different path with the same cost.",
+      "stated_in": "The tie-breaking sentence in route.h: 'among equal-cost routes, the one whose node-id sequence is lexicographically smallest is returned.'"
+    },
+    {
+      "trap": "Zero-weight edges create equal-cost routes of different lengths (e.g., [0,1,3] cost 2 vs [0,4,5,2,3] cost 2). A tie-break that compares only the last predecessor node id picks the wrong path. Output still looks valid.",
+      "stated_in": "Same tie-breaking sentence in route.h; the definition of lexicographic order on sequences of different lengths (prefix is smaller) is standard and stated in the contract."
+    },
+    {
+      "trap": "Early termination (break when dst is extracted from the priority queue) is incorrect when zero-weight edges from nodes with higher ids could later provide a lexicographically smaller equal-cost path to dst. The output is a valid shortest path but not the lex-smallest.",
+      "stated_in": "The tie-breaking rule implies the full reachable set must be explored to guarantee the lex-smallest path; no early-termination exception is stated anywhere in the specification."
+    },
+    {
+      "trap": "Counting node-id comparisons in the heap key as 'distance comparisons' over-counts relaxations. The counter should only increment when at least one operand is a distance value, not when comparing node ids to break heap-key ties. The output of route_relaxations() looks plausible but is too high.",
+      "stated_in": "route.h: 'A distance-value comparison is any comparison where at least one operand is a node's current shortest-path distance estimate. Comparisons of node identifiers \u2026 are NOT counted.'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "g1 (seed 100)",
+      "quirks": "many ties \u00d7 grid \u00d7 all reachable",
+      "purpose": "Stress lexicographic tie-breaking with 10+ equal-cost alternatives per query on a 15\u00d715 grid; paths differ at positions 2\u20134."
+    },
+    {
+      "instance": "g2 (seed 101)",
+      "quirks": "many ties \u00d7 grid \u00d7 all reachable",
+      "purpose": "Same structure, different random layout; cross-validation."
+    },
+    {
+      "instance": "g3 (seed 102)",
+      "quirks": "many ties \u00d7 grid \u00d7 all reachable",
+      "purpose": "Same structure, different random layout; cross-validation."
+    },
+    {
+      "instance": "g4 (seed 103)",
+      "quirks": "many ties \u00d7 grid \u00d7 all reachable",
+      "purpose": "Same structure, different random layout; cross-validation."
+    },
+    {
+      "instance": "g5 (seed 104)",
+      "quirks": "many ties \u00d7 dense_zero_weight \u00d7 all reachable",
+      "purpose": "Equal-cost paths of different lengths via zero-weight edges; full-path lexicographic comparison required at positions 3+."
+    },
+    {
+      "instance": "g6 (seed 105)",
+      "quirks": "many ties \u00d7 dense_zero_weight \u00d7 all reachable",
+      "purpose": "Same, different structure; cross-validation."
+    },
+    {
+      "instance": "g7 (seed 106)",
+      "quirks": "many ties \u00d7 dense_zero_weight \u00d7 all reachable",
+      "purpose": "Same, different structure; cross-validation."
+    },
+    {
+      "instance": "g8 (seed 107)",
+      "quirks": "many ties \u00d7 dense_zero_weight \u00d7 all reachable",
+      "purpose": "Same, different structure; cross-validation."
+    },
+    {
+      "instance": "g9 (seed 108)",
+      "quirks": "few ties \u00d7 sparse_random \u00d7 disconnected_components",
+      "purpose": "Unreachable output and exit code for cross-component queries; correct routes within components."
+    },
+    {
+      "instance": "g10 (seed 109)",
+      "quirks": "few ties \u00d7 sparse_random \u00d7 disconnected_components",
+      "purpose": "Same, different structure; cross-validation."
+    },
+    {
+      "instance": "g11 (seed 110)",
+      "quirks": "none ties \u00d7 sparse_random \u00d7 all reachable (large, V\u22481500)",
+      "purpose": "Large graph correctness and performance gate; tests for scale-dependent bugs."
+    },
+    {
+      "instance": "g12 (seed 111)",
+      "quirks": "none ties \u00d7 sparse_random \u00d7 all reachable (large, V\u22482000)",
+      "purpose": "Larger graph; cross-validation of scale correctness."
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Add early-termination trap graphs (seeds 112\u2013113) to the hidden suite if not already present.",
+      "Tighten the relaxation budget toward 20x.",
+      "Reduce the number of tie cases in the benchmark frozen examples to 1\u20132 (making the self-check gap wider)."
+    ],
+    "too_hard": [
+      "Add one visible tie example to the public tests (run_tests.sh) that exercises full-path comparison on a 4-node graph with equal-cost paths differing at position 2.",
+      "Loosen the relaxation budget toward 5x.",
+      "Add a hint in README about zero-weight edges being valid inputs."
+    ]
+  },
+  "seed_card": "topic: Make a delivery company's C shortest-route library at least 10x faster on its benchmark, with byte-identical\n  results on hidden road graphs.\nshape: performance target with correctness parity; graded on hidden graphs\nagent_cannot_verify: 'Byte-identical tie-breaking: among equal-cost routes the library returns a specific\n  one (lowest node ids in path order), and fast algorithms change tie order; the agent''s benchmark graphs\n  have few ties, hidden graphs many.'\ncontract:\n- 'entry point: the C API route_find(graph, src, dst, out_path, out_len) and the CLI ./route GRAPH SRC\n  DST'\n- 'output: the node ids of the route, space-separated, then the total cost; exit 0'\n- 'unreachable destination: prints ''unreachable'', exit 1'\n- among equal-cost routes, the one whose node-id sequence is lexicographically smallest\n- the relaxation counter (route_relaxations()) must drop at least 10x on the benchmark\ninvisible_traps:\n- trap: a faster algorithm returns a different equal-cost route on tie-heavy graphs; output still looks\n    valid\n  stated_in: the tie-break sentence of the contract\n- trap: zero-weight edges create equal-cost routes of different lengths\n  stated_in: the same tie-break sentence\ngraded_instances: the agent gets the visible benchmark graphs; the hidden tests generate 12 fresh graphs\n  from sibling seeds in tests/ (same generator, denser ties) and compute reference routes with the original\n  library kept in tests/; they also check the generator is deterministic and seed-sensitive\ninstance_plan:\n- instance: g1-g4\n  quirks: 'ties: many; graph: grid'\n  purpose: tie-breaking under a faster search\n- instance: g5-g8\n  quirks: zero-weight edges; sparse random\n  purpose: tie-break with different path lengths\n- instance: g9-g10\n  quirks: disconnected components\n  purpose: unreachable contract\n- instance: g11-g12\n  quirks: large sparse\n  purpose: performance gate\ndial: 'speed-up threshold measured as operation counts (deterministic), not wall-clock: the library counts\n  edge relaxations; fair range 5-20x fewer, start 10x.'\nquirk_matrix:\n  ties:\n  - none\n  - a few equal-cost routes\n  - many equal-cost routes\n  graph shape:\n  - grid\n  - sparse random\n  - dense with zero-weight edges\n  reachability:\n  - all reachable\n  - some unreachable\n  - disconnected components\n  mix: about 30% easy cells\nself_check_gap: a faster library byte-identical on the benchmark graphs can still break ties differently\n  on hidden graphs with equal-cost routes or mishandle unreachable nodes; the header comment states the\n  tie rule and the README the unreachable output\nanswer_source: stated\nreference_access: 'runnable: the original library is the baseline to speed up; the hard part is the 10x\n  target, and matching it is the guard'\nquirk_evidence:\n- quirk: ties\n  evidence: the library's header comment on tie-breaking; benchmark graphs with equal-cost routes\n- quirk: graph shape\n  evidence: benchmark graphs of each shape\n- quirk: reachability\n  evidence: benchmark graphs with unreachable nodes; README states the output for them\npublic_tests: 'about 30%: the visible benchmark (few ties) plus a correctness test on small graphs'\nanti_cheese: relaxation-count budget (deterministic) AND byte-identical routes; the public API must not\n  change\nground_truth: the original library source kept in tests/ computes reference routes on hidden graphs generated\n  by a seeded generator in tests/.\nchecks:\n- equal-cost tie-breaking rule documented in the header comment\n- unreachable destination returns the documented sentinel\n- zero-weight edges and self-loops\n- large sparse graphs (performance) and dense small graphs (correctness)\n- the public C API and the relaxation counter stay unchanged\nknobs:\n- knob: preservation constraints\n  fairness: README lists the public API and output format that must not change\n- knob: hidden-edge coverage\n  fairness: the tie-break rule is stated in the header; the visible benchmark has few ties\nmust_keep:\n- route_find() signature and output bytes\n- the relaxation counter\nenvironment: debian slim with gcc and make; C library ~800 lines; benchmark graphs as text; no network.\nout_of_bounds:\n- wall-clock timing thresholds\n- ties broken by an unstated rule\nprecheck:\n- confirm a binary-heap Dijkstra reaches the 10x relaxation target and that a naive heap rewrite breaks\n  ties\nadjust_rules:\n  too_easy:\n  - add tie-heavy graphs with longer equal-cost alternatives\n  - tighten the relaxation budget toward 20x\n  too_hard:\n  - add one visible tie example to the public tests\n  - loosen the budget toward 5x\n",
+  "crux": "",
+  "expected_agent_steps": null
+}

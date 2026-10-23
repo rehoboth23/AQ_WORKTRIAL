@@ -1,0 +1,7 @@
+Looking at the two solutions, the only difference is in the `_migrate` method: the correct solution has an "already migrated" guard that returns early if `_backend == "logstore"`, while the mutant lacks this guard and re-runs the entire migration.
+
+```json
+{"equivalent": false,
+ "distinguishing_case": "1. Start the service (port 8080). 2. POST /admin/migrate (first migration — both solutions behave identically, writing one record to /app/data/access.log). 3. POST /admin/migrate (second call). Correct solution: returns {\"status\":\"already migrated\",\"sessions_migrated\":0} and does NOT write to access.log (guard fires, returns early). Mutant: re-creates _logstore, sets _dual_write=True (temporarily re-enabling SQLite writes), re-copies all sessions from SQLite, appends a SECOND migration record to /app/data/access.log, and returns {\"status\":\"migrated\",\"sessions_migrated\":<count>}. The access.log file content differs (1 record vs 2 records) and the HTTP response body differs, violating the 'irreversible, audited steps' requirement.",
+ "reason": "The mutant lacks the 'already migrated' guard, so a second POST /admin/migrate re-runs migration: it appends a duplicate record to /app/data/access.log (which the task grades), temporarily re-enables SQLite writes via _dual_write=True, and returns a different response body — all clearly distinguishable from the correct solution's early-return."}
+```

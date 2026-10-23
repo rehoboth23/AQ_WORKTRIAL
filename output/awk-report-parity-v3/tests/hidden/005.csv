@@ -1,0 +1,11 @@
+branch,posted,amount,units,code
+ny,2024/1/5,12.50,3.9
+berlin,,1999.95,10
+berlin, 20231231 ,1e3, 2 ,AB12
+Österreich,20240105,1999.95,3
+NYC-West,10, -3 ,7,Ünï
+, 20231231 ,99.999,3.9,
+Österreich,abc,-0,4e2,ZZTOP
+,2024-01-31, 7 ,10,Q
+ lon,2024-01-31,,10,Ünï
+Zürich,20240105,10,1,AB12

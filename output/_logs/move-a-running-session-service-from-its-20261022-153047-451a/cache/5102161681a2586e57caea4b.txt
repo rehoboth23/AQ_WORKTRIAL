@@ -1,0 +1,26 @@
+<<<FILE environment/scenario.json>>>
+{
+  "name": "practice",
+  "description": "Practice load scenario for session store live-migration. Seed 1 covers all quirk dimensions at least 3 times each.",
+  "seed": 1,
+  "total_requests": 2000,
+  "migration_point": 600,
+  "host": "127.0.0.1",
+  "port": 8080,
+  "request_mix": {
+    "create": 0.15,
+    "read": 0.55,
+    "update": 0.20,
+    "delete": 0.10
+  },
+  "ttl_options": [300, 5, 2],
+  "default_ttl": 300,
+  "read_after_write_probability": 0.30,
+  "session_pool_size": 50,
+  "quirk_dimensions": {
+    "write_rate_during_switch": ["low", "medium", "burst"],
+    "session_age": ["fresh", "near_expiry", "expiring_during_switch"],
+    "request_mix": ["reads", "read_write", "same_session_read_after_write"]
+  }
+}
+<<<END>>>

@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+a b c d e,2024/1/5,0x1A,4e2,x
+,007, -3 ,abc
+ny,2024-01-05,-12.345,3.9
+  , 20231231 ,-5,abc,x
+los angeles, 20231231 ,abc,abc,Ünï
+los angeles,20240105,.5,,x
+x,007,0.2,7
+Malmö, 20231231 ,99.999,abc
+PAR1,20240131,3.,
+PAR1,20240105,3.,10
+ , , 
+,007,250,,x
+PAR1,10,,-2.5
+a b c d e,9,0.2,7,,extra
+nyc-east,20240105,10,1,AB12

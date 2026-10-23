@@ -1,0 +1,29 @@
+branch,posted,amount,units,code
+ lon,20240105,12.50,abc,12345
+Malmö,007,2500000000.75,3
+ny,007,0x1A,
+,20240131, 7 ,3.9,x,extra
+  ,abc,.5, 2 
+  , 20231231 ,1E2,abc
+x,2024/1/5,0x1A,4e2,x
+Österreich,abc,12abc,-2.5
+ lon,2024-01-31,1E2,3.9,ab
+Malmö,10,-12.345,0,
+Österreich,abc,-12.345,abc,Q
+NYC-West,007,-0.0,0,ZZTOP
+NYC-West,2024-01-05,0.2,,ZZTOP
+berlin,abc,1999.95,0,
+  ,10,0x1A,4e2
+  ,20240131, -3 ,3,AB12
+Österreich, 20231231 ,12abc,4e2,AB12
+x,20240131, -3 ,,ab
+x,9,0.1, 2 ,Q
+ny,20240105,-12.345,3.9,ab
+par,abc,12abc,3,ab
+PAR1,abc,0x1A,0,AB12
+x,,1E2,3,12345
+Zürich,2024-01-05,1e3,,Q
+,007,99.999,7
+ , , 
+ lon,007,+3,10,12345
+Zürich,20240105,10,1,AB12

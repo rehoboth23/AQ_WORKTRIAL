@@ -1,0 +1,771 @@
+<<<MANIFEST>>>
+environment/integrator/reactor.f
+environment/integrator/Makefile
+environment/integrator/README
+environment/scripts/generate_data.py
+environment/docs/lab_notes.txt
+environment/tests_public/verify.sh
+<<<END>>>
+<<<FILE environment/integrator/reactor.f>>>
+C=======================================================================
+C     BATCH REACTOR INTEGRATOR
+C     Version 2.3  (March 2007)
+C
+C     Integrates the three-step first-order reaction network
+C     in a well-mixed isothermal batch reactor:
+C
+C       Step 1:  A  ->  B    (rate constant k_AB, forward)
+C       Step 2:  B  ->  A    (rate constant k_BA, reverse)
+C       Step 3:  B  ->  C    (rate constant k_BC, sink)
+C
+C     Governing ordinary differential equations:
+C       dA/dt = -k_AB * A + k_BA * B
+C       dB/dt =  k_AB * A - (k_BC + k_BA) * B
+C       dC/dt =  k_BC * B
+C
+C     Conservation law:  A(t) + B(t) + C(t) = A(0) + B(0) + C(0)
+C
+C     INPUT DECK (read from standard input, free format):
+C       Line 1: nsteps  t_end
+C         nsteps : integer, number of output intervals (>= 1)
+C         t_end  : double precision, final time in seconds (> 0)
+C       Line 2: k_AB  k_BA  k_BC
+C         k_AB   : double precision, forward rate constant (per SECOND)
+C         k_BA   : double precision, reverse rate constant (per SECOND)
+C         k_BC   : double precision, sink rate constant (per SECOND)
+C       Line 3: A0  B0  C0
+C         A0, B0, C0 : double precision, initial conc. (mol/L, >= 0)
+C
+C     OUTPUT (written to standard output):
+C       Header line:  time A B C
+C       nsteps+1 data lines, each with four space-separated
+C       double-precision floating-point values:
+C         time  concentration_A  concentration_B  concentration_C
+C
+C     NUMERICAL METHOD:
+C       Classical 4th-order Runge-Kutta (RK4) with automatic
+C       internal step-size selection.  The internal step is set
+C       to at most 0.01 seconds (parameter HMAX), or 1/1000 of
+C       the output interval, whichever is smaller.  A minimum
+C       of 100 substeps per output interval is enforced.
+C       Mass conservation is checked after integration; a
+C       warning is written to stderr if deviation exceeds 1e-4
+C       relative to the initial total mass.
+C
+C     COMPILE:
+C       gfortran -O2 -o reactor reactor.f
+C       (or use the provided Makefile)
+C
+C     VERSION HISTORY:
+C       v1.0  (Jan 1998) - Original Euler integrator (deprecated)
+C       v2.0  (Mar 2003) - Upgraded to classical RK4
+C       v2.1  (Jun 2005) - Improved internal step-size control
+C       v2.2  (Sep 2006) - Added input validation, error msgs
+C       v2.3  (Mar 2007) - Fixed output format, added mass check
+C
+C     AUTHORS:
+C       Kinetics Laboratory, Department of Chemical Engineering
+C=======================================================================
+
+      PROGRAM REACTOR
+      IMPLICIT NONE
+
+C     ================================================================
+C     Parameter constants
+C     ================================================================
+      DOUBLE PRECISION HMAX
+      PARAMETER (HMAX = 0.01D0)
+      DOUBLE PRECISION HMIN
+      PARAMETER (HMIN = 1.0D-6)
+      DOUBLE PRECISION MASS_TOL
+      PARAMETER (MASS_TOL = 1.0D-4)
+      INTEGER MIN_SUBSTEPS
+      PARAMETER (MIN_SUBSTEPS = 100)
+
+C     ================================================================
+C     Input variables
+C     ================================================================
+      INTEGER NSTEPS
+      DOUBLE PRECISION TEND
+      DOUBLE PRECISION KAB, KBA, KBC
+      DOUBLE PRECISION A0, B0, C0
+
+C     ================================================================
+C     State and work variables
+C     ================================================================
+      DOUBLE PRECISION Y(3)
+      DOUBLE PRECISION T, DTOUT, DTINT
+      INTEGER NSUB, I, K
+
+C     ================================================================
+C     Mass conservation variables
+C     ================================================================
+      DOUBLE PRECISION SUM0, SUMF, RELERR
+
+C     ================================================================
+C     Read input deck from standard input
+C     ================================================================
+      READ(*, *, ERR=800, END=800) NSTEPS, TEND
+      READ(*, *, ERR=810, END=810) KAB, KBA, KBC
+      READ(*, *, ERR=820, END=820) A0, B0, C0
+
+C     ================================================================
+C     Validate input parameters
+C     ================================================================
+      IF (NSTEPS .LT. 1) THEN
+        WRITE(0,*) 'ERROR: nsteps must be >= 1'
+        STOP 1
+      END IF
+
+      IF (TEND .LE. 0.0D0) THEN
+        WRITE(0,*) 'ERROR: t_end must be positive'
+        STOP 1
+      END IF
+
+      IF (KAB .LT. 0.0D0) THEN
+        WRITE(0,*) 'ERROR: k_AB (forward rate) must be >= 0'
+        STOP 1
+      END IF
+
+      IF (KBA .LT. 0.0D0) THEN
+        WRITE(0,*) 'ERROR: k_BA (reverse rate) must be >= 0'
+        STOP 1
+      END IF
+
+      IF (KBC .LT. 0.0D0) THEN
+        WRITE(0,*) 'ERROR: k_BC (sink rate) must be >= 0'
+        STOP 1
+      END IF
+
+      IF (A0 .LT. 0.0D0 .OR. B0 .LT. 0.0D0 .OR. C0 .LT. 0.0D0)
+     &  THEN
+        WRITE(0,*) 'ERROR: initial concentrations must be >= 0'
+        STOP 1
+      END IF
+
+C     ================================================================
+C     Initialize state vector
+C     ================================================================
+      Y(1) = A0
+      Y(2) = B0
+      Y(3) = C0
+      SUM0 = A0 + B0 + C0
+      T = 0.0D0
+
+C     ================================================================
+C     Compute output and internal step sizes
+C     ================================================================
+      DTOUT = TEND / DBLE(NSTEPS)
+      CALL COMPUTE_NSUB(DTOUT, HMAX, HMIN, MIN_SUBSTEPS, NSUB, DTINT)
+
+C     ================================================================
+C     Write output header and initial condition
+C     ================================================================
+      WRITE(*, '(A)') 'time A B C'
+      WRITE(*, '(F14.8,1X,F14.8,1X,F14.8,1X,F14.8)')
+     &  T, Y(1), Y(2), Y(3)
+
+C     ================================================================
+C     Main integration loop
+C     For each output step, take NSUB internal RK4 steps
+C     ================================================================
+      DO 100 I = 1, NSTEPS
+        DO 200 K = 1, NSUB
+          CALL RK4STEP(Y, T, DTINT, KAB, KBA, KBC)
+  200   CONTINUE
+
+C       Write output for this time point
+        WRITE(*, '(F14.8,1X,F14.8,1X,F14.8,1X,F14.8)')
+     &    T, Y(1), Y(2), Y(3)
+  100 CONTINUE
+
+C     ================================================================
+C     Final mass conservation check
+C     ================================================================
+      SUMF = Y(1) + Y(2) + Y(3)
+      IF (SUM0 .GT. 0.0D0) THEN
+        RELERR = ABS(SUMF - SUM0) / SUM0
+        IF (RELERR .GT. MASS_TOL) THEN
+          WRITE(0,*) 'WARNING: mass conservation deviation =',
+     &      RELERR
+        END IF
+      END IF
+
+      STOP 0
+
+C     ================================================================
+C     Error handlers for input reading
+C     ================================================================
+  800 WRITE(0,*) 'ERROR: could not read line 1 (nsteps t_end)'
+      STOP 1
+  810 WRITE(0,*) 'ERROR: could not read line 2 (k_AB k_BA k_BC)'
+      STOP 1
+  820 WRITE(0,*) 'ERROR: could not read line 3 (A0 B0 C0)'
+      STOP 1
+
+      END
+
+C=======================================================================
+C     Subroutine: ODE right-hand side
+C     Computes the time derivatives of A, B, C given the current
+C     state and rate constants.
+C=======================================================================
+      SUBROUTINE ODERHS(Y, KAB, KBA, KBC, DYDT)
+      IMPLICIT NONE
+      DOUBLE PRECISION Y(3), KAB, KBA, KBC, DYDT(3)
+
+C     d[A]/dt = -k_AB * A + k_BA * B
+      DYDT(1) = -KAB * Y(1) + KBA * Y(2)
+
+C     d[B]/dt =  k_AB * A - (k_BC + k_BA) * B
+      DYDT(2) = KAB * Y(1) - (KBC + KBA) * Y(2)
+
+C     d[C]/dt =  k_BC * B
+      DYDT(3) = KBC * Y(2)
+
+      RETURN
+      END
+
+C=======================================================================
+C     Subroutine: Single RK4 integration step
+C     Advances the state vector Y by one time step DT using the
+C     classical 4th-order Runge-Kutta method.  The time T is
+C     also advanced by DT.
+C=======================================================================
+      SUBROUTINE RK4STEP(Y, T, DT, KAB, KBA, KBC)
+      IMPLICIT NONE
+      DOUBLE PRECISION Y(3), T, DT, KAB, KBA, KBC
+
+C     RK4 slope arrays
+      DOUBLE PRECISION K1(3), K2(3), K3(3), K4(3)
+      DOUBLE PRECISION YTMP(3)
+
+C     ---- Stage 1: evaluate RHS at (T, Y) ----
+      CALL ODERHS(Y, KAB, KBA, KBC, K1)
+
+C     ---- Stage 2: evaluate RHS at (T+DT/2, Y+DT*K1/2) ----
+      YTMP(1) = Y(1) + 0.5D0 * DT * K1(1)
+      YTMP(2) = Y(2) + 0.5D0 * DT * K1(2)
+      YTMP(3) = Y(3) + 0.5D0 * DT * K1(3)
+      CALL ODERHS(YTMP, KAB, KBA, KBC, K2)
+
+C     ---- Stage 3: evaluate RHS at (T+DT/2, Y+DT*K2/2) ----
+      YTMP(1) = Y(1) + 0.5D0 * DT * K2(1)
+      YTMP(2) = Y(2) + 0.5D0 * DT * K2(2)
+      YTMP(3) = Y(3) + 0.5D0 * DT * K2(3)
+      CALL ODERHS(YTMP, KAB, KBA, KBC, K3)
+
+C     ---- Stage 4: evaluate RHS at (T+DT, Y+DT*K3) ----
+      YTMP(1) = Y(1) + DT * K3(1)
+      YTMP(2) = Y(2) + DT * K3(2)
+      YTMP(3) = Y(3) + DT * K3(3)
+      CALL ODERHS(YTMP, KAB, KBA, KBC, K4)
+
+C     ---- Update state vector with weighted average ----
+      Y(1) = Y(1) + (DT / 6.0D0) *
+     &  (K1(1) + 2.0D0*K2(1) + 2.0D0*K3(1) + K4(1))
+      Y(2) = Y(2) + (DT / 6.0D0) *
+     &  (K1(2) + 2.0D0*K2(2) + 2.0D0*K3(2) + K4(2))
+      Y(3) = Y(3) + (DT / 6.0D0) *
+     &  (K1(3) + 2.0D0*K2(3) + 2.0D0*K3(3) + K4(3))
+
+C     ---- Advance time ----
+      T = T + DT
+
+      RETURN
+      END
+
+C=======================================================================
+C     Subroutine: Compute number of internal substeps
+C     Determines the internal step count (NSUB) and step size
+C     (DTINT) based on the output interval (DTOUT) and the
+C     maximum allowed internal step size (HMAX).
+C
+C     The internal step is set to at most HMAX, with a minimum
+C     of MIN_SUBSTEPS substeps per output interval for safety.
+C=======================================================================
+      SUBROUTINE COMPUTE_NSUB(DTOUT, HMAX, HMIN, MINSUB, NSUB, DTINT)
+      IMPLICIT NONE
+      DOUBLE PRECISION DTOUT, HMAX, HMIN, DTINT
+      INTEGER MINSUB, NSUB
+
+      DOUBLE PRECISION NSTMP
+
+C     Compute substep count to keep internal step at most HMAX
+      NSTMP = DTOUT / HMAX
+      NSUB = INT(NSTMP) + 1
+
+C     Enforce minimum substep count
+      IF (NSUB .LT. MINSUB) NSUB = MINSUB
+
+C     Compute actual internal step size
+      DTINT = DTOUT / DBLE(NSUB)
+
+C     Safety check: warn if step size is very small
+      IF (DTINT .LT. HMIN) THEN
+        WRITE(0,*) 'WARNING: internal step size very small:', DTINT
+        WRITE(0,*) '  Consider reducing nsteps or t_end'
+      END IF
+
+C     Additional safety: warn if step size exceeds 1/max_rate
+C     For rate constants up to ~5 /s, step of 0.01s gives
+C     ~50 steps per characteristic time, which is safe for RK4.
+      IF (DTINT .GT. HMAX) THEN
+        WRITE(0,*) 'WARNING: internal step exceeds HMAX:', DTINT
+      END IF
+
+      RETURN
+      END
+<<<END>>>
+<<<FILE environment/integrator/Makefile>>>
+FC = gfortran
+FFLAGS = -O2
+TARGET = reactor
+
+all: $(TARGET)
+
+$(TARGET): reactor.f
+	$(FC) $(FFLAGS) -o $(TARGET) reactor.f
+
+clean:
+	rm -f $(TARGET) *.o
+
+.PHONY: all clean
+<<<END>>>
+<<<FILE environment/integrator/README>>>
+BATCH REACTOR INTEGRATOR
+=========================
+
+Three-step first-order reaction network integrator.
+
+REACTION SCHEME
+---------------
+  Step 1:  A -> B    (rate constant k_AB)
+  Step 2:  B -> A    (rate constant k_BA, reverse step)
+  Step 3:  B -> C    (rate constant k_BC, sink step)
+
+ODE SYSTEM
+----------
+  dA/dt = -k_AB * A + k_BA * B
+  dB/dt =  k_AB * A - (k_BC + k_BA) * B
+  dC/dt =  k_BC * B
+
+Conservation law:  A(t) + B(t) + C(t) = A(0) + B(0) + C(0)
+
+INPUT DECK FORMAT (read from standard input)
+--------------------------------------------
+All values are in free format (space or comma separated).
+
+  Line 1: nsteps  t_end
+    nsteps  : integer, number of output time steps (>= 1)
+    t_end   : double, final integration time in seconds (> 0)
+
+  Line 2: k_AB  k_BA  k_BC   (rate constants, per SECOND)
+    k_AB    : double, forward rate constant A->B
+    k_BA    : double, reverse rate constant B->A
+    k_BC    : double, sink rate constant B->C
+
+  Line 3: A0  B0  C0
+    A0, B0, C0 : double, initial concentrations (mol/L, >= 0)
+
+IMPORTANT: The column order on Line 2 is k_AB, k_BA, k_BC
+(forward, reverse, sink).  Note that k_BA (the reverse rate
+constant for B->A) is the SECOND column, and k_BC (the sink
+rate constant for B->C) is the THIRD column.  Do NOT use the
+sequential numbering order k1, k2, k3.
+
+OUTPUT (written to standard output)
+------------------------------------
+  Header line:  time A B C
+  nsteps+1 data lines, each containing four space-separated
+  floating-point numbers:  time  [A]  [B]  [C]
+
+METHOD
+------
+  4th-order Runge-Kutta (RK4) with automatic internal step
+  size selection.  The internal step is chosen to be at most
+  0.01 seconds, ensuring accurate integration for rate
+  constants up to approximately 5 /s.
+
+MASS CONSERVATION
+-----------------
+  The ODE structure guarantees A(t)+B(t)+C(t) = A0+B0+C0.
+  The integrator does not enforce this explicitly; it follows
+  from the equations.  A check is performed after integration.
+
+BUILDING
+--------
+  make
+
+USAGE EXAMPLE
+-------------
+  printf "30 60.0\n0.15 0.04 0.08\n1.0 0.0 0.0\n" | ./reactor
+
+  This integrates for 60 seconds with 30 output steps, using
+  k_AB=0.15, k_BA=0.04, k_BC=0.08 per second, starting from
+  1.0 mol/L of A.
+
+VERSION: 2.3 (March 2007)
+<<<END>>>
+<<<FILE environment/scripts/generate_data.py>>>
+#!/usr/bin/env python3
+"""
+Generate practice experiment data for reaction kinetics fitting.
+This script runs during Docker image build and is then deleted.
+
+True rate constants (per second):
+  k1 = 0.15   (A -> B, forward)
+  k2 = 0.08   (B -> C, sink)
+  k3 = 0.04   (B -> A, reverse)
+
+Noise model:
+  Gaussian, sigma = max(0.015 * true_value, 0.005)
+  Seed: 42
+  Negative concentrations clipped to 0
+"""
+
+import numpy as np
+from scipy.integrate import solve_ivp
+import os
+
+# ===== True rate constants =====
+K1_TRUE = 0.15   # A -> B
+K2_TRUE = 0.08   # B -> C
+K3_TRUE = 0.04   # B -> A
+
+# ===== Noise parameters =====
+NOISE_SEED = 42
+REL_NOISE = 0.015    # 1.5% relative
+NOISE_FLOOR = 0.005  # minimum sigma (mol/L)
+
+# ===== ODE system =====
+def ode_rhs(t, y):
+    A, B, C = y
+    dA = -K1_TRUE * A + K3_TRUE * B
+    dB = K1_TRUE * A - (K2_TRUE + K3_TRUE) * B
+    dC = K2_TRUE * B
+    return [dA, dB, dC]
+
+# ===== Experiment conditions =====
+EXPERIMENTS = [
+    # (name,  A0,   B0,   C0,   t_end, nsteps)
+    ("R01",  1.00, 0.00, 0.00,  60,   30),
+    ("R02",  1.00, 0.00, 0.00,  30,   15),
+    ("R03",  0.80, 0.00, 0.20,  45,   45),
+    ("R04",  1.00, 0.00, 0.00,  90,   45),
+    ("R05",  0.90, 0.10, 0.00,  70,   35),
+    ("R06",  0.70, 0.30, 0.00,  90,   45),
+    ("R07",  0.50, 0.50, 0.00,  80,   40),
+    ("R08",  0.50, 0.50, 0.00, 180,   60),
+    ("R09",  0.00, 1.00, 0.00,  60,   60),
+    ("R10",  0.00, 1.00, 0.00,  90,   90),
+    ("R11",  1.00, 0.00, 0.00, 150,   75),
+    ("R12",  0.80, 0.20, 0.00,  50,   25),
+    ("R13",  0.50, 0.00, 0.50,  70,   35),
+    ("R14",  1.00, 0.00, 0.00,  90,   45),
+    ("R15",  0.00, 1.00, 0.00,  60,   30),
+    ("R16",  1.00, 0.00, 0.00, 300,  150),
+    ("R17",  0.60, 0.40, 0.00, 150,   75),
+    ("R18",  0.30, 0.70, 0.00, 180,   90),
+    ("R19",  1.00, 0.00, 0.00, 250,  125),
+    ("R20",  0.80, 0.20, 0.00, 350,  175),
+]
+
+
+def main():
+    np.random.seed(NOISE_SEED)
+    outdir = "/app/data/practice"
+    os.makedirs(outdir, exist_ok=True)
+
+    cond_path = os.path.join(outdir, "conditions.csv")
+    with open(cond_path, "w") as cf:
+        cf.write("run,A0,B0,C0,t_end,nsteps\n")
+
+        for name, A0, B0, C0, t_end, nsteps in EXPERIMENTS:
+            # Solve ODE with high accuracy
+            t_eval = np.linspace(0, t_end, nsteps + 1)
+            sol = solve_ivp(
+                ode_rhs, [0, t_end], [A0, B0, C0],
+                t_eval=t_eval, method='RK45',
+                rtol=1e-10, atol=1e-12
+            )
+
+            A_true = sol.y[0]
+            B_true = sol.y[1]
+            C_true = sol.y[2]
+
+            # Add noise: sigma = max(0.015 * |true|, 0.005)
+            sigma_A = np.maximum(REL_NOISE * np.abs(A_true), NOISE_FLOOR)
+            sigma_B = np.maximum(REL_NOISE * np.abs(B_true), NOISE_FLOOR)
+            sigma_C = np.maximum(REL_NOISE * np.abs(C_true), NOISE_FLOOR)
+
+            A_noisy = A_true + np.random.normal(0, sigma_A)
+            B_noisy = B_true + np.random.normal(0, sigma_B)
+            C_noisy = C_true + np.random.normal(0, sigma_C)
+
+            # Clip at 0 (concentrations cannot be negative)
+            A_noisy = np.maximum(A_noisy, 0.0)
+            B_noisy = np.maximum(B_noisy, 0.0)
+            C_noisy = np.maximum(C_noisy, 0.0)
+
+            # Write experiment CSV
+            data_path = os.path.join(outdir, f"{name}.csv")
+            with open(data_path, "w") as df:
+                df.write("time,A,B,C\n")
+                for i in range(len(t_eval)):
+                    df.write(
+                        f"{t_eval[i]:.6f},{A_noisy[i]:.6f},"
+                        f"{B_noisy[i]:.6f},{C_noisy[i]:.6f}\n"
+                    )
+
+            # Write conditions line
+            cf.write(f"{name},{A0},{B0},{C0},{t_end},{nsteps}\n")
+
+    print(f"Generated {len(EXPERIMENTS)} practice experiments in {outdir}")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/docs/lab_notes.txt>>>
+LAB NOTES - Batch Reactor Kinetics Experiments
+===============================================
+
+Date: February-March 2024
+Project: Three-step first-order reaction network parameter estimation
+
+REACTION NETWORK
+----------------
+We are studying a three-step first-order reaction network in an
+isothermal well-mixed batch reactor:
+
+  Step 1:  A  ->  B    (forward conversion, rate constant k1)
+  Step 2:  B  ->  C    (product formation, rate constant k2)
+  Step 3:  B  ->  A    (reverse reaction, rate constant k3)
+
+The governing ODE system is:
+  dA/dt = -k1 * A + k3 * B
+  dB/dt =  k1 * A - (k2 + k3) * B
+  dC/dt =  k2 * B
+
+where k1, k2, k3 are first-order rate constants in per-second units.
+
+Note that mass is conserved: A(t) + B(t) + C(t) = const.
+
+EXPERIMENTAL SETUP
+-------------------
+Twenty batch reactor experiments (R01 through R20) were performed.
+Each experiment used different initial concentrations of A, B, and C.
+Concentrations were measured at regular time intervals using HPLC
+with UV detection.
+
+Most experiments started with only A present (B0 = 0, C0 = 0), which
+primarily probes the forward pathway (k1) and product formation (k2).
+A few experiments started with significant B present:
+  - R09, R10, R15: A0 = 0, B0 = 1.0 mol/L  (pure B starting material)
+  - R07, R08: A0 = 0.5, B0 = 0.5 mol/L
+  - R18: A0 = 0.3, B0 = 0.7 mol/L
+
+These B-rich runs are critical because they directly excite the
+reverse step (B -> A). In runs R09, R10, and R15, species A
+appears as a PRODUCT of the reverse reaction -- it starts at zero
+and rises over time. This is impossible if k3 = 0, so these runs
+conclusively demonstrate that the reverse step is active.
+
+Some runs with small B0 (R05: B0=0.1, R06: B0=0.3, R12: B0=0.2)
+provide moderate excitation of the reverse step. Even small amounts
+of initial B can help constrain k3 when combined with the B0=1.0
+runs.
+
+TIME RANGES
+-----------
+Short experiments (30-90s): primarily capture early-time dynamics
+where A decays and B rises, then B declines as C forms.
+
+Long experiments (150-350s): approach the late-time regime where
+the system approaches its final state. Since B -> C is irreversible,
+the ultimate fate of all material is to end up as C. However, the
+RATE at which the system approaches this state depends on k3: a
+larger k3 means A and B are replenished more, slowing the overall
+conversion to C.
+
+MEASUREMENT NOISE
+-----------------
+Concentration measurements have approximately 1-2% relative
+uncertainty due to HPLC calibration and peak integration errors.
+For concentrations near the detection limit (below ~0.3 mol/L),
+an absolute noise of about 0.005 mol/L dominates, corresponding
+to the HPLC baseline noise level.
+
+INTEGRATOR
+----------
+The group's Fortran batch reactor integrator is in /app/integrator/.
+Build it with make (cd /app/integrator && make).
+
+IMPORTANT: The integrator input deck uses a specific column order
+for the rate constants on Line 2:  k_AB, k_BA, k_BC (forward,
+reverse, sink).  This maps to our notation as:
+
+  Input deck column 1: k_AB = k1  (forward, A -> B)
+  Input deck column 2: k_BA = k3  (reverse, B -> A)
+  Input deck column 3: k_BC = k2  (sink, B -> C)
+
+So the middle column is k3 (the reverse rate), not k2. The README
+in /app/integrator/ has full details on the input format.
+
+All rate constants in the input deck must be in per-second units.
+
+DATA FILES
+----------
+Practice experiment CSV files are in /app/data/practice/ (R01.csv
+through R20.csv). Each file has columns: time, A, B, C.
+
+The file conditions.csv summarizes initial conditions and time
+ranges for all 20 experiments.
+
+GOAL
+----
+Determine the three rate constants k1, k2, k3 by fitting all 20
+experiments simultaneously. Save the result as /app/constants.json
+with keys "k1", "k2", "k3". Then create /app/predict.sh that
+uses the integrator to simulate new conditions.
+
+Pay special attention to the B-rich runs (R09, R10, R15) when
+fitting -- they are the key to accurately determining k3.
+<<<END>>>
+<<<FILE environment/tests_public/verify.sh>>>
+#!/bin/bash
+# Public verification script for reaction kinetics fitting
+# Checks: (1) integrator binary, (2) predict.sh, (3) output format,
+#         (4) prediction matches reference for R01 condition
+set -euo pipefail
+
+PASS=0
+FAIL=0
+
+# ---------------------------------------------------------------
+# Test 1: Integrator binary exists and is executable
+# ---------------------------------------------------------------
+echo -n "1. Integrator binary: "
+if [ -x /app/integrator/reactor ]; then
+    echo "OK"
+    PASS=$((PASS+1))
+else
+    echo "FAIL (not found or not executable)"
+    FAIL=$((FAIL+1))
+fi
+
+# ---------------------------------------------------------------
+# Test 2: predict.sh exists and is executable
+# ---------------------------------------------------------------
+echo -n "2. predict.sh: "
+if [ -x /app/predict.sh ]; then
+    echo "OK"
+    PASS=$((PASS+1))
+else
+    echo "FAIL (not found or not executable)"
+    FAIL=$((FAIL+1))
+fi
+
+# ---------------------------------------------------------------
+# Test 3: constants.json exists and is valid
+# ---------------------------------------------------------------
+echo -n "3. constants.json: "
+if [ -f /app/constants.json ]; then
+    /usr/local/bin/python3 -c "
+import json, sys
+with open('/app/constants.json') as f:
+    c = json.load(f)
+for k in ['k1','k2','k3']:
+    if k not in c:
+        print(f'missing key {k}')
+        sys.exit(1)
+    if not isinstance(c[k], (int,float)):
+        print(f'{k} is not a number')
+        sys.exit(1)
+    if c[k] <= 0:
+        print(f'{k} is not positive')
+        sys.exit(1)
+print('OK')
+" && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+else
+    echo "FAIL (file not found)"
+    FAIL=$((FAIL+1))
+fi
+
+# ---------------------------------------------------------------
+# Test 4: Run predict.sh on R01 condition and check output
+# ---------------------------------------------------------------
+echo -n "4. R01 prediction: "
+COND=$(mktemp /tmp/cond_XXXXXX)
+echo "1.0 0.0 0.0" > "$COND"
+echo "60 30" >> "$COND"
+PRED=$(mktemp /tmp/pred_XXXXXX)
+
+if /app/predict.sh "$COND" > "$PRED" 2>/dev/null; then
+    # Check header
+    HEAD=$(head -1 "$PRED")
+    if [ "$HEAD" = "time A B C" ]; then
+        # Check line count (header + 31 data lines = 32)
+        NLINES=$(wc -l < "$PRED")
+        if [ "$NLINES" -eq 32 ]; then
+            # Compare prediction against Python reference
+            /usr/local/bin/python3 -c "
+import json, numpy as np, sys
+from scipy.integrate import solve_ivp
+
+# Read constants
+with open('/app/constants.json') as f:
+    c = json.load(f)
+k1, k2, k3 = c['k1'], c['k2'], c['k3']
+
+# Compute reference solution for R01 condition
+def rhs(t, y):
+    A, B, C = y
+    return [-k1*A + k3*B, k1*A - (k2+k3)*B, k2*B]
+
+t_eval = np.linspace(0, 60, 31)
+sol = solve_ivp(rhs, [0, 60], [1.0, 0.0, 0.0],
+                t_eval=t_eval, method='RK45',
+                rtol=1e-10, atol=1e-12)
+
+# Read prediction
+pred = np.loadtxt('$PRED', skiprows=1)
+
+# Max relative error (floor 0.01)
+def mre(p, t):
+    return np.max(np.abs(p - t) / np.maximum(np.abs(t), 0.01))
+
+err = max(mre(pred[:,1], sol.y[0]),
+          mre(pred[:,2], sol.y[1]),
+          mre(pred[:,3], sol.y[2]))
+
+if err < 0.05:
+    print(f'OK (max rel error {err:.4f})')
+    sys.exit(0)
+else:
+    print(f'FAIL (max rel error {err:.4f} > 0.05)')
+    sys.exit(1)
+" && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+        else
+            echo "FAIL (expected 32 lines, got $NLINES)"
+            FAIL=$((FAIL+1))
+        fi
+    else
+        echo "FAIL (header is '$HEAD', expected 'time A B C')"
+        FAIL=$((FAIL+1))
+    fi
+else
+    echo "FAIL (predict.sh exited with error)"
+    FAIL=$((FAIL+1))
+fi
+
+rm -f "$COND" "$PRED"
+
+# ---------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ $FAIL -eq 0 ] && exit 0 || exit 1
+<<<END>>>

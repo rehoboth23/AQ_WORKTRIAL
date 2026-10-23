@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+a b c d e,,-12.345,abc,x
+nyc-east,2024/1/5,-0.0,10
+NYC-West,9,0x1A,7,AB12
+los angeles,abc,1E2,7,
+Zürich,2024/1/5,0x1A,,ab
+Österreich,abc,12abc,3,AB12
+ny,10,99.999,-2.5,x
+São Paulo,20240105,-0,10
+Malmö,2024-01-31,1999.95,0
+x,20240131,99.999,
+Österreich,007,250,10,x
+x, 20231231 , -3 ,0,ZZTOP
+  ,,99.999,3,12345
+NYC-West,9,12.50,-2.5,ZZTOP
+Zürich,20240105,10,1,AB12

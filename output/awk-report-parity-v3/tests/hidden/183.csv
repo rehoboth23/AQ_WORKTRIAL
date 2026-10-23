@@ -1,0 +1,13 @@
+branch,posted,amount,units,code
+,9,0x1A, 2 
+São Paulo,2024/1/5,.5,3
+  ,2024-01-05,3.,abc,12345
+ lon,abc,12abc,0
+par,007,250,abc,ZZTOP
+a b c d e,20240105,2500000000.75,7
+  , 20231231 ,250,3,ab
+a,b
+PAR1,2024-01-31,-5,3
+a,b,c
+berlin,007,1000000000,,extra
+london,20240105,10,1,AB12

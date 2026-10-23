@@ -1,0 +1,46 @@
+branch,posted,amount,units,code
+nyc-east,20240105,12.50,3,AB12
+NYC-West,2024-01-05,-5,3.9,x
+ lon,2024/1/5,-0,-2.5,
+london,9,1e3,4e2,Q
+ny,10, 7 ,,ZZTOP
+Zürich, 20231231 ,.5,abc,ab
+Malmö,,+3, 2 ,Ünï
+São Paulo,abc,12abc,10,12345
+los angeles,20240131,,0,AB12
+a b c d e,2024-01-31,0x1A,7,x
+PAR1,007,1000000000,3,
+par,20240105,2500000000.75,3.9,Q
+x,2024-01-05,abc,-2.5,ZZTOP
+,2024/1/5,99.999,4e2,ab
+  ,9,-12.345,,Ünï
+Österreich,10,0.1,abc,12345
+berlin, 20231231 ,0.2, 2 ,AB12
+nyc-east,9,12.50,3.9
+NYC-West,10,-5,-2.5
+ lon, 20231231 ,-0,4e2
+london,,1e3,
+nyc-east,abc, 7 ,abc
+NYC-West,20240131,.5, 2 
+ lon,2024-01-31,+3,10
+london,007,12abc,0
+nyc-east,20240105,,7
+NYC-West,2024-01-05,0x1A,3
+ lon,2024/1/5,1000000000,3.9
+london,9,2500000000.75,-2.5
+nyc-east,10,abc,4e2
+NYC-West, 20231231 ,99.999,
+ lon,,-12.345,abc
+london,abc,0.1, 2 
+nyc-east,20240131,0.2,10
+NYC-West,2024-01-31,1E2,0
+ lon,007,3.,7
+london,20240105,-0.0,3
+nyc-east,2024-01-05,250,3.9
+NYC-West,2024/1/5,1999.95,-2.5
+ lon,9, -3 ,4e2
+
+garbage
+a,b,c
+ , , ,
+nyc-east,2024-01-31,15.25,2,AB12,extra

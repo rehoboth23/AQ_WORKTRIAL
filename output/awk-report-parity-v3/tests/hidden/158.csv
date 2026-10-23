@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+Zürich,20240131,0.1,0,Q
+berlin,20240131,-0.0,3,x
+london,20240131,3.,3.9
+, 20231231 ,12.50,0,x
+par,20240131,1000000000,7,12345
+NYC-West,2024/1/5,1999.95,4e2
+PAR1,20240105,250,abc,Q
+,2024/1/5,1000000000,7,12345
+ lon,007,99.999,abc
+PAR1,007,-5,abc,ab
+ lon,20240105,1999.95,4e2
+los angeles,9,abc, 2 
+NYC-West,9,.5,-2.5,Ünï
+Malmö,9,0x1A,
+los angeles,10,2500000000.75,3.9,extra
+par,007,.5, 2 ,ZZTOP,extra
+los angeles,10,1E2,3.9
+,007,12.50,7,ZZTOP,extra
+Zürich,20240105,10,1,AB12

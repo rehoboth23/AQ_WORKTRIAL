@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+los angeles,,1000000000,3.9,x
+par,2024-01-31,0.2,3.9
+x,20240131,1999.95,3,Ünï
+ lon, 20231231 ,1e3, 2 ,ab,extra
+los angeles,2024-01-31,1999.95,abc,AB12
+x,,+3,3.9
+Zürich,20240105,-0,3,12345
+Zürich,20240105,-0,,extra
+los angeles,9,,0,
+berlin,10,99.999,abc,
+a b c d e,007,2500000000.75,,ab
+par,, -3 ,7
+PAR1,2024-01-31,.5,4e2,x
+NYC-West, 20231231 ,1E2,,ZZTOP
+nyc-east,9,.5, 2 ,x
+PAR1, 20231231 ,99.999,7
+ lon,20240105,12abc,-2.5,x
+berlin,abc,+3, 2 ,12345
+nyc-east,20240105,10,1,AB12

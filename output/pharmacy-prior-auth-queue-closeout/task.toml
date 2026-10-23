@@ -1,0 +1,27 @@
+schema_version = "1.1"
+
+[task]
+name = "afterquery/pharmacy-prior-auth-queue-closeout"
+description = "Close out a pharmacy's prior-authorisation queue by applying the operating manual's rules through local formulary, prescriber and payer services and submitting each decision through the portal."
+keywords = [ "prior-auth", "rule-engine", "local-services", "audit-log", "procedure-driven",]
+
+[metadata]
+difficulty = "hard"
+category = "data-processing"
+tags = [ "prior-auth", "rule-engine", "local-services", "audit-log", "procedure-driven",]
+expert_time_estimate_min = 45.0
+junior_time_estimate_min = 120.0
+generator_model = "z-ai/glm-5.1"
+
+[verifier]
+timeout_sec = 900.0
+
+[agent]
+timeout_sec = 3600.0
+network_mode = "no-network"
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240

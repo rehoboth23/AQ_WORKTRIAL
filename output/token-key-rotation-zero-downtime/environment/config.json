@@ -1,0 +1,7 @@
+{
+  "signing_key_id": "key-1",
+  "keys": {
+    "key-1": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE"
+  },
+  "token_lifetime_seconds": 10
+}

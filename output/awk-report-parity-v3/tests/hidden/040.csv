@@ -1,0 +1,24 @@
+branch,posted,amount,units,code
+São Paulo,9,99.999,0,Ünï
+,,250,4e2,Ünï,extra
+NYC-West,10,99.999,3,
+,,250,-2.5,x,extra
+Österreich,20240131,0.2,abc,12345,extra
+Malmö,abc,1999.95,0
+par,20240105, 7 ,3
+a,b,c
+Österreich,20240105, 7 ,-2.5,extra
+PAR1,20240105,-12.345,0
+  , 20231231 ,0x1A,3.9,Q
+par,,-12.345,0,12345
+los angeles,10,-0,3
+london,10,3.,
+nyc-east,,99.999, 2 
+los angeles,10,99.999,3,Q
+NYC-West,9,1999.95,7
+berlin,007,2500000000.75,-2.5
+São Paulo,2024/1/5,1e3,3.9,extra
+nyc-east,20240131,abc,-2.5
+NYC-West,abc,.5,0
+PAR1,2024/1/5,12.50, 2 ,x
+Zürich,20240105,10,1,AB12

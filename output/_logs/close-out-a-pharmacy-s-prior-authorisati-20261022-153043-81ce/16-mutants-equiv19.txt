@@ -1,0 +1,7 @@
+```json
+{
+  "equivalent": false,
+  "distinguishing_case": "1. Start services: bash /app/services/start_services.sh  2. Run processor once: python3 /app/process_queue.py  3. Run processor a second time: python3 /app/process_queue.py  4. Check /app/audit.log for any case_id's occurrence count. Correct solution (write mode 'w') overwrites the file, so each case_id appears exactly once. Mutant (append mode 'a') appends, so each case_id appears exactly twice, violating 'Each case must appear exactly once in the audit log.'",
+  "reason": "The mutant uses append mode ('a') instead of write mode ('w') for the audit log, so running the processor twice produces duplicate entries in audit.log (each case_id appears twice), while the correct solution overwrites and keeps exactly one entry per case_id."
+}
+```

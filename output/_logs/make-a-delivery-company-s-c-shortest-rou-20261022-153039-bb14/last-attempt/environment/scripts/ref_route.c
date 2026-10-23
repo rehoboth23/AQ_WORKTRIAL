@@ -1,0 +1,313 @@
+/*
+ * Reference O(V^2) Dijkstra implementation for SpeedyDeliver route library.
+ * This is the original algorithm that was removed from route.c.
+ * Produces correct shortest paths with lexicographic tie-breaking.
+ * Kept in tests/reference/ for the test suite to compute ground-truth output.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
+/* Forward declaration matching route.h */
+typedef struct RouteGraph RouteGraph;
+
+typedef struct {
+    int dst;
+    int weight;
+    int next;   /* next edge index in adjacency list, -1 for end */
+} Edge;
+
+struct RouteGraph {
+    int n;          /* number of nodes */
+    int *head;      /* adjacency list head per node, -1 for empty */
+    Edge *edges;    /* edge array */
+    int num_edges;  /* current number of edges stored */
+    int cap_edges;  /* capacity of edge array */
+};
+
+static long g_relaxations = 0;
+static long g_last_cost = 0;
+
+RouteGraph *route_load(const char *filename)
+{
+    FILE *f = fopen(filename, "r");
+    if (!f) return NULL;
+
+    int n, m;
+    if (fscanf(f, "%d %d", &n, &m) != 2) { fclose(f); return NULL; }
+
+    RouteGraph *g = (RouteGraph *)calloc(1, sizeof(RouteGraph));
+    if (!g) { fclose(f); return NULL; }
+    g->n = n;
+    g->cap_edges = (m > 0) ? m : 16;
+    g->num_edges = 0;
+    g->head = (int *)malloc(n * sizeof(int));
+    if (!g->head) { free(g); fclose(f); return NULL; }
+    for (int i = 0; i < n; i++) g->head[i] = -1;
+    g->edges = (Edge *)malloc(g->cap_edges * sizeof(Edge));
+    if (!g->edges) { free(g->head); free(g); fclose(f); return NULL; }
+
+    for (int i = 0; i < m; i++) {
+        int u, v, w;
+        if (fscanf(f, "%d %d %d", &u, &v, &w) != 3) break;
+        if (u < 0 || u >= n || v < 0 || v >= n) continue;
+        if (g->num_edges >= g->cap_edges) {
+            g->cap_edges *= 2;
+            g->edges = (Edge *)realloc(g->edges, g->cap_edges * sizeof(Edge));
+        }
+        int idx = g->num_edges++;
+        g->edges[idx].dst = v;
+        g->edges[idx].weight = w;
+        g->edges[idx].next = g->head[u];
+        g->head[u] = idx;
+    }
+
+    fclose(f);
+    return g;
+}
+
+void route_free(RouteGraph *g)
+{
+    if (!g) return;
+    free(g->head);
+    free(g->edges);
+    free(g);
+}
+
+/*
+ * Reconstruct path from src to node x using predecessor array.
+ * Returns path length; path stored in buf (caller provides space for n+1 ints).
+ * Returns 0 on failure (cycle or broken chain).
+ */
+static int recon_path(const int *pred, int src, int x, int n, int *buf)
+{
+    int len = 0, cur = x, safety = n + 1;
+    while (1) {
+        if (--safety <= 0) return 0;      /* cycle guard */
+        buf[len++] = cur;
+        if (cur == src) break;
+        if (pred[cur] < 0) return 0;     /* broken chain */
+        cur = pred[cur];
+    }
+    /* Reverse to get src-first order */
+    for (int i = 0, j = len - 1; i < j; i++, j--) {
+        int t = buf[i]; buf[i] = buf[j]; buf[j] = t;
+    }
+    return len;
+}
+
+/*
+ * Lexicographic comparison of two node-id sequences.
+ * Returns <0 if a < b, 0 if equal, >0 if a > b.
+ * A shorter sequence that is a prefix of a longer one is considered smaller.
+ */
+static int lex_cmp(const int *a, int la, const int *b, int lb)
+{
+    int ml = la < lb ? la : lb;
+    for (int i = 0; i < ml; i++) {
+        if (a[i] < b[i]) return -1;
+        if (a[i] > b[i]) return 1;
+    }
+    if (la < lb) return -1;   /* prefix is smaller */
+    if (la > lb) return 1;
+    return 0;
+}
+
+/*
+ * Check whether 'target' appears in the predecessor chain from 'start'
+ * back to 'src'.  Used to prevent creating cycles in the pred tree.
+ */
+static int chain_has(const int *pred, int src, int start, int target, int n)
+{
+    int cur = start, safety = n + 1;
+    while (cur != src) {
+        if (--safety <= 0 || pred[cur] < 0) return 0;
+        cur = pred[cur];
+        if (cur == target) return 1;
+    }
+    return 0;
+}
+
+/*
+ * Try to update pred[v] to u if the path through u is lexicographically
+ * smaller than the current path to v.  Returns 1 if updated, 0 otherwise.
+ * Assumes new_dist == dist[v] already verified by caller.
+ */
+static int try_update_pred(int *pred, int src, int u, int v, int n,
+                           int *b1, int *b2)
+{
+    /* Self-loop cannot improve tie-breaking */
+    if (u == v) return 0;
+    /* Prevent cycles */
+    if (chain_has(pred, src, u, v, n)) return 0;
+    int l1 = recon_path(pred, src, u, n, b1);
+    if (l1 <= 0) return 0;
+    b1[l1++] = v;   /* candidate path: src...u, v */
+    int l2 = recon_path(pred, src, v, n, b2);
+    if (l2 <= 0) return 0;
+    if (lex_cmp(b1, l1, b2, l2) < 0) {
+        pred[v] = u;
+        return 1;
+    }
+    return 0;
+}
+
+int route_find(RouteGraph *g, int src, int dst, int **out_path, int *out_len)
+{
+    int n = g->n;
+    g_relaxations = 0;
+    g_last_cost = 0;
+
+    if (n <= 0 || src < 0 || src >= n || dst < 0 || dst >= n) return -1;
+
+    long *dist = (long *)malloc(n * sizeof(long));
+    int  *pred = (int  *)malloc(n * sizeof(int));
+    int  *vis  = (int  *)calloc(n, sizeof(int));
+    int  *b1   = (int  *)malloc((n + 2) * sizeof(int));
+    int  *b2   = (int  *)malloc((n + 2) * sizeof(int));
+
+    if (!dist || !pred || !vis || !b1 || !b2) {
+        free(dist); free(pred); free(vis); free(b1); free(b2);
+        return -1;
+    }
+
+    for (int i = 0; i < n; i++) { dist[i] = LONG_MAX; pred[i] = -1; }
+    dist[src] = 0;
+    pred[src] = src;   /* sentinel: src is its own predecessor */
+
+    /* ---------------------------------------------------------------
+     * Phase 1: O(V^2) Dijkstra — compute distances and initial preds.
+     * Relaxation counter: each dist[i] < min_dist scan comparison and
+     * each edge-relaxation distance comparison counts once.
+     * --------------------------------------------------------------- */
+    for (int iter = 0; iter < n; iter++) {
+        /* Scan for minimum-distance unvisited node */
+        int u = -1;
+        long md = LONG_MAX;
+        for (int i = 0; i < n; i++) {
+            if (!vis[i]) {
+                g_relaxations++;          /* dist[i] < md */
+                if (dist[i] < md) { md = dist[i]; u = i; }
+            }
+        }
+        if (u < 0 || md == LONG_MAX) break;
+        vis[u] = 1;
+
+        /* Relax all outgoing edges from u */
+        for (int e = g->head[u]; e >= 0; e = g->edges[e].next) {
+            int v  = g->edges[e].dst;
+            long w = (long)g->edges[e].weight;
+            long nd = dist[u] + w;
+
+            g_relaxations++;              /* nd < dist[v] */
+
+            if (nd < dist[v]) {
+                dist[v] = nd;
+                pred[v] = u;
+            } else if (nd == dist[v]) {
+                /* Equal-cost: apply lexicographic tie-breaking.
+                 * This comparison (nd == dist[v]) is a distance-value
+                 * comparison and is already covered by the count above
+                 * (the < check determined the three-way relationship). */
+                try_update_pred(pred, src, u, v, n, b1, b2);
+            }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * Phase 2: Iterative refinement for cascading tie-breaking.
+     *
+     * After Dijkstra, some nodes may not have the lex-smallest
+     * predecessor because zero-weight edges from later-processed
+     * (higher-id) same-distance nodes can provide better paths,
+     * and those updates can cascade through the pred tree.
+     *
+     * This phase does NOT contribute to the relaxation counter.
+     * --------------------------------------------------------------- */
+    for (int pass = 0; pass < n; pass++) {
+        int changed = 0;
+        for (int u = 0; u < n; u++) {
+            if (dist[u] == LONG_MAX) continue;
+            for (int e = g->head[u]; e >= 0; e = g->edges[e].next) {
+                int v  = g->edges[e].dst;
+                long w = (long)g->edges[e].weight;
+                if (dist[u] + w == dist[v]) {
+                    if (try_update_pred(pred, src, u, v, n, b1, b2))
+                        changed = 1;
+                }
+            }
+        }
+        if (!changed) break;
+    }
+
+    /* ---------------------------------------------------------------
+     * Reconstruct the answer.
+     * --------------------------------------------------------------- */
+    if (dist[dst] == LONG_MAX) {
+        free(dist); free(pred); free(vis); free(b1); free(b2);
+        return -1;
+    }
+
+    g_last_cost = dist[dst];
+
+    int *path = (int *)malloc((n + 1) * sizeof(int));
+    int plen  = recon_path(pred, src, dst, n, path);
+    *out_path = path;
+    *out_len  = plen;
+
+    free(dist); free(pred); free(vis); free(b1); free(b2);
+    return 0;
+}
+
+long route_relaxations(void) { return g_relaxations; }
+long route_last_cost(void)   { return g_last_cost; }
+
+/* ------------------------------------------------------------------ */
+/*  main — CLI used during build to generate expected outputs          */
+/*  Usage: ref_route GRAPH_FILE SRC DST                               */
+/*  stdout: path output (matches agent's main.c format)               */
+/*  stderr: relaxation count (decimal integer)                        */
+/* ------------------------------------------------------------------ */
+
+int main(int argc, char **argv)
+{
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s GRAPH_FILE SRC DST\n", argv[0]);
+        return 2;
+    }
+
+    RouteGraph *g = route_load(argv[1]);
+    if (!g) {
+        fprintf(stderr, "Failed to load graph: %s\n", argv[1]);
+        return 2;
+    }
+
+    int src = atoi(argv[2]);
+    int dst = atoi(argv[3]);
+
+    int *path = NULL;
+    int plen = 0;
+
+    int result = route_find(g, src, dst, &path, &plen);
+
+    if (result != 0) {
+        printf("unreachable\n");
+        fprintf(stderr, "%ld\n", route_relaxations());
+        free(path);
+        route_free(g);
+        return 1;
+    }
+
+    for (int i = 0; i < plen; i++) {
+        if (i > 0) printf(" ");
+        printf("%d", path[i]);
+    }
+    printf(" %ld\n", route_last_cost());
+    fprintf(stderr, "%ld\n", route_relaxations());
+
+    free(path);
+    route_free(g);
+    return 0;
+}

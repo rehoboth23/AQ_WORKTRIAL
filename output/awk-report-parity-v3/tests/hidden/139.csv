@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+ lon, 20231231 ,0.2,3.9
+Malmö,007,0.2,abc
+par,9,.5,3,AB12
+par,2024/1/5,2500000000.75,0
+PAR1, 20231231 ,3.,3,Ünï
+a,b,c
+los angeles, 20231231 ,+3, 2 ,ab
+,abc,abc, 2 
+Zürich,007,1999.95,abc
+,,,4e2,ZZTOP
+Österreich,abc,0.1,abc,Q
+ny,,+3,7,ZZTOP
+Österreich,2024-01-31,abc, 2 ,
+berlin,20240131,0.2,10,ab
+berlin,2024/1/5,3.,10,Q
+a b c d e,2024/1/5,2500000000.75,-2.5,Q
+ny,abc,12abc,4e2,ZZTOP,extra
+Malmö,007,1E2,
+Zürich,20240105,10,1,AB12

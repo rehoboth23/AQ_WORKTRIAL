@@ -1,0 +1,3 @@
+{"time": "2026-10-22T16:19:20", "pid": 25370, "event": "batch_start", "batch": "tcltk-161919", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T16:19:20", "pid": 25370, "event": "stage", "topic": "@seeds/tcltk-loan-port.yaml", "key": "27d9dffdff", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T17:35:49", "pid": 25370, "event": "killed", "signal": "SIGTERM", "children": []}

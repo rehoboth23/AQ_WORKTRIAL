@@ -1,0 +1,78 @@
+```json
+{
+  "name": "cascade-cipher-state-recovery",
+  "description": "Recover plaintext from ciphertexts encrypted by an in-house stream cipher whose key schedule collapses to a small internal state",
+  "difficulty": "hard",
+  "category": "security",
+  "tags": ["cryptanalysis", "stream-cipher", "brute-force", "state-recovery", "python"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 180,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "An internal team built a custom stream cipher called Cascade for lightweight data channels. You have its source code and several known plaintext/ciphertext pairs. New encrypted messages have arrived and the original keys are unavailable. Your job is to write a decryption script that recovers the plaintext of any Cascade ciphertext, given only the ciphertext and its IV.",
+  "environment_setup": "The Dockerfile installs gcc (for optional C helpers), copies cipher.py (the ~130-line Cascade cipher, made read-only), generates 9 known plaintext/ciphertext pairs in /app/known_pairs/ covering English/mixed/binary payloads at short/medium/long lengths with random, sample-like, and structured-IV keys, generates 2 visible challenge ciphertexts in /app/challenge/, places README.md describing the message format and interface, and provides a stub /app/decrypt.py. The data generator script is deleted after build. All plaintexts begin with the 8-byte header 0x43 0x53 0x43 0x76 0x32 0x31 0x00 0x00 ('CSCv21' + two null bytes).",
+  "instruction_summary": "Read /app/cipher.py and /app/README.md. Study the known pairs in /app/known_pairs/. Write /app/decrypt.py that accepts two arguments (ciphertext_file path, iv_hex string) and outputs the recovered plaintext as raw bytes to stdout. The script must work for any valid 16-byte key and 8-byte IV within the cipher's parameter space. Per-ciphertext time limit: 60 seconds on 1 CPU. The cipher source at /app/cipher.py is read-only. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+  "solution_outline": [
+    "Read cipher.py and identify that key_schedule returns 6 values [a,b,c,d,e,f] where d=SBOX[a^b], e=SBOX[b^c], f=SBOX[c^a], so the effective state is only (a,b,c) = 24 bits",
+    "Write a C brute-force helper (brute_force.c) that takes known keystream bytes and searches all 2^24 (a,b,c) candidates with early termination on first mismatch",
+    "Compile the C helper with gcc -O2",
+    "Write decrypt.py that: reads ciphertext file and IV hex; XORs first 8 ciphertext bytes with the known header to get 8 known keystream bytes; invokes the C helper to find the state; imports cipher._prga to generate the full keystream; XORs with ciphertext to recover plaintext; writes raw bytes to stdout"
+  ],
+  "test_plan": [
+    "test_practice_covers_hidden_cases: verify each hidden-case category (3 plaintext types × 3 length ranges × 3 key types) has ≥3 examples in the shipped known pairs",
+    "test_decrypt_english_random: decrypt 3 English-plaintext ciphertexts under random keys at short/medium/long lengths",
+    "test_decrypt_mixed_random: decrypt 3 mixed-plaintext ciphertexts under random keys at short/medium/long lengths",
+    "test_decrypt_binary_random: decrypt 3 binary-plaintext ciphertexts under random keys at short/medium/long lengths",
+    "test_decrypt_structured_iv: decrypt 2 ciphertexts where the IV has structured patterns (first 4 bytes zero, alternating zero bytes)",
+    "test_decrypt_sample_like_key: decrypt 2 ciphertexts under sample-like keys (derived from passphrases) the agent has not seen",
+    "test_time_limit: each ciphertext decryption must complete within 60 seconds",
+    "test_binary_stdout: output must be raw bytes matching the original plaintext byte-for-byte, not hex or base64",
+    "test_iv_from_argument: the IV used for decryption must come from the command-line argument, verified by testing with different IVs",
+    "test_no_key_hardcode: the solution must work on ciphertexts under keys with no relationship to the known pairs, ensuring the attack is general",
+    "test_public_challenge: decrypt the two visible challenge ciphertexts in /app/challenge/ (seeds 99001, 99002)",
+    "test_determinism: same seed produces identical ciphertext; different seed produces different ciphertext"
+  ],
+  "anti_cheat": "Hidden ciphertexts use freshly generated random keys that never appear in the environment; the per-ciphertext 60-second timeout makes 128-bit key brute force infeasible; the test replaces cipher._ksa with a dummy to detect any script that calls key_schedule with a known key instead of attacking the state directly",
+  "failure_modes": "An agent might try to brute-force the full 128-bit key (impossible in 60s), or brute-force all 6 returned state bytes (2^48, also impossible), or assume d/e/f are independent of a/b/c and search 2^48; might output hex instead of raw bytes; might hardcode a known-pair key or IV; might implement an inefficient pure-Python brute force that exceeds 60 seconds; might rely on English-text heuristics for verification and fail on binary payloads",
+  "shape": "cryptanalysis from source; graded on hidden ciphertexts under fresh keys",
+  "hidden_evaluation": "The tests generate 15 hidden ciphertexts under fresh random keys (various seeds) covering all cells of the 3×3×3 quirk matrix (ciphertext length × key type × plaintext type). Each test runs the agent's decrypt.py on a hidden ciphertext and compares the raw byte output to the original plaintext. A state-recovery attack that exploits the 24-bit effective state passes all; key-brute-force or sample-overfit attacks fail on random-key instances or timeout.",
+  "checks": [
+    {
+      "requirement": "cipher.py key_schedule returns [a,b,c,d,e,f] where d=_SBOX[a^b], e=_SBOX[b^c], f=_SBOX[c^a], making the effective state only (a,b,c) = 2^24",
+      "assumed_instead": "A reasonable implementer might treat all 6 returned bytes as independent and try to brute-force 2^48 states, or attempt to recover the 128-bit key directly",
+      "hidden_test_input": "Ciphertexts encrypted under fully random 16-byte keys where only the 24-bit state can be recovered",
+      "why_missed": "The agent might skim the key_schedule and miss the deterministic dependency of d,e,f on a,b,c",
+      "caught_by_tests": ["test_decrypt_english_random", "test_decrypt_binary_random", "test_no_key_hardcode"]
+    },
+    {
+      "requirement": "The script must work for any valid key in the cipher's 16-byte parameter space (instruction.md states 'any valid key/IV')",
+      "assumed_instead": "Hardcode sample keys from the known pairs or exploit structure specific to those keys",
+      "hidden_test_input": "Ciphertexts under uniformly random 16-byte keys with no passphrase structure",
+      "why_missed": "The attack works on sample data, so the agent may not test with truly random keys",
+      "caught_by_tests": ["test_decrypt_english_random", "test_no_key_hardcode"]
+    },
+    {
+      "requirement": "Short ciphertexts (~200 bytes) must be decrypted (README describes varying-length messages)",
+      "assumed_instead": "Assume ciphertexts are always medium-to-long and only test with long examples",
+      "hidden_test_input": "A 200-byte binary-plaintext ciphertext where only 8 header bytes are known",
+      "why_missed": "The agent's brute force might rely on long known-plaintext runs for confidence and not test the short case",
+      "caught_by_tests": ["test_decrypt_binary_random"]
+    },
+    {
+      "requirement": "Long ciphertexts (~2000 bytes) must produce correct plaintext for every byte (instruction: 'recovers the plaintext')",
+      "assumed_instead": "Only verify the first few hundred bytes of output and ignore the tail",
+      "hidden_test_input": "A 2000-byte ciphertext where the full plaintext must match exactly",
+      "why_missed": "Agent tests only on medium-length practice pairs and assumes PRGA generates correctly for any length",
+      "caught_by_tests": ["test_decrypt_english_random", "test_decrypt_mixed_random"]
+    },
+    {
+      "requirement": "Binary-ish payloads (mostly non-printable bytes after the header) must be decrypted (README states 'raw bytes' as a payload type)",
+      "assumed_instead": "Use English-text heuristics (printable ASCII check) for candidate verification during brute force",
+      "hidden_test_input": "A ciphertext whose plaintext is 92% non-printable bytes after the 8-byte header",
+      "why_missed": "The agent's verification step checks if decrypted bytes 'look like text' rather than checking against the known header keystream",
+      "caught_by_tests": ["test_decrypt_binary_random"]
+    },
+    {
+      "requirement": "Per-ciphertext time limit of 60 seconds (stated in instruction.md)",
+      "assumed_instead": "Implement a correct but inefficient pure-Python 2^24 brute force that takes 45-90 seconds depending on optimization",
+      "hidden_test_input": "Any hidden ciphertext; the test enforces a 60-second subprocess timeout",
+      "why_missed": "The agent

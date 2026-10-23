@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+a b c d e,2024/1/5,12abc,7,AB12
+São Paulo,2024-01-31, ,3.9,AB12
+a,b,c
+x, ,-0.0,10,ZZTOP
+ny,007,-12.345,3,ab
+Malmö,20240105,1000000000,4e2,Ünï
+NYC-West,abc, -3 ,,ab
+NYC-West,,0x1A,10,
+São Paulo,10,,-2.5,AB12
+ lon,20240105,12abc,4e2,ab
+
+los angeles,abc,12abc,7,
+ny,20240105,0x1A,abc,
+los angeles,2024-01-05,3.,0,12345
+x,,12.50,abc,AB12
+PAR1, ,250,10,ZZTOP
+x, ,1e3, 2 ,AB12
+los angeles,2024-01-05,abc,10,Ünï

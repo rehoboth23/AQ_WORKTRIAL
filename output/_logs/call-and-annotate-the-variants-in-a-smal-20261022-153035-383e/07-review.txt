@@ -1,0 +1,19 @@
+Looking through the instruction.md and all shipped documents against the 18 checks, preserved behaviors, and knob definitions:
+
+1. **MISSING RULE**: All rules tested in checks 0–18 are stated in `docs/nomenclature.md` and/or `docs/sop.md`, with instruction.md providing accurate summaries. The combination edges (3' rule + minus strand, multi-exon + minus strand, in-frame deletion) follow directly from combining individually stated rules, which is fair per knob 2.
+
+2. **LEAKED ANSWER**: The examples in `nomenclature.md` (e.g., Gene BETA at genomic 695 → c.105, Gene GAMMA at genomic 1105 → c.156) are pedagogical examples in the authoritative rule document. They are part of the specification, not leaked hidden-test answers. Practice samples P01–P06 are explicitly provided for validation, which is legitimate.
+
+3. **ORACLE**: No reference implementation is pointed to. `tools/align.py` is the vendored tool the agent is instructed to use. No issues.
+
+4. **UNSTATED FORMAT**: "Rounded to 2 decimal places (e.g. 0.45, not 45 or 0.449)" is clear about the format. The column header is specified exactly. Protein notation formats are all given with examples. No unstated formats found.
+
+5. **MISSING CONTRACT LINE**: Exit code (0 on success, non-zero on error), output format, sorting, and all constraints are stated.
+
+6. **STATED ANSWER**: This is a coding task, not an inferred-rules task. The examples in the nomenclature guide are part of the specification.
+
+7. **STUDY GUIDE**: No tips, "pay attention to", "boundary matters", or "public tests don't cover X" sentences found. The "Key Rules" section restates factual requirements, not study advice.
+
+All checks the tests make follow from what the agent can see. The interface (CLI, inputs, outputs, exit codes) is fully stated.
+
+VERDICT: clean

@@ -1,0 +1,8 @@
+branch,posted,amount,units,code
+,007,12.50, 2 ,ZZTOP
+nyc-east,20240105,-0,4e2,AB12
+berlin,2024/1/5,,0
+,20240131,.5,10,Q
+Zürich,2024-01-31,3.,10,x
+ lon,007,12abc,abc
+nyc-east,20240105,10,1,AB12

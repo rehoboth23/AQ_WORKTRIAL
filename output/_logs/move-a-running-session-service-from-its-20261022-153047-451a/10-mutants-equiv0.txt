@@ -1,0 +1,19 @@
+Looking at the two solutions, the key difference is that the correct solution sets `_dual_write = True` during migration (inside `_db_lock`), while the mutant skips dual-write entirely and just copies then switches.
+
+However, examining the locking strategy: **all session operations** (`_create_session`, `_get_session`, `_update_session`, `_delete_session`) and the migration's copy+switch all acquire `_db_lock`. This means the entire migration (including the copy and the backend switch) executes atomically with respect to any concurrent write operations. No other thread can perform a write while migration holds `_db_lock`.
+
+In the correct solution, `_dual_write = True` is set inside `_db_lock`, but since no other thread can observe it (they're all blocked on the lock), the dual-write flag is never seen by concurrent operations. After the lock is released, `_dual_write = False` in both solutions, and `_backend = "logstore"` in both solutions.
+
+Therefore, for any sequence of operations:
+- Writes that complete before migration: picked up by the SQLite copy
+- Writes that start after migration: go to logstore (since `_backend = "logstore"`)
+- Writes "during" migration: impossible due to `_db_lock` serialization
+
+No window exists where a write could arrive between the copy and the switch without being blocked by the lock.
+
+```json
+{"equivalent": true,
+ "distinguishing_case": "",
+ "reason": "The coarse-grained _db_lock serializes all session operations with the migration's copy+switch, so no concurrent write can observe _dual_write=True or slip between the copy and switch. Dual-write is correct in principle but redundant given this locking strategy; both solutions produce identical results for all possible inputs."
+}
+```

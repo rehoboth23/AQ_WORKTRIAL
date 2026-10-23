@@ -1,0 +1,22 @@
+branch,posted,amount,units,code
+london,9,0.1,3.9
+,9,99.999,3
+ lon,9,1E2,0,Q
+ lon,9,0.1, 2 ,ZZTOP
+São Paulo,2024/1/5,99.999, 2 ,AB12
+Malmö,,abc,7
+  ,2024-01-05, -3 ,3.9
+london,abc,,0,Ünï
+nyc-east,abc,1999.95,,
+ny,abc,1000000000,7,Q
+los angeles,20240105, -3 ,7,ZZTOP
+ , , 
+los angeles,10,-12.345,0
+los angeles, 20231231 ,12.50,3.9
+garbage
+PAR1,20240131,0.2,-2.5,ZZTOP
+london,2024-01-05,abc,3.9,ab
+ lon,,99.999,0,Q
+berlin,,0.1, 2 ,Q,extra
+ lon,2024-01-31,1999.95,3.9,ZZTOP,extra
+london,20240105,10,1,AB12

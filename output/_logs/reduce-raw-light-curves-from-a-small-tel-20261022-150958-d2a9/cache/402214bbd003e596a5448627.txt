@@ -1,0 +1,907 @@
+<<<FILE instruction.md>>>
+# Variable Star Light Curve Reducer
+
+The observatory's automated reduction pipeline is broken and the original author has left. You must write a working `reduce.py` that processes raw nightly observation CSVs into calibrated magnitudes and period estimates for each variable star.
+
+## Interface
+
+```
+python3 /app/reduce.py NIGHTS_DIR
+```
+
+- `NIGHTS_DIR` is a directory containing `catalogue.csv` and one or more `night_*.csv` files.
+- The program writes its output to `/app/out/stars.csv`.
+- Exit status is 0 in all cases, including when some or all output values are NA.
+
+## Output Format
+
+A CSV file with header row `star_id,period_days,amplitude_mag,mean_mag` and one row per target star from the catalogue, sorted by `star_id` in lexicographic order.
+
+- `period_days`: 6 significant figures (e.g., `0.770000`, `1.23457`, or `1.23457e+01`) or the literal string `NA`
+- `amplitude_mag`: 3 decimal places (e.g., `0.300`) or `NA`
+- `mean_mag`: 3 decimal places (e.g., `12.500`) or `NA`
+
+## Contract
+
+- One row per target star from the catalogue, sorted by `star_id`.
+- Stars with fewer than 3 nights of data: `period_days = NA`, `amplitude_mag = NA`; `mean_mag` is still computed if a valid comparison star exists.
+- Stars with no valid comparison star after vetting per the conventions: all three values are `NA`.
+- Exit status is 0 in all cases.
+- The field catalogue (`catalogue.csv`) must not be modified.
+- Every step of the reduction follows `/app/docs/conventions.md` v3.2.
+
+## Data
+
+Practice data is in `/app/data/`:
+- `catalogue.csv`: 8 comparison stars (C001–C008) and 12 target stars (V001–V012) with RA, Dec, and catalogue magnitudes.
+- `night_001.csv` through `night_010.csv`: raw observations with columns `star_id, jd, flux, flux_err, airmass`.
+
+## Verification
+
+A public test script is available at `/app/tests_public/run_public_tests.py`. It checks basic pipeline correctness on two clean stars.
+
+Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.
+<<<END>>>
+<<<FILE environment/Dockerfile>>>
+FROM python:3.12-slim-bookworm
+
+RUN pip install --no-cache-dir numpy scipy
+
+WORKDIR /app
+
+COPY docs/ /app/docs/
+COPY reduce.py /app/reduce.py
+COPY tests_public/ /app/tests_public/
+
+# Generate practice data from seed 42 and remove generator
+COPY generate_data.py /tmp/generate_data.py
+RUN python3 /tmp/generate_data.py 42 /app/data && rm /tmp/generate_data.py
+<<<END>>>
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""Generate practice variable star observation data from seed 42.
+
+Produces:
+  catalogue.csv  — star_id, ra_deg, dec_deg, catalog_mag, star_type
+  night_001.csv .. night_010.csv — star_id, jd, flux, flux_err, airmass
+
+Usage:
+  python3 generate_data.py [SEED] [OUTPUT_DIR]
+  (defaults: seed=42, output_dir=/app/data)
+"""
+
+import sys
+import os
+import csv
+import math
+import numpy as np
+
+# ── Physical constants ──────────────────────────────────────────────
+K_EXT = 0.15            # extinction coefficient, mag/airmass
+ZP = 2_000_000_000.0    # instrumental zero point, ADU
+READ_NOISE = 25.0       # read-noise variance, ADU²
+
+# ── Night JDs (spanning ~90 days, ~1-day spacing for aliasing) ─────
+NIGHT_JDS = [
+    2459000.5,          # night_001
+    2459001.5,          # night_002
+    2459002.5,          # night_003
+    2459003.5,          # night_004
+    2459005.5,          # night_005  (1-day gap)
+    2459008.5,          # night_006  (2-day gap)
+    2459015.5,          # night_007  (7-day gap)
+    2459030.5,          # night_008  (15-day gap)
+    2459060.5,          # night_009  (30-day gap)
+    2459090.5,          # night_010  (30-day gap)
+]
+
+# ── Star definitions ────────────────────────────────────────────────
+# Comparison stars: (id, ra, dec, cat_mag, saturated, variable,
+#                    var_amp, var_period, var_phase)
+COMP_STARS = [
+    ('C001', 120.00, 30.00, 12.0, False, False, 0.0, 0.0, 0.0),
+    ('C002', 120.10, 30.10, 12.5, False, False, 0.0, 0.0, 0.0),
+    ('C003', 120.20, 30.00, 13.0, False, False, 0.0, 0.0, 0.0),
+    ('C004', 119.90, 30.20, 13.5, False, False, 0.0, 0.0, 0.0),
+    ('C005', 120.30, 29.90, 14.0, False, False, 0.0, 0.0, 0.0),
+    # C006: intrinsically variable (σ(m_inst) ≈ 0.05 mag > 0.03 threshold)
+    ('C006', 120.10, 29.80, 11.0, False, True,  0.07, 3.0, 0.5),
+    # C007: brightest (mag 10.5), flux > 50 000 ADU on good nights
+    ('C007', 119.80, 30.10, 10.5, True,  False, 0.0, 0.0, 0.0),
+    ('C008', 120.20, 30.20, 11.5, False, False, 0.0, 0.0, 0.0),
+]
+
+# Target stars: (id, ra, dec, mean_mag, period, amplitude,
+#                phase_offset_radians, night_indices)
+TARGET_STARS = [
+    # near-alias (8 nights each)
+    ('V001', 120.05, 30.05, 12.5, 0.77, 0.30, 0.0, [0,1,2,3,4,5,6,7]),
+    ('V002', 120.15, 30.15, 13.0, 0.55, 0.25, 0.5, [0,1,2,3,4,5,6,7]),
+    ('V003', 120.25, 30.05, 12.8, 0.91, 0.35, 1.0, [0,1,2,3,4,5,6,8]),
+    # almost-exactly-1-day (8 nights each)
+    ('V004', 119.95, 30.25, 13.2, 1.06, 0.28, 1.5, [0,1,2,3,4,5,6,9]),
+    ('V005', 120.35, 29.95, 12.3, 1.10, 0.32, 2.0, [0,1,2,3,4,5,6,8]),
+    ('V006', 120.15, 29.85, 13.5, 0.99, 0.20, 2.5, [0,1,2,3,4,5,6,9]),
+    # clean, far from aliases
+    ('V007', 120.05, 30.15, 12.0, 3.50, 0.40, 3.0, [0,1,2,3,4,5,6]),
+    ('V008', 120.25, 30.15, 12.7, 5.20, 0.30, 0.0, [0,1,2,3,5,6,7]),
+    ('V009', 119.85, 30.05, 13.8, 12.0, 0.45, 0.5, [0,1,2,3,4,5,6,7]),
+    # sparse: <3 nights  (period must be NA; mean_mag still reported)
+    ('V010', 120.35, 30.05, 12.4, 2.00, 0.25, 1.0, [0,7]),     # 30-day gap
+    ('V011', 119.95, 29.95, 13.3, 4.00, 0.30, 1.5, [0,8]),     # 60-day gap
+    ('V012', 120.05, 29.85, 12.9, 6.00, 0.22, 2.0, [0,9]),     # 90-day gap
+]
+
+
+def deg2rad(deg):
+    return deg * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    """JD → HJD using the heliocentric correction (conventions §1)."""
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X_sun = R * math.cos(lam)
+    Y_sun = R * math.cos(eps) * math.sin(lam)
+    Z_sun = R * math.sin(eps) * math.sin(lam)
+    corr = (X_sun * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y_sun * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z_sun * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def mag_to_flux(mag, airmass, transparency):
+    """Apparent magnitude → expected flux (ADU)."""
+    m_obs = mag + K_EXT * airmass
+    return ZP * (10.0 ** (-0.4 * m_obs)) * transparency
+
+
+def generate_field(seed, output_dir):
+    rng = np.random.default_rng(seed)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Write catalogue ─────────────────────────────────────────────
+    cat_path = os.path.join(output_dir, 'catalogue.csv')
+    with open(cat_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['star_id', 'ra_deg', 'dec_deg', 'catalog_mag', 'star_type'])
+        for cs in COMP_STARS:
+            w.writerow([cs[0], f'{cs[1]:.6f}', f'{cs[2]:.6f}',
+                        f'{cs[3]:.3f}', 'comp'])
+        for ts in TARGET_STARS:
+            w.writerow([ts[0], f'{ts[1]:.6f}', f'{ts[2]:.6f}',
+                        f'{ts[3]:.3f}', 'target'])
+
+    # ── Per-night observing conditions ──────────────────────────────
+    night_cond = []
+    for _ in NIGHT_JDS:
+        night_cond.append({
+            'transparency': 0.98 + 0.04 * rng.random(),   # 0.98 – 1.02
+            'base_airmass': 1.15 + 0.50 * rng.random(),   # 1.15 – 1.65
+        })
+
+    # ── Write night files ───────────────────────────────────────────
+    for ni, jd in enumerate(NIGHT_JDS):
+        nc = night_cond[ni]
+        t = nc['transparency']
+        ba = nc['base_airmass']
+
+        path = os.path.join(output_dir, f'night_{ni+1:03d}.csv')
+        with open(path, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['star_id', 'jd', 'flux', 'flux_err', 'airmass'])
+
+            # Comparison stars (observed every night)
+            for cs in COMP_STARS:
+                sid, ra_d, dec_d, cat_mag, is_sat, is_var, va, vp, vph = cs
+                airmass = ba + 0.05 * (2.0 * rng.random() - 1.0)
+                ra_r = deg2rad(ra_d)
+                de_r = deg2rad(dec_d)
+                hjd = compute_hjd(jd, ra_r, de_r)
+
+                if is_var:
+                    m_true = cat_mag + va * math.sin(2*math.pi * hjd / vp + vph)
+                else:
+                    m_true = cat_mag
+
+                flux = mag_to_flux(m_true, airmass, t)
+                ferr = math.sqrt(abs(flux) + READ_NOISE)
+                fobs = flux + rng.normal(0.0, ferr)
+
+                w.writerow([sid, f'{jd:.6f}', f'{fobs:.2f}',
+                            f'{ferr:.2f}', f'{airmass:.4f}'])
+
+            # Target stars (only on assigned nights)
+            for ts in TARGET_STARS:
+                sid, ra_d, dec_d, mmag, per, amp, ph_off, nights = ts
+                if ni not in nights:
+                    continue
+                airmass = ba + 0.10 * (2.0 * rng.random() - 1.0)
+                ra_r = deg2rad(ra_d)
+                de_r = deg2rad(dec_d)
+                hjd = compute_hjd(jd, ra_r, de_r)
+
+                phase = 2.0 * math.pi * hjd / per + ph_off
+                m_true = mmag + amp * math.sin(phase)
+
+                flux = mag_to_flux(m_true, airmass, t)
+                ferr = math.sqrt(abs(flux) + READ_NOISE)
+                fobs = flux + rng.normal(0.0, ferr)
+
+                w.writerow([sid, f'{jd:.6f}', f'{fobs:.2f}',
+                            f'{ferr:.2f}', f'{airmass:.4f}'])
+
+
+if __name__ == '__main__':
+    seed = int(sys.argv[1]) if len(sys.argv) > 1 else 42
+    out = sys.argv[2] if len(sys.argv) > 2 else '/app/data'
+    generate_field(seed, out)
+<<<END>>>
+<<<FILE environment/tests_public/run_public_tests.py>>>
+#!/usr/bin/env python3
+"""Public tests for the variable star reduction pipeline.
+
+Generates two clean (non-alias) star fields from seeds 200 and 201,
+runs reduce.py on each, and verifies:
+  - period within 1% of the true period
+  - mean_mag within 0.05 mag of the true mean
+
+Usage:
+    python3 /app/tests_public/run_public_tests.py
+"""
+
+import sys
+import os
+import csv
+import math
+import shutil
+import tempfile
+import subprocess
+
+try:
+    import numpy as np
+except ImportError:
+    print("ERROR: numpy is required but not installed.")
+    sys.exit(1)
+
+# ── Constants (must match the conventions document) ─────────────────
+K_EXT = 0.15
+ZP = 2_000_000_000.0
+READ_NOISE = 25.0
+
+
+def deg2rad(deg):
+    return deg * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    """JD → HJD (conventions §1)."""
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X = R * math.cos(lam)
+    Y = R * math.cos(eps) * math.sin(lam)
+    Z = R * math.sin(eps) * math.sin(lam)
+    corr = (X * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def mag_to_flux(mag, airmass, transparency):
+    m_obs = mag + K_EXT * airmass
+    return ZP * (10.0 ** (-0.4 * m_obs)) * transparency
+
+
+def _field_params(seed):
+    """Return (period, mean_mag, amplitude, ra, dec) for the given seed."""
+    if seed == 200:
+        return 3.5, 12.5, 0.30, 120.0, 30.0
+    elif seed == 201:
+        return 7.2, 13.0, 0.35, 125.0, 25.0
+    else:
+        raise ValueError(f"No field params for seed {seed}")
+
+
+def generate_clean_field(seed, output_dir):
+    """Write catalogue.csv + night_001..006.csv for a clean single-target field."""
+    rng = np.random.default_rng(seed)
+    period, mean_mag, amplitude, ra, dec = _field_params(seed)
+
+    # 3 stable, non-saturated comparison stars
+    comps = [
+        ('C001', ra + 0.10, dec + 0.10, 11.5),
+        ('C002', ra - 0.10, dec + 0.10, 12.0),
+        ('C003', ra + 0.10, dec - 0.10, 12.5),
+    ]
+    target = ('V001', ra, dec, mean_mag)
+
+    # Night JDs: 2–5 day spacing (avoids 1-day aliasing)
+    night_jds = [2459000.5, 2459002.5, 2459005.5,
+                 2459009.5, 2459014.5, 2459020.5]
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Catalogue
+    with open(os.path.join(output_dir, 'catalogue.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['star_id', 'ra_deg', 'dec_deg', 'catalog_mag', 'star_type'])
+        for c in comps:
+            w.writerow([c[0], f'{c[1]:.6f}', f'{c[2]:.6f}', f'{c[3]:.3f}', 'comp'])
+        w.writerow([target[0], f'{target[1]:.6f}', f'{target[2]:.6f}',
+                    f'{target[3]:.3f}', 'target'])
+
+    # Night files
+    for ni, jd in enumerate(night_jds):
+        transparency = 0.98 + 0.04 * rng.random()
+        base_am = 1.15 + 0.30 * rng.random()
+
+        with open(os.path.join(output_dir, f'night_{ni+1:03d}.csv'),
+                  'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['star_id', 'jd', 'flux', 'flux_err', 'airmass'])
+
+            for c in comps:
+                sid, cra, cdec, cmag = c
+                am = base_am + 0.05 * (2.0 * rng.random() - 1.0)
+                m_obs = cmag + K_EXT * am
+                flux = ZP * (10.0 ** (-0.4 * m_obs)) * transparency
+                ferr = math.sqrt(abs(flux) + READ_NOISE)
+                fobs = flux + rng.normal(0.0, ferr)
+                w.writerow([sid, f'{jd:.6f}', f'{fobs:.2f}',
+                            f'{ferr:.2f}', f'{am:.4f}'])
+
+            sid, tra, tdec, tmag = target
+            am = base_am + 0.10 * (2.0 * rng.random() - 1.0)
+            hjd = compute_hjd(jd, deg2rad(tra), deg2rad(tdec))
+            phase = 2.0 * math.pi * hjd / period
+            m_true = tmag + amplitude * math.sin(phase)
+            m_obs = m_true + K_EXT * am
+            flux = ZP * (10.0 ** (-0.4 * m_obs)) * transparency
+            ferr = math.sqrt(abs(flux) + READ_NOISE)
+            fobs = flux + rng.normal(0.0, ferr)
+            w.writerow([sid, f'{jd:.6f}', f'{fobs:.2f}',
+                        f'{ferr:.2f}', f'{am:.4f}'])
+
+    return {'period': period, 'mean_mag': mean_mag, 'amplitude': amplitude}
+
+
+def run_single_test(seed):
+    """Run reduce.py on a generated field and check the output."""
+    tmp = tempfile.mkdtemp(prefix=f'pubtest_{seed}_')
+    try:
+        truth = generate_clean_field(seed, tmp)
+
+        result = subprocess.run(
+            ['python3', '/app/reduce.py', tmp],
+            capture_output=True, text=True, timeout=60
+        )
+
+        if result.returncode != 0:
+            print(f'  FAIL: reduce.py exited with code {result.returncode}')
+            if result.stderr:
+                print(f'  stderr: {result.stderr[:300]}')
+            return False
+
+        out_path = '/app/out/stars.csv'
+        if not os.path.exists(out_path):
+            print('  FAIL: /app/out/stars.csv not produced')
+            return False
+
+        with open(out_path) as f:
+            rows = list(csv.DictReader(f))
+
+        if not rows:
+            print('  FAIL: stars.csv has no data rows')
+            return False
+
+        row = None
+        for r in rows:
+            if r['star_id'] == 'V001':
+                row = r
+                break
+        if row is None:
+            print('  FAIL: V001 missing from output')
+            return False
+
+        ps = row['period_days']
+        if ps == 'NA':
+            print(f"  FAIL: period is NA (expected {truth['period']:.6f})")
+            return False
+        try:
+            period = float(ps)
+        except ValueError:
+            print(f'  FAIL: period not parseable: {ps!r}')
+            return False
+        if abs(period - truth['period']) / truth['period'] > 0.01:
+            print(f"  FAIL: period {period:.6f} not within 1% of "
+                  f"{truth['period']:.6f}")
+            return False
+
+        ms = row['mean_mag']
+        if ms == 'NA':
+            print(f"  FAIL: mean_mag is NA (expected {truth['mean_mag']:.3f})")
+            return False
+        try:
+            mean_mag = float(ms)
+        except ValueError:
+            print(f'  FAIL: mean_mag not parseable: {ms!r}')
+            return False
+        if abs(mean_mag - truth['mean_mag']) > 0.05:
+            print(f"  FAIL: mean_mag {mean_mag:.3f} not within 0.05 of "
+                  f"{truth['mean_mag']:.3f}")
+            return False
+
+        print(f"  PASS: period={period:.6f} (true={truth['period']:.6f}), "
+              f"mean_mag={mean_mag:.3f} (true={truth['mean_mag']:.3f})")
+        return True
+
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    print('=' * 60)
+    print('Public tests for variable star reduction pipeline')
+    print('=' * 60)
+    print()
+
+    all_ok = True
+    for seed in (200, 201):
+        print(f'Seed {seed}:')
+        if not run_single_test(seed):
+            all_ok = False
+        print()
+
+    if all_ok:
+        print('All public tests passed.')
+        sys.exit(0)
+    else:
+        print('Some public tests FAILED.')
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat > /app/reduce.py << 'PYEOF'
+#!/usr/bin/env python3
+"""Variable star light curve reducer — full implementation."""
+
+import sys
+import os
+import csv
+import math
+import numpy as np
+from scipy.signal import lombscargle
+
+
+def deg2rad(deg):
+    return deg * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    """Convert JD to HJD (conventions §1)."""
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X = R * math.cos(lam)
+    Y = R * math.cos(eps) * math.sin(lam)
+    Z = R * math.sin(eps) * math.sin(lam)
+    corr = (X * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def format_period(val, sig_figs=6):
+    """Format a float with the specified number of significant figures."""
+    if val == 0:
+        return '0.00000'
+    mag = math.floor(math.log10(abs(val)))
+    n_dec = sig_figs - 1 - mag
+    if n_dec < 0:
+        return f'{val:.{sig_figs - 1}e}'
+    return f'{val:.{n_dec}f}'
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(0)
+
+    nights_dir = sys.argv[1]
+    output_dir = "/app/out"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Read catalogue ──────────────────────────────────────────────
+    cat_path = os.path.join(nights_dir, "catalogue.csv")
+    comp_stars = []
+    target_stars = []
+
+    with open(cat_path) as f:
+        for row in csv.DictReader(f):
+            sid = row['star_id']
+            ra = float(row['ra_deg'])
+            dec = float(row['dec_deg'])
+            cmag = float(row['catalog_mag'])
+            stype = row['star_type']
+            entry = {'star_id': sid, 'ra_deg': ra, 'dec_deg': dec, 'catalog_mag': cmag}
+            if stype == 'comp':
+                comp_stars.append(entry)
+            elif stype == 'target':
+                target_stars.append(entry)
+
+    # ── Read night observations ─────────────────────────────────────
+    all_obs = {}
+    if os.path.isdir(nights_dir):
+        for fname in sorted(os.listdir(nights_dir)):
+            if fname.startswith("night_") and fname.endswith(".csv"):
+                with open(os.path.join(nights_dir, fname)) as f:
+                    for row in csv.DictReader(f):
+                        sid = row['star_id']
+                        if sid not in all_obs:
+                            all_obs[sid] = []
+                        all_obs[sid].append({
+                            'jd': float(row['jd']),
+                            'flux': float(row['flux']),
+                            'flux_err': float(row['flux_err']),
+                            'airmass': float(row['airmass']),
+                        })
+
+    # ── Vet comparison stars (§2) ───────────────────────────────────
+    valid_comps = []
+    for cs in comp_stars:
+        sid = cs['star_id']
+        obs_list = all_obs.get(sid, [])
+
+        # Saturation check
+        if any(o['flux'] > 50000 for o in obs_list):
+            continue
+
+        # Variability check: σ(m_inst) across nights
+        m_insts = []
+        for o in obs_list:
+            if o['flux'] > 0:
+                m_insts.append(-2.5 * math.log10(o['flux']))
+        if len(m_insts) < 2:
+            continue
+        sigma = float(np.std(m_insts, ddof=0))
+        if sigma > 0.03:
+            continue
+
+        valid_comps.append(cs)
+
+    # Select brightest valid comp (lowest catalog_mag)
+    if valid_comps:
+        valid_comps.sort(key=lambda c: c['catalog_mag'])
+        selected_comp = valid_comps[0]
+    else:
+        selected_comp = None
+
+    # ── Process each target star ────────────────────────────────────
+    results = []
+    for ts in target_stars:
+        sid = ts['star_id']
+
+        if selected_comp is None:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA', 'mean_mag': 'NA'})
+            continue
+
+        target_obs = all_obs.get(sid, [])
+        comp_obs = all_obs.get(selected_comp['star_id'], [])
+
+        # Match by JD
+        comp_by_jd = {}
+        for co in comp_obs:
+            jd_key = round(co['jd'], 4)
+            comp_by_jd[jd_key] = co
+
+        cal_mags = []
+        cal_mag_errs = []
+        hjds_target = []
+
+        for to in target_obs:
+            jd_key = round(to['jd'], 4)
+            if jd_key not in comp_by_jd:
+                continue
+            co = comp_by_jd[jd_key]
+            if to['flux'] <= 0 or co['flux'] <= 0:
+                continue
+
+            # §3: Instrumental magnitudes
+            m_inst_t = -2.5 * math.log10(to['flux'])
+            m_inst_c = -2.5 * math.log10(co['flux'])
+
+            # Differential magnitude
+            delta_m = m_inst_t - m_inst_c
+
+            # Airmass correction
+            delta_m_corr = delta_m - 0.15 * (to['airmass'] - co['airmass'])
+
+            # Calibrated magnitude
+            m_cal = delta_m_corr + selected_comp['catalog_mag']
+
+            # Error propagation
+            sigma_m_t = 1.0857 * to['flux_err'] / to['flux']
+            sigma_m_c = 1.0857 * co['flux_err'] / co['flux']
+            sigma_m_cal = math.sqrt(sigma_m_t ** 2 + sigma_m_c ** 2)
+
+            # §1: HJD
+            hjd = compute_hjd(to['jd'], deg2rad(ts['ra_deg']),
+                               deg2rad(ts['dec_deg']))
+
+            cal_mags.append(m_cal)
+            cal_mag_errs.append(sigma_m_cal)
+            hjds_target.append(hjd)
+
+        if not cal_mags:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA', 'mean_mag': 'NA'})
+            continue
+
+        mean_mag_val = float(np.mean(cal_mags))
+        n_nights = len(cal_mags)
+
+        # §4: <3 nights → period=NA, amplitude=NA
+        if n_nights < 3:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA',
+                            'mean_mag': f'{mean_mag_val:.3f}'})
+            continue
+
+        # ── Period analysis (§4) ────────────────────────────────────
+        t = np.array(hjds_target)
+        y = np.array(cal_mags)
+        yerr = np.array(cal_mag_errs)
+
+        T_base = float(t.max() - t.min())
+        if T_base <= 0:
+            results.append({'star_id': sid, 'period_days': 'NA',
+                            'amplitude_mag': 'NA',
+                            'mean_mag': f'{mean_mag_val:.3f}'})
+            continue
+
+        # Lomb-Scargle periodogram
+        freq_res = 1.0 / T_base
+        min_freq = 1.0 / 50.0
+        max_freq = 1.0 / 0.1
+        oversampling = 10
+        n_freq = int(oversampling * (max_freq - min_freq) / freq_res) + 1
+        freqs = np.linspace(min_freq, max_freq, n_freq)
+
+        y_centered = y - y.mean()
+        angular_freqs = 2.0 * np.pi * freqs
+        pgram = lombscargle(t, y_centered, angular_freqs, normalize=True)
+
+        best_idx = int(np.argmax(pgram))
+        best_freq = freqs[best_idx]
+        best_power = pgram[best_idx]
+        P_best = 1.0 / best_freq
+
+        # Alias rejection (§4)
+        candidates = [(P_best, best_power)]
+        for sign in [+1, -1]:
+            f_alias = abs(best_freq + sign * 1.0)
+            if f_alias > 0:
+                P_alias = 1.0 / f_alias
+                if 0.1 <= P_alias <= 50.0:
+                    alias_idx = int(np.argmin(np.abs(freqs - f_alias)))
+                    alias_power = pgram[alias_idx]
+                    if alias_power > 0.5 * best_power:
+                        candidates.append((P_alias, alias_power))
+
+        if len(candidates) <= 1:
+            final_period = P_best
+        else:
+            best_chi2_red = float('inf')
+            best_period = P_best
+            for P_cand, _ in candidates:
+                phi = (t / P_cand) % 1.0
+                A = np.column_stack([
+                    np.ones(len(phi)),
+                    np.sin(2 * np.pi * phi),
+                    np.cos(2 * np.pi * phi),
+                    np.sin(4 * np.pi * phi),
+                    np.cos(4 * np.pi * phi),
+                    np.sin(6 * np.pi * phi),
+                    np.cos(6 * np.pi * phi),
+                ])
+                W = np.diag(1.0 / (yerr ** 2))
+                try:
+                    coeffs = np.linalg.solve(A.T @ W @ A, A.T @ W @ y)
+                except np.linalg.LinAlgError:
+                    continue
+                y_model = A @ coeffs
+                chi2 = float(np.sum(((y - y_model) / yerr) ** 2))
+                chi2_red = chi2 / (len(y) - 7)
+                if chi2_red < best_chi2_red:
+                    best_chi2_red = chi2_red
+                    best_period = P_cand
+            final_period = best_period
+
+        # ── Amplitude from 3-harmonic model (§5) ───────────────────
+        phi_data = (t / final_period) % 1.0
+        A_data = np.column_stack([
+            np.ones(len(phi_data)),
+            np.sin(2 * np.pi * phi_data),
+            np.cos(2 * np.pi * phi_data),
+            np.sin(4 * np.pi * phi_data),
+            np.cos(4 * np.pi * phi_data),
+            np.sin(6 * np.pi * phi_data),
+            np.cos(6 * np.pi * phi_data),
+        ])
+        W = np.diag(1.0 / (yerr ** 2))
+        coeffs = np.linalg.solve(A_data.T @ W @ A_data, A_data.T @ W @ y)
+
+        phi_eval = np.linspace(0, 1, 100, endpoint=False)
+        A_eval = np.column_stack([
+            np.ones(100),
+            np.sin(2 * np.pi * phi_eval),
+            np.cos(2 * np.pi * phi_eval),
+            np.sin(4 * np.pi * phi_eval),
+            np.cos(4 * np.pi * phi_eval),
+            np.sin(6 * np.pi * phi_eval),
+            np.cos(6 * np.pi * phi_eval),
+        ])
+        model_vals = A_eval @ coeffs
+        amplitude = float(0.5 * (model_vals.max() - model_vals.min()))
+
+        period_str = format_period(final_period, 6)
+        results.append({
+            'star_id': sid,
+            'period_days': period_str,
+            'amplitude_mag': f'{amplitude:.3f}',
+            'mean_mag': f'{mean_mag_val:.3f}',
+        })
+
+    # Sort by star_id
+    results.sort(key=lambda r: r['star_id'])
+
+    # Write output
+    output_path = os.path.join(output_dir, "stars.csv")
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['star_id', 'period_days', 'amplitude_mag', 'mean_mag'])
+        for r in results:
+            writer.writerow([r['star_id'], r['period_days'],
+                             r['amplitude_mag'], r['mean_mag']])
+
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
+PYEOF
+<<<END>>>
+<<<FILE tests/test_outputs.py>>>
+"""Hidden tests for the variable star reduction pipeline.
+
+Uses a seeded simulator to generate fields with known ground truth,
+runs reduce.py, and verifies the output.
+"""
+
+import pytest
+import subprocess
+import tempfile
+import shutil
+import os
+import csv
+import math
+import random
+import hashlib
+
+# ── Constants ───────────────────────────────────────────────────────
+K_EXT = 0.15
+ZP = 2_000_000_000.0
+READ_NOISE = 25.0
+
+
+def deg2rad(deg):
+    return deg * math.pi / 180.0
+
+
+def compute_hjd(jd, ra_rad, dec_rad):
+    """JD → HJD (conventions §1)."""
+    n = jd - 2451545.0
+    g = deg2rad(357.529 + 0.98560028 * n)
+    L = deg2rad(280.459 + 0.98564736 * n)
+    lam = L + deg2rad(1.915) * math.sin(g)
+    eps = deg2rad(23.439 - 0.00000036 * n)
+    R = 1.00014 - 0.01672 * math.cos(g)
+    X = R * math.cos(lam)
+    Y = R * math.cos(eps) * math.sin(lam)
+    Z = R * math.sin(eps) * math.sin(lam)
+    corr = (X * math.cos(ra_rad) * math.cos(dec_rad) +
+            Y * math.sin(ra_rad) * math.cos(dec_rad) +
+            Z * math.sin(dec_rad)) / 173.144632
+    return jd + corr
+
+
+def mag_to_flux(mag, airmass, transparency):
+    m_obs = mag + K_EXT * airmass
+    return ZP * (10.0 ** (-0.4 * m_obs)) * transparency
+
+
+# ── Field generator (pure stdlib) ───────────────────────────────────
+
+def generate_field(output_dir, seed, targets, comps, night_jds,
+                   target_airmass_offset=0.0):
+    """Generate a variable star observation field.
+
+    Args:
+        output_dir: where to write CSV files
+        seed: random seed for noise
+        targets: list of dicts with keys:
+            star_id, ra, dec, mean_mag, period, amplitude,
+            phase_offset, night_indices (0-based into night_jds)
+        comps: list of dicts with keys:
+            star_id, ra, dec, catalog_mag,
+            saturated (bool), variable (bool),
+            var_amp, var_period, var_phase
+        night_jds: list of JD values
+        target_airmass_offset: extra airmass added to all target obs
+
+    Returns:
+        dict mapping target star_id → ground-truth dict
+    """
+    rng = random.Random(seed)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Write catalogue
+    with open(os.path.join(output_dir, 'catalogue.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['star_id', 'ra_deg', 'dec_deg', 'catalog_mag', 'star_type'])
+        for c in comps:
+            w.writerow([c['star_id'], f"{c['ra']:.6f}", f"{c['dec']:.6f}",
+                        f"{c['catalog_mag']:.3f}", 'comp'])
+        for t in targets:
+            w.writerow([t['star_id'], f"{t['ra']:.6f}", f"{t['dec']:.6f}",
+                        f"{t['mean_mag']:.3f}", 'target'])
+
+    # Per-night conditions
+    night_conds = []
+    for _ in night_jds:
+        night_conds.append({
+            'transparency': 0.98 + 0.04 * rng.random(),
+            'base_airmass': 1.15 + 0.50 * rng.random(),
+        })
+
+    # Write night files
+    for ni, jd in enumerate(night_jds):
+        nc = night_conds[ni]
+        transp = nc['transparency']
+        ba = nc['base_airmass']
+
+        with open(os.path.join(output_dir, f'night_{ni+1:03d}.csv'),
+                  'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['star_id', 'jd', 'flux', 'flux_err', 'airmass'])
+
+            for c in comps:
+                am = ba + 0.05 * (2.0 * rng.random() - 1.0)
+                hjd = compute_hjd(jd, deg2rad(c['ra']), deg2rad(c['dec']))
+                if c.get('variable', False):
+                    m_true = c['catalog_mag'] + c.get('var_amp', 0) * math.sin(
+                        2 * math.pi * hjd / c.get('var_period', 1)
+                        + c.get('var_phase', 0))
+                else:
+                    m_true = c['catalog_mag']
+                flux = mag_to_flux(m_true, am, transp)
+                ferr = math.sqrt(abs(flux) + READ_NOISE)
+                fobs = flux +

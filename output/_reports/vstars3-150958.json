@@ -1,0 +1,34 @@
+[
+  {
+    "topic": "@seeds/variable-stars.yaml",
+    "stage": "gen_failed",
+    "spec_ok": true,
+    "files_written": true,
+    "structural": true,
+    "correct": false,
+    "evaluated": false,
+    "learnable": false,
+    "kept": false,
+    "confirmed": false,
+    "review": false,
+    "critic": "6 flag(s), revised",
+    "gen_cost": {
+      "input": 161841,
+      "output": 435183,
+      "cost_usd": 1.7883,
+      "cost_source": "gateway"
+    },
+    "eval_cost_usd": 0.0,
+    "gen_seconds": 8557.0,
+    "eval_seconds": 0.0,
+    "record": {
+      "topic": "@seeds/variable-stars.yaml",
+      "arm": "treatment",
+      "stage": "generate",
+      "verdict": "gen_failed",
+      "decision": "rejected",
+      "why": "failed generation: Part 1 checks",
+      "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/reduce-raw-light-curves-from-a-small-tel-20261022-150958-d2a9"
+    }
+  }
+]

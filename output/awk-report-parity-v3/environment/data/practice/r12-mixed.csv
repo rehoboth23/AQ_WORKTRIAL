@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+london,007,1999.95,10,ab
+garbage
+
+  ,20240105,1000000000,7,AB12
+ lon,9,2500000000.75,10,ab
+PAR1,20240131,15.25,-2.5,
+x,10,abc,7,ZZTOP
+Österreich,2024-01-31,15.25,3.9,ZZTOP
+Österreich,20240131,-5,-2.5,ab
+ ,10,12.50,abc,x
+nyc-east,,99.999,,x
+a b c d e,,-5,2,ZZTOP
+PAR1,20240105,.5,3.9,x
+ lon,abc,2500000000.75,abc,ZZTOP
+nyc-east,2024/1/5,1999.95,3.9,
+nyc-east,10,1e3,3,Ünï
+Malmö,10, 7 ,,x
+PAR1,007,-5,-2.5,Ünï
+NYC-West,20240131,-0.0,abc,ab

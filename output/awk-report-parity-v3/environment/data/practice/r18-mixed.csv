@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+london,abc,+3,10,12345
+São Paulo,9,1E2,7,Ünï
+ lon,20240105,-0,2,Q
+nyc-east,9,1000000000,2,AB12
+,2024-01-05,12.50,7,ab
+nyc-east,20240105,99.999,7,
+garbage
+PAR1,abc,-0,2,ab
+Malmö, ,250,0,Q
+berlin,10,abc,0,AB12
+,2024/1/5,12abc,10,ab
+, ,-0.0,-2.5,AB12
+nyc-east,,,4e2,x
+nyc-east,20240105,-0.0,4e2,ab
+,007,250,10,Q,extra

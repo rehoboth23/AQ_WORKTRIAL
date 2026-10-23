@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+garbage
+berlin,20240131,-0.0,3
+berlin,20240105,2500000000.75,-2.5,ZZTOP
+ lon,10,250,10
+São Paulo,20240131,12abc,3,AB12
+NYC-West,2024-01-05,0.1,7,
+Zürich,2024-01-05,1999.95,,Ünï
+x, 20231231 ,250,7
+Malmö,10,-12.345,7,Q
+los angeles,10,,-2.5
+Österreich,abc,2500000000.75,
+x,20240105,0.1,7,
+los angeles,2024-01-31,1000000000,7
+x,007,3.,abc,extra
+x,2024-01-31,3.,abc,Q
+, 20231231 ,-12.345, 2 ,Ünï
+  , 20231231 ,.5,-2.5,ZZTOP
+nyc-east,20240105,10,1,AB12

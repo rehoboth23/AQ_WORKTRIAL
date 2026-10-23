@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+berlin,2024-01-05,1999.95,7
+NYC-West,2024-01-31,0x1A,3.9
+london,10,12.50,0,Q,extra
+par,20240131,abc,0
+São Paulo,,12.50,4e2
+x, 20231231 ,250,,x
+garbage
+Zürich,007,250,0,Ünï
+NYC-West,007,abc,3.9
+ lon, 20231231 , 7 , 2 
+par,2024/1/5,-0.0,7,12345
+a b c d e,abc,-12.345,4e2
+a,b
+  ,,3.,-2.5
+PAR1,2024/1/5,250,10,Ünï
+Zürich,20240105,10,1,AB12

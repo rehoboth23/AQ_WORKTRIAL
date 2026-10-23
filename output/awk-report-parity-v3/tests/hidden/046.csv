@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+ny,9, 7 ,4e2,
+berlin, 20231231 ,2500000000.75,4e2,x
+berlin,2024/1/5,99.999,3,Ünï
+ lon,2024/1/5,1E2,4e2
+a b c d e,2024-01-31,0.1,abc,extra
+los angeles,,-0.0,10,Q
+par,10,0.2,7,AB12
+los angeles, 20231231 ,abc,0,x
+ lon,abc,-0,abc,ab
+  ,007,-5,3.9,ab
+los angeles,20240131,abc,7,AB12
+los angeles, 20231231 ,12abc, 2 
+São Paulo,20240105,,10,ZZTOP
+nyc-east,, -3 ,0,Ünï
+a b c d e,2024/1/5,-12.345,abc
+Malmö,10,-5,4e2,12345,extra
+berlin,,+3,4e2
+Zürich,20240105,10,1,AB12

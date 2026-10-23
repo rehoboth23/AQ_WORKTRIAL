@@ -1,0 +1,1238 @@
+<<<MANIFEST>>>
+environment/services/erp.py
+environment/services/ledger.py
+environment/services/portal.py
+environment/data/commodities.json
+environment/data/movements_2024-03.json
+environment/data/stock_2024-03.json
+environment/data/portal_config.json
+environment/docs/procedure.md
+environment/file_return.py
+environment/start_services.sh
+environment/tests_public/test_simple_return.py
+environment/generate_practice_data.py
+<<<END>>>
+<<<FILE environment/services/erp.py>>>
+#!/usr/bin/env python3
+"""ERP service — serves movements and commodities from JSON files."""
+import json
+import os
+
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+
+
+@app.route("/movements")
+def get_movements():
+    month = request.args.get("month")
+    if not month:
+        return jsonify({"error": "month parameter required"}), 400
+    filepath = os.path.join(DATA_DIR, f"movements_{month}.json")
+    if not os.path.exists(filepath):
+        return jsonify([])
+    with open(filepath) as f:
+        movements = json.load(f)
+    return jsonify(movements)
+
+
+@app.route("/commodities")
+def get_commodities():
+    filepath = os.path.join(DATA_DIR, "commodities.json")
+    if not os.path.exists(filepath):
+        return jsonify({"error": "commodities file not found"}), 500
+    with open(filepath) as f:
+        commodities = json.load(f)
+    return jsonify(commodities)
+
+
+@app.route("/")
+def index():
+    return jsonify({"service": "erp", "status": "ok"})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5001)
+<<<END>>>
+<<<FILE environment/services/ledger.py>>>
+#!/usr/bin/env python3
+"""Stock ledger service — serves stock entries read-only from JSON files."""
+import json
+import os
+
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+
+
+@app.route("/entries")
+def get_entries():
+    month = request.args.get("month")
+    if not month:
+        return jsonify({"error": "month parameter required"}), 400
+    filepath = os.path.join(DATA_DIR, f"stock_{month}.json")
+    if not os.path.exists(filepath):
+        return jsonify([])
+    with open(filepath) as f:
+        entries = json.load(f)
+    return jsonify(entries)
+
+
+@app.route("/")
+def index():
+    return jsonify({"service": "ledger", "status": "ok"})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5002)
+<<<END>>>
+<<<FILE environment/services/portal.py>>>
+#!/usr/bin/env python3
+"""Filing portal service — two-step submit/confirm with audit log and seeded 503 faults."""
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+
+# ---------------------------------------------------------------------------
+# In-memory state (reset via POST /reset)
+# ---------------------------------------------------------------------------
+submissions: dict = {}          # request_id (or generated key) -> submission dict
+audit_log: list = []            # list of audit-entry dicts
+submit_counters: dict = {}      # key -> call count for fault injection
+confirm_counters: dict = {}     # key -> call count for fault injection
+
+
+def _load_config():
+    filepath = os.path.join(DATA_DIR, "portal_config.json")
+    if os.path.exists(filepath):
+        with open(filepath) as f:
+            return json.load(f)
+    return {"submit_faults": [], "confirm_faults": []}
+
+
+def _reset_state():
+    global submissions, audit_log, submit_counters, confirm_counters
+    submissions = {}
+    audit_log = []
+    submit_counters = {}
+    confirm_counters = {}
+
+
+# ---------------------------------------------------------------------------
+# Submit
+# ---------------------------------------------------------------------------
+@app.route("/submit", methods=["POST"])
+def submit():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+
+    request_id = data.get("request_id")
+    month = data.get("month")
+    duty_lines = data.get("duty_lines", [])
+    total_duty = data.get("total_duty", 0)
+
+    if not month:
+        return jsonify({"error": "month required"}), 400
+
+    # ---- Idempotency check ----
+    if request_id and request_id in submissions:
+        existing = submissions[request_id]
+        audit_log.append({
+            "action": "submit",
+            "request_id": request_id,
+            "month": month,
+            "reference": existing["reference"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "200",
+            "duplicate": False,
+            "idempotent": True,
+        })
+        return jsonify({"reference": existing["reference"]}), 200
+
+    # ---- Create submission ----
+    reference = f"REF-{month}-{uuid.uuid4().hex[:8]}"
+    sub = {
+        "reference": reference,
+        "month": month,
+        "duty_lines": duty_lines,
+        "total_duty": total_duty,
+        "confirmed": False,
+        "confirmation_code": None,
+        "request_id": request_id,
+    }
+    key = request_id if request_id else f"_auto_{uuid.uuid4().hex[:8]}"
+    submissions[key] = sub
+
+    # ---- Fault injection ----
+    config = _load_config()
+    call_key = f"submit_{month}"
+    submit_counters[call_key] = submit_counters.get(call_key, 0) + 1
+    call_idx = submit_counters[call_key] - 1
+
+    if call_idx in config.get("submit_faults", []):
+        audit_log.append({
+            "action": "submit",
+            "request_id": request_id,
+            "month": month,
+            "reference": reference,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "503",
+            "fault": True,
+        })
+        return jsonify({"error": "Service temporarily unavailable"}), 503
+
+    audit_log.append({
+        "action": "submit",
+        "request_id": request_id,
+        "month": month,
+        "reference": reference,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "200",
+        "duplicate": False,
+    })
+    return jsonify({"reference": reference}), 200
+
+
+# ---------------------------------------------------------------------------
+# Confirm
+# ---------------------------------------------------------------------------
+@app.route("/confirm", methods=["POST"])
+def confirm():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+
+    reference = data.get("reference")
+    request_id = data.get("request_id")
+
+    if not reference:
+        return jsonify({"error": "reference required"}), 400
+
+    # ---- Find submission by reference ----
+    sub = None
+    for _key, s in submissions.items():
+        if s["reference"] == reference:
+            sub = s
+            break
+
+    if sub is None:
+        return jsonify({"error": "Reference not found"}), 404
+
+    already_confirmed = sub["confirmed"]
+
+    # ---- Perform confirmation (even if faulting) ----
+    if not already_confirmed:
+        sub["confirmed"] = True
+        sub["confirmation_code"] = f"CONF-{sub['month']}-{uuid.uuid4().hex[:8]}"
+
+    # ---- Determine duplicate flag ----
+    is_duplicate = False
+    if already_confirmed:
+        # This is a retry / repeat confirm
+        if request_id and request_id == sub.get("request_id"):
+            is_duplicate = False   # idempotent retry
+        else:
+            is_duplicate = True    # non-idempotent repeat
+
+    # ---- Fault injection ----
+    config = _load_config()
+    call_key = f"confirm_{reference}"
+    confirm_counters[call_key] = confirm_counters.get(call_key, 0) + 1
+    call_idx = confirm_counters[call_key] - 1
+
+    if call_idx in config.get("confirm_faults", []):
+        audit_entry = {
+            "action": "confirm",
+            "request_id": request_id,
+            "reference": reference,
+            "confirmation_code": sub["confirmation_code"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "503",
+            "fault": True,
+            "duplicate": is_duplicate,
+        }
+        audit_log.append(audit_entry)
+        return jsonify({"error": "Service temporarily unavailable"}), 503
+
+    audit_entry = {
+        "action": "confirm",
+        "request_id": request_id,
+        "reference": reference,
+        "confirmation_code": sub["confirmation_code"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "200",
+        "duplicate": is_duplicate,
+    }
+    if not is_duplicate and already_confirmed and request_id and request_id == sub.get("request_id"):
+        audit_entry["idempotent"] = True
+    audit_log.append(audit_entry)
+    return jsonify({"confirmation_code": sub["confirmation_code"]}), 200
+
+
+# ---------------------------------------------------------------------------
+# Query endpoints
+# ---------------------------------------------------------------------------
+@app.route("/submissions")
+def get_submissions():
+    return jsonify(list(submissions.values()))
+
+
+@app.route("/audit")
+def get_audit():
+    return jsonify(audit_log)
+
+
+@app.route("/reset", methods=["POST"])
+def reset():
+    _reset_state()
+    return jsonify({"status": "reset"}), 200
+
+
+@app.route("/")
+def index():
+    return jsonify({"service": "portal", "status": "ok"})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5003)
+<<<END>>>
+<<<FILE environment/data/commodities.json>>>
+[
+  {"name": "spirits", "duty_rate": 25.00, "unit": "L"},
+  {"name": "tobacco", "duty_rate": 50.00, "unit": "kg"},
+  {"name": "beer", "duty_rate": 5.00, "unit": "L"},
+  {"name": "wine", "duty_rate": 15.00, "unit": "L"}
+]
+<<<END>>>
+<<<FILE environment/data/movements_2024-03.json>>>
+[
+  {"id": "M001", "date": "2024-03-05", "type": "sale",     "commodity": "spirits", "quantity": 100, "unit_price": 12.50, "site": "WH1", "customer": "ACME Corp"},
+  {"id": "M002", "date": "2024-03-08", "type": "sale",     "commodity": "tobacco", "quantity": 50,  "unit_price": 35.00, "site": "WH1", "customer": "ACME Corp"},
+  {"id": "M003", "date": "2024-03-12", "type": "sale",     "commodity": "beer",    "quantity": 200, "unit_price": 3.00,  "site": "WH1", "customer": "Delta Ltd"},
+  {"id": "M004", "date": "2024-03-15", "type": "sale",     "commodity": "wine",    "quantity": 80,  "unit_price": 18.00, "site": "WH1", "customer": "Delta Ltd"},
+  {"id": "M005", "date": "2024-03-18", "type": "transfer", "commodity": "beer",    "quantity": 50,  "unit_price": 3.00,  "site_from": "WH1", "site_to": "WH2"},
+  {"id": "M006", "date": "2024-03-20", "type": "return",   "commodity": "tobacco", "quantity": 5,   "unit_price": 35.00, "site": "WH1", "customer": "ACME Corp"},
+  {"id": "M007", "date": "2024-03-28", "type": "loss",     "commodity": "spirits", "quantity": 3,   "unit_price": 12.50, "site": "WH1"},
+  {"id": "M008", "date": "2024-03-29", "type": "loss",     "commodity": "wine",    "quantity": 4,   "unit_price": 18.00, "site": "WH1"}
+]
+<<<END>>>
+<<<FILE environment/data/stock_2024-03.json>>>
+[
+  {"id": "S001", "commodity": "spirits", "site": "WH1", "opening_balance": 1000, "closing_balance": 897},
+  {"id": "S002", "commodity": "tobacco", "site": "WH1", "opening_balance": 200,  "closing_balance": 155},
+  {"id": "S003", "commodity": "beer",    "site": "WH1", "opening_balance": 2000, "closing_balance": 1750},
+  {"id": "S004", "commodity": "wine",    "site": "WH1", "opening_balance": 500,  "closing_balance": 416}
+]
+<<<END>>>
+<<<FILE environment/data/portal_config.json>>>
+{
+  "submit_faults": [],
+  "confirm_faults": []
+}
+<<<END>>>
+<<<FILE environment/docs/procedure.md>>>
+# Bonded Warehouse Excise-Duty Return Procedure Manual
+
+**Document ID:** PROC-WH1-EXC-2024  
+**Effective:** 1 January 2024  
+**Applies to:** Bonded warehouse WH1
+
+---
+
+## 1. Purpose and Scope
+
+This manual defines the procedure for filing the month-end excise-duty return for bonded warehouse WH1. All duty calculations and filing steps must follow this procedure exactly. Deviations from this procedure may result in incorrect duty assessments and audit findings.
+
+---
+
+## 2. Commodity Duty Rates
+
+Duty rates are published in the commodities schedule and may be updated periodically. The current rates are:
+
+| Commodity | Duty Rate | Unit |
+|-----------|-----------|------|
+| Spirits   | $25.00    | L    |
+| Tobacco   | $50.00    | kg   |
+| Beer      | $5.00     | L    |
+| Wine      | $15.00    | L    |
+
+The commodities schedule is available from the ERP service at `GET http://localhost:5001/commodities`.
+
+---
+
+## 3. Duty Calculation Rules
+
+### 3.1 Sales to Customers
+
+Sales to customers are dutiable events. **Duty is calculated using the rate published in the commodities schedule.** The `unit_price` field in movement records records the commercial value and is not used for duty calculation.
+
+    Duty = quantity × duty_rate
+
+The duty rate must be obtained from the `/commodities` endpoint of the ERP service, not from the movement record.
+
+### 3.2 Inter-Site Bonded Transfers
+
+Movements between bonded sites — where both the origin site code and the destination site code begin with `WH` — are not duty events. No duty is calculated for these transfers. Such movements are **excluded from the duty return entirely**; they do not appear in `duty_lines`.
+
+A transfer is identified by `type = "transfer"` and verified by checking that both `site_from` and `site_to` start with `"WH"`.
+
+### 3.3 Customer Returns
+
+Returns from customers are credited in the month they are received. The credit is calculated at the duty rate from the commodities schedule.
+
+    Credit = −(quantity × duty_rate)
+
+Return credits appear as `duty_lines` entries with `duty_type = "return"` and a negative `duty` value.
+
+### 3.4 Evaporation Losses
+
+Evaporation losses are subject to a tolerance of **0.5% of the opening stock** for the commodity at the site.
+
+    Tolerance = opening_balance × 0.005
+
+**Losses within tolerance (inclusive of the limit) carry no duty.** Such losses are excluded from the duty return entirely; they do not appear in `duty_lines`.
+
+For losses **exceeding tolerance**, only the excess quantity is dutiable:
+
+    Excess = loss_quantity − tolerance  
+    Duty   = excess × duty_rate
+
+Over-tolerance loss entries appear as `duty_lines` entries with `duty_type = "loss_over_tolerance"`.
+
+**Worked example:**  
+Opening stock of spirits at WH1 is 1,000 L.  
+Tolerance = 1,000 × 0.005 = 5 L.  
+An evaporation loss of 8 L is recorded. Since 8 > 5, the excess is 8 − 5 = 3 L.  
+Duty = 3 × $25.00 = **$75.00**.
+
+### 3.5 Movement Type Identification
+
+Each movement record has a `type` field:
+
+| Type       | Meaning                     |
+|------------|-----------------------------|
+| `sale`     | Sale to a customer          |
+| `transfer` | Inter-site bonded transfer  |
+| `return`   | Return from a customer      |
+| `loss`     | Evaporation loss            |
+
+A movement is exactly one type. Apply the rule for that type only.
+
+The opening stock for each commodity at each site is obtained from the stock ledger service at `GET http://localhost:5002/entries?month=YYYY-MM`.
+
+---
+
+## 4. Filing Process
+
+### 4.1 Two-Step Submission
+
+Filing is a two-step process. Both steps must be completed for the return to be considered filed.
+
+**Step 1 — Submit the return:**
+
+    POST http://localhost:5003/submit
+
+Request body (JSON):
+
+```json
+{
+  "request_id": "RET-2024-03",
+  "month": "2024-03",
+  "duty_lines": [ ... ],
+  "total_duty": 6972.50
+}
+```
+
+Successful response (200 OK):
+
+```json
+{
+  "reference": "REF-2024-03-abcdef12"
+}
+```
+
+**Step 2 — Confirm the submission:**
+
+    POST http://localhost:5003/confirm
+
+Request body (JSON):
+
+```json
+{
+  "reference": "REF-2024-03-abcdef12",
+  "request_id": "RET-2024-03"
+}
+```
+
+Successful response (200 OK):
+
+```json
+{
+  "confirmation_code": "CONF-2024-03-xyz45678"
+}
+```
+
+**Step 3 — Archive the confirmation:**
+
+After receiving the confirmation code, write the result to a JSON file:
+
+    /app/returns/{month}/confirmation.json
+
+The file must contain:
+
+```json
+{
+  "confirmation_code": "CONF-2024-03-xyz45678",
+  "reference": "REF-2024-03-abcdef12",
+  "month": "2024-03",
+  "filed_at": "2024-03-31T23:59:59"
+}
+```
+
+The `filed_at` field should contain an ISO 8601 timestamp of when the confirmation was received.
+
+### 4.2 Retry and Idempotency
+
+If the portal returns **HTTP 503** (Service Unavailable), retry the same request after a short wait (1 second). Use the **same `request_id`** on every retry of the same step.
+
+The portal is idempotent only when the `request_id` is included. **A request without a `request_id` always creates a new submission.** The `request_id` must be included on **both the submit and confirm steps**, and on all retries of both steps.
+
+Recommended retry limit: 5 attempts per step.
+
+### 4.3 Finality
+
+Submissions are final. Once confirmed, a return cannot be modified or withdrawn. All submissions are recorded in the portal's audit log, accessible at `GET http://localhost:5003/audit`.
+
+---
+
+## 5. Return Format
+
+The `duty_lines` array contains one entry per dutiable movement:
+
+```json
+{
+  "commodity": "spirits",
+  "duty_type": "sale",
+  "quantity": 100,
+  "duty_rate": 25.00,
+  "duty": 2500.00
+}
+```
+
+Valid `duty_type` values:
+
+| `duty_type`            | When used                          | Duty sign |
+|------------------------|------------------------------------|-----------|
+| `sale`                 | Sales to customers                 | Positive  |
+| `return`               | Customer returns (credits)         | Negative  |
+| `loss_over_tolerance`  | Evaporation losses exceeding limit | Positive  |
+
+Transfers and within-or-at-tolerance losses do **NOT** appear in `duty_lines`.
+
+The `total_duty` field is the **sum of all `duty_lines[].duty` values**, rounded to 2 decimal places.
+
+---
+
+## 6. Data Sources
+
+| Source          | Endpoint                                          | Data                     |
+|-----------------|---------------------------------------------------|--------------------------|
+| ERP             | `GET http://localhost:5001/movements?month=YYYY-MM` | Movement records         |
+| ERP             | `GET http://localhost:5001/commodities`             | Commodity duty rates     |
+| Stock Ledger    | `GET http://localhost:5002/entries?month=YYYY-MM`   | Opening/closing balances |
+| Filing Portal   | `POST http://localhost:5003/submit`                 | Submit return            |
+| Filing Portal   | `POST http://localhost:5003/confirm`                | Confirm submission       |
+| Filing Portal   | `GET http://localhost:5003/audit`                   | Audit log                |
+| Filing Portal   | `GET http://localhost:5003/submissions`             | Submission records       |
+<<<END>>>
+<<<FILE environment/file_return.py>>>
+#!/usr/bin/env python3
+"""File the excise-duty return for bonded warehouse WH1.
+
+FIXME: This script has several known issues that must be corrected
+before it can produce a valid excise-duty return.
+"""
+import json
+import urllib.request
+
+MONTH = "2024-03"
+
+
+def main():
+    # Fetch movements from ERP
+    with urllib.request.urlopen(
+        f"http://localhost:5001/movements?month={MONTH}"
+    ) as resp:
+        movements = json.loads(resp.read())
+
+    # Calculate duty for all movements using unit_price
+    duty_lines = []
+    total_duty = 0.0
+
+    for mov in movements:
+        duty = mov["quantity"] * mov["unit_price"]
+        duty_lines.append(
+            {
+                "commodity": mov["commodity"],
+                "duty_type": mov["type"],
+                "quantity": mov["quantity"],
+                "duty": round(duty, 2),
+            }
+        )
+        total_duty += duty
+
+    total_duty = round(total_duty, 2)
+
+    # Submit to portal
+    body = json.dumps(
+        {
+            "month": MONTH,
+            "duty_lines": duty_lines,
+            "total_duty": total_duty,
+        }
+    ).encode()
+
+    req = urllib.request.Request(
+        "http://localhost:5003/submit",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read())
+
+    print(f"Submitted: reference={result.get('reference')}")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/start_services.sh>>>
+#!/usr/bin/env bash
+set -e
+
+# Kill any existing services on our ports
+for port in 5001 5002 5003; do
+    fuser -k "${port}/tcp" 2>/dev/null || true
+done
+sleep 1
+
+# Start services in background
+python3 /app/services/erp.py    > /tmp/erp.log    2>&1 &
+python3 /app/services/ledger.py > /tmp/ledger.log 2>&1 &
+python3 /app/services/portal.py > /tmp/portal.log 2>&1 &
+
+# Wait for each service to accept connections
+for port in 5001 5002 5003; do
+    for i in $(seq 1 60); do
+        if python3 -c "
+import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(('localhost', $port))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
+done
+
+echo "All services started on ports 5001, 5002, 5003"
+<<<END>>>
+<<<FILE environment/tests_public/test_simple_return.py>>>
+#!/usr/bin/env python3
+"""Public test: file a simple return with two commodities, no special movements, no faults.
+
+This test covers about 30% of the hidden checks: basic sales duty calculation
+with the correct commodity rate and two-step submission. It does not include
+any boundary case, transfer, return, loss, portal fault, or unit_price trap.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+import urllib.error
+
+DATA_DIR = "/app/data"
+MONTH = "2024-03"
+
+
+def _save_and_swap(movements, stock, portal_config):
+    """Back up original data files and write test data."""
+    backups = {}
+    for name, data in [
+        (f"movements_{MONTH}.json", movements),
+        (f"stock_{MONTH}.json", stock),
+        ("portal_config.json", portal_config),
+    ]:
+        path = os.path.join(DATA_DIR, name)
+        with open(path) as f:
+            backups[name] = f.read()
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    return backups
+
+
+def _restore(backups):
+    """Restore original data files."""
+    for name, content in backups.items():
+        path = os.path.join(DATA_DIR, name)
+        with open(path, "w") as f:
+            f.write(content)
+
+
+def test_simple_return():
+    # Simple test data: sales of two commodities only
+    simple_movements = [
+        {
+            "id": "TM001",
+            "date": "2024-03-05",
+            "type": "sale",
+            "commodity": "spirits",
+            "quantity": 50,
+            "unit_price": 12.50,
+            "site": "WH1",
+            "customer": "Test Corp",
+        },
+        {
+            "id": "TM002",
+            "date": "2024-03-10",
+            "type": "sale",
+            "commodity": "beer",
+            "quantity": 100,
+            "unit_price": 3.00,
+            "site": "WH1",
+            "customer": "Test Corp",
+        },
+    ]
+    simple_stock = [
+        {
+            "id": "TS001",
+            "commodity": "spirits",
+            "site": "WH1",
+            "opening_balance": 1000,
+            "closing_balance": 950,
+        },
+        {
+            "id": "TS002",
+            "commodity": "beer",
+            "site": "WH1",
+            "opening_balance": 2000,
+            "closing_balance": 1900,
+        },
+    ]
+    simple_config = {"submit_faults": [], "confirm_faults": []}
+
+    backups = _save_and_swap(simple_movements, simple_stock, simple_config)
+
+    try:
+        # Start services
+        subprocess.run(["bash", "/app/start_services.sh"], check=True, timeout=30)
+        time.sleep(1)
+
+        # Reset portal state
+        try:
+            req = urllib.request.Request(
+                "http://localhost:5003/reset", method="POST"
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass
+
+        # Run the filing script
+        result = subprocess.run(
+            ["python3", "/app/file_return.py"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+        )
+        assert result.returncode == 0, (
+            f"Script failed (exit {result.returncode}).\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+        # Check portal has one confirmed submission
+        with urllib.request.urlopen(
+            "http://localhost:5003/submissions", timeout=5
+        ) as resp:
+            submissions = json.loads(resp.read())
+
+        confirmed = [s for s in submissions if s.get("confirmed")]
+        assert len(confirmed) == 1, (
+            f"Expected 1 confirmed submission, got {len(confirmed)}"
+        )
+
+        sub = confirmed[0]
+
+        # Expected duty: spirits 50×25=1250, beer 100×5=500, total=1750
+        expected_total = 1750.00
+        assert abs(sub["total_duty"] - expected_total) < 0.01, (
+            f"Expected total duty {expected_total}, got {sub['total_duty']}"
+        )
+
+        # Check confirmation file exists
+        conf_path = f"/app/returns/{MONTH}/confirmation.json"
+        assert os.path.exists(conf_path), "Confirmation file not found"
+        with open(conf_path) as f:
+            conf = json.load(f)
+        assert "confirmation_code" in conf, "confirmation_code missing from archive"
+        assert conf.get("month") == MONTH, f"Wrong month in confirmation: {conf.get('month')}"
+
+        print("Simple return test PASSED")
+
+    finally:
+        _restore(backups)
+        # Clean up confirmation file
+        conf_path = f"/app/returns/{MONTH}/confirmation.json"
+        if os.path.exists(conf_path):
+            os.remove(conf_path)
+
+
+if __name__ == "__main__":
+    test_simple_return()
+<<<END>>>
+<<<FILE environment/generate_practice_data.py>>>
+#!/usr/bin/env python3
+"""Generate practice data for the bonded warehouse excise-duty return task.
+
+Run once at Docker build time, then delete this script.
+Creates 9 practice months of movements + stock + completed returns,
+and 9 portal-example audit logs (3 per fault type).
+"""
+import json
+import os
+import math
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+BASE_DIR = "/app/data/practice"
+MONTHS_DIR = os.path.join(BASE_DIR, "months")
+RETURNS_DIR = os.path.join(BASE_DIR, "returns")
+PORTAL_DIR = os.path.join(BASE_DIR, "portal_examples")
+
+COMMODITIES = {
+    "spirits": {"duty_rate": 25.00, "unit": "L", "unit_price": 12.50},
+    "tobacco": {"duty_rate": 50.00, "unit": "kg", "unit_price": 35.00},
+    "beer":    {"duty_rate": 5.00,  "unit": "L", "unit_price": 3.00},
+    "wine":    {"duty_rate": 15.00, "unit": "L", "unit_price": 18.00},
+}
+
+DEFAULT_OPENING = {
+    "spirits": 1000,
+    "tobacco": 200,
+    "beer": 2000,
+    "wine": 500,
+}
+
+CUSTOMERS = ["ACME Corp", "Beta Inc", "Delta Ltd", "Gamma LLC"]
+
+# ---------------------------------------------------------------------------
+# Practice month definitions
+# ---------------------------------------------------------------------------
+# Each entry: (month, loss_level, has_transfers, has_returns,
+#              loss_commodity, loss_opening, loss_qty)
+#
+# loss_level: "within" | "at_limit" | "over"
+# at_limit months straddle 0.5% (0.48–0.49% just within, 0.51% just over)
+# but never land exactly on 0.5%.
+PRACTICE_DEFS = [
+    # within × sales_only
+    ("2024-01", "within", False, False, "spirits", 1000, 3),
+    # at_limit × plus_transfers  (0.49% — just within)
+    ("2024-02", "at_limit", True, False, "spirits", 1000, 4.9),
+    # over × plus_transfers + plus_returns
+    ("2024-04", "over", True, True, "wine", 500, 4),
+    # over × plus_returns
+    ("2024-05", "over", False, True, "spirits", 1000, 8),
+    # within × plus_returns
+    ("2024-06", "within", False, True, "beer", 2000, 5),
+    # within × plus_transfers
+    ("2024-07", "within", True, False, "tobacco", 200, 0.5),
+    # at_limit × sales_only  (0.48% — just within)
+    ("2024-08", "at_limit", False, False, "spirits", 1000, 4.8),
+    # at_limit × plus_transfers + plus_returns  (0.51% — just over)
+    ("2024-09", "at_limit", True, True, "spirits", 1000, 5.1),
+    # over × sales_only
+    ("2024-10", "over", False, False, "spirits", 1000, 7),
+]
+
+# Sales quantities for each month (all four commodities always present)
+SALES_TABLE = {
+    "2024-01": [("spirits", 100), ("tobacco", 50), ("beer", 200), ("wine", 80)],
+    "2024-02": [("spirits", 80),  ("tobacco", 30), ("beer", 150), ("wine", 60)],
+    "2024-04": [("spirits", 90),  ("tobacco", 40), ("beer", 180), ("wine", 70)],
+    "2024-05": [("spirits", 120), ("tobacco", 60), ("beer", 250), ("wine", 90)],
+    "2024-06": [("spirits", 110), ("tobacco", 45), ("beer", 220), ("wine", 75)],
+    "2024-07": [("spirits", 95),  ("tobacco", 55), ("beer", 190), ("wine", 65)],
+    "2024-08": [("spirits", 85),  ("tobacco", 35), ("beer", 160), ("wine", 55)],
+    "2024-09": [("spirits", 75),  ("tobacco", 25), ("beer", 140), ("wine", 50)],
+    "2024-10": [("spirits", 105), ("tobacco", 65), ("beer", 230), ("wine", 85)],
+}
+
+# Transfer details per month
+TRANSFERS_TABLE = {
+    "2024-02": [("beer", 40, "WH1", "WH2")],
+    "2024-04": [("spirits", 30, "WH1", "WH2")],
+    "2024-07": [("tobacco", 10, "WH1", "WH2")],
+    "2024-09": [("wine", 20, "WH1", "WH2")],
+}
+
+# Return details per month
+RETURNS_TABLE = {
+    "2024-04": [("tobacco", 5, "ACME Corp")],
+    "2024-05": [("spirits", 10, "Beta Inc")],
+    "2024-06": [("beer", 15, "Delta Ltd")],
+    "2024-09": [("beer", 10, "Gamma LLC")],
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def tolerance(opening):
+    return opening * 0.005
+
+
+def compute_duty_lines(movements, stock_entries):
+    """Compute duty lines following the procedure manual rules."""
+    opening = {}
+    for entry in stock_entries:
+        key = (entry["commodity"], entry["site"])
+        opening[key] = entry["opening_balance"]
+
+    duty_lines = []
+    for mov in movements:
+        mtype = mov["type"]
+        commodity = mov["commodity"]
+        qty = mov["quantity"]
+        site = mov.get("site", "WH1")
+        dr = COMMODITIES[commodity]["duty_rate"]
+
+        if mtype == "sale":
+            duty_lines.append({
+                "commodity": commodity,
+                "duty_type": "sale",
+                "quantity": qty,
+                "duty_rate": dr,
+                "duty": round(qty * dr, 2),
+            })
+        elif mtype == "transfer":
+            # Excluded entirely
+            pass
+        elif mtype == "return":
+            duty_lines.append({
+                "commodity": commodity,
+                "duty_type": "return",
+                "quantity": qty,
+                "duty_rate": dr,
+                "duty": round(-(qty * dr), 2),
+            })
+        elif mtype == "loss":
+            tol = tolerance(opening.get((commodity, site), 0))
+            if qty <= tol:
+                # Within or at tolerance — excluded
+                pass
+            else:
+                excess = round(qty - tol, 4)
+                duty_lines.append({
+                    "commodity": commodity,
+                    "duty_type": "loss_over_tolerance",
+                    "quantity": round(excess, 2),
+                    "duty_rate": dr,
+                    "duty": round(excess * dr, 2),
+                })
+
+    total_duty = round(sum(dl["duty"] for dl in duty_lines), 2)
+    return duty_lines, total_duty
+
+
+def generate_month(month, loss_level, has_transfers, has_returns,
+                   loss_commodity, loss_opening, loss_qty):
+    """Generate movements, stock entries, and completed return for one month."""
+    mov_id = 1
+    movements = []
+    day = 5
+
+    # --- Sales ---
+    for commodity, qty in SALES_TABLE[month]:
+        movements.append({
+            "id": f"M{mov_id:03d}",
+            "date": f"{month}-{day:02d}",
+            "type": "sale",
+            "commodity": commodity,
+            "quantity": qty,
+            "unit_price": COMMODITIES[commodity]["unit_price"],
+            "site": "WH1",
+            "customer": CUSTOMERS[(mov_id - 1) % len(CUSTOMERS)],
+        })
+        mov_id += 1
+        day += 3
+
+    # --- Transfers ---
+    if has_transfers:
+        for commodity, qty, sfrom, sto in TRANSFERS_TABLE.get(month, []):
+            movements.append({
+                "id": f"M{mov_id:03d}",
+                "date": f"{month}-{day:02d}",
+                "type": "transfer",
+                "commodity": commodity,
+                "quantity": qty,
+                "unit_price": COMMODITIES[commodity]["unit_price"],
+                "site_from": sfrom,
+                "site_to": sto,
+            })
+            mov_id += 1
+            day += 3
+
+    # --- Returns ---
+    if has_returns:
+        for commodity, qty, customer in RETURNS_TABLE.get(month, []):
+            movements.append({
+                "id": f"M{mov_id:03d}",
+                "date": f"{month}-{day:02d}",
+                "type": "return",
+                "commodity": commodity,
+                "quantity": qty,
+                "unit_price": COMMODITIES[commodity]["unit_price"],
+                "site": "WH1",
+                "customer": customer,
+            })
+            mov_id += 1
+            day += 3
+
+    # --- Loss ---
+    movements.append({
+        "id": f"M{mov_id:03d}",
+        "date": f"{month}-28",
+        "type": "loss",
+        "commodity": loss_commodity,
+        "quantity": loss_qty,
+        "unit_price": COMMODITIES[loss_commodity]["unit_price"],
+        "site": "WH1",
+    })
+
+    # --- Stock entries ---
+    # Compute closing balances from opening minus sales/transfers/losses plus returns
+    balances = dict(DEFAULT_OPENING)  # copy
+    for mov in movements:
+        c = mov["commodity"]
+        q = mov["quantity"]
+        if mov["type"] == "sale":
+            balances[c] -= q
+        elif mov["type"] == "transfer":
+            if mov.get("site_from") == "WH1":
+                balances[c] -= q
+        elif mov["type"] == "return":
+            balances[c] += q
+        elif mov["type"] == "loss":
+            balances[c] -= q
+
+    stock_entries = []
+    sid = 1
+    for commodity in ["spirits", "tobacco", "beer", "wine"]:
+        stock_entries.append({
+            "id": f"S{sid:03d}",
+            "commodity": commodity,
+            "site": "WH1",
+            "opening_balance": DEFAULT_OPENING[commodity],
+            "closing_balance": balances[commodity],
+        })
+        sid += 1
+
+    # --- Completed return ---
+    duty_lines, total_duty = compute_duty_lines(movements, stock_entries)
+
+    completed_return = {
+        "month": month,
+        "duty_lines": duty_lines,
+        "total_duty": total_duty,
+        "confirmation_code": f"CONF-{month}-practice{month.replace('-', '')}",
+        "reference": f"REF-{month}-practice{month.replace('-', '')}",
+    }
+
+    return movements, stock_entries, completed_return
+
+
+def generate_portal_examples():
+    """Generate static portal example audit logs."""
+    examples = {}
+
+    # --- None (clean submit → confirm) ---
+    for i in range(1, 4):
+        month_label = f"EX-N{i}"
+        ref = f"REF-EX-N{i}-a{i}b{i}c{i}"
+        conf = f"CONF-EX-N{i}-d{i}e{i}f{i}"
+        rid = f"RET-EX-N{i}"
+        examples[f"none_{i}"] = [
+            {
+                "action": "submit",
+                "request_id": rid,
+                "month": "2024-01",
+                "reference": ref,
+                "timestamp": f"2024-01-31T10:00:0{i-1}+00:00",
+                "status": "200",
+                "duplicate": False,
+            },
+            {
+                "action": "confirm",
+                "request_id": rid,
+                "reference": ref,
+                "confirmation_code": conf,
+                "timestamp": f"2024-01-31T10:00:0{i}+00:00",
+                "status": "200",
+                "duplicate": False,
+            },
+        ]
+
+    # --- One 503 on submit ---
+    for i in range(1, 4):
+        ref = f"REF-EX-503-{i}-a{i}b{i}"
+        conf = f"CONF-EX-503-{i}-c{i}d{i}"
+        rid = f"RET-EX-503-{i}"
+        examples[f"one_503_{i}"] = [
+            {
+                "action": "submit",
+                "request_id": rid,
+                "month": "2024-02",
+                "reference": ref,
+                "timestamp": f"2024-02-28T10:00:00+00:00",
+                "status": "503",
+                "fault": True,
+            },
+            {
+                "action": "submit",
+                "request_id": rid,
+                "month": "2024-02",
+                "reference": ref,
+                "timestamp": f"2024-02-28T10:00:01+00:00",
+                "status": "200",
+                "idempotent": True,
+                "duplicate": False,
+            },
+            {
+                "action": "confirm",
+                "request_id": rid,
+                "reference": ref,
+                "confirmation_code": conf,
+                "timestamp": f"2024-02-28T10:00:02+00:00",
+                "status": "200",
+                "duplicate": False,
+            },
+        ]
+
+    # --- 503 then duplicate risk (both submit and confirm fault) ---
+    for i in range(1, 4):
+        ref = f"REF-EX-DUP-{i}-a{i}b{i}"
+        conf = f"CONF-EX-DUP-{i}-c{i}d{i}"
+        rid = f"RET-EX-DUP-{i}"
+        examples[f"dup_risk_{i}"] = [
+            {
+                "action": "submit",
+                "request_id": rid,
+                "month": "2024-03",
+                "reference": ref,
+                "timestamp": f"2024-03-31T10:00:00+00:00",
+                "status": "503",
+                "fault": True,
+            },
+            {
+                "action": "submit",
+                "request_id": rid,
+                "month": "2024-03",
+                "reference": ref,
+                "timestamp": f"2024-03-31T10:00:01+00:00",
+                "status": "200",
+                "idempotent": True,
+                "duplicate": False,
+            },
+            {
+                "action": "confirm",
+                "request_id": rid,
+                "reference": ref,
+                "confirmation_code": conf,
+                "timestamp": f"2024-03-31T10:00:02+00:00",
+                "status": "503",
+                "fault": True,
+                "duplicate": False,
+            },
+            {
+                "action": "confirm",
+                "request_id": rid,
+                "reference": ref,
+                "confirmation_code": conf,
+                "timestamp": f"2024-03-31T10:00:03+00:00",
+                "status": "200",
+                "idempotent": True,
+                "duplicate": False,
+            },
+        ]
+
+    return examples
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    os.makedirs(MONTHS_DIR, exist_ok=True)
+    os.makedirs(RETURNS_DIR, exist_ok=True)
+    os.makedirs(PORTAL_DIR, exist_ok=True)
+
+    # Generate practice months
+    for defn in PRACTICE_DEFS:
+        month, loss_level, has_transfers, has_returns, loss_comm, loss_open, loss_qty = defn
+        movements, stock_entries, completed_return = generate_month(
+            month, loss_level, has_transfers, has_returns,
+            loss_comm, loss_open, loss_qty,
+        )
+
+        # Write movements
+        mov_path = os.path.join(MONTHS_DIR, f"movements_{month}.json")
+        with open(mov_path, "w") as f:
+            json.dump(movements, f, indent=2)
+
+        # Write stock
+        stock_path = os.path.join(MONTHS_DIR, f"stock_{month}.json")
+        with open(stock_path, "w") as f:
+            json.dump(stock_entries, f, indent=2)
+
+        # Write completed return
+        ret_path = os.path.join(RETURNS_DIR, f"{month}.json")
+        with open(ret_path, "w") as f:
+            json.dump(completed_return, f, indent=2)
+
+        print(f"  Generated practice month {month} "
+              f"(loss={loss_level}, transfers={has_transfers}, returns={has_returns})")
+
+    # Generate portal examples
+    examples = generate_portal_examples()
+    for name, audit in examples.items():
+        path = os.path.join(PORTAL_DIR, f"{name}.json")
+        with open(path, "w") as f:
+            json.dump(audit, f, indent=2)
+        print(f"  Generated portal example {name}.json")
+
+    print("Practice data generation complete.")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>

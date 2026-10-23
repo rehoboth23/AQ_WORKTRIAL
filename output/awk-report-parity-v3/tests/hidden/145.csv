@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+São Paulo,20240131,12.50,4e2
+Österreich,2024/1/5,1E2,10,Ünï
+a,b
+london, 20231231 ,0x1A,4e2
+los angeles,007,-12.345, 2 
+ny,20240105,2500000000.75, 2 ,12345
+Malmö,10,-0,0,Ünï
+Malmö, 20231231 ,.5,4e2,x
+a b c d e, 20231231 ,-12.345,-2.5,Ünï
+  ,2024/1/5,1000000000,abc
+NYC-West,2024-01-05, -3 , 2 
+Zürich,2024/1/5,1E2,3.9,Ünï
+a,b
+a,b,c
+london,20240105,10,1,AB12

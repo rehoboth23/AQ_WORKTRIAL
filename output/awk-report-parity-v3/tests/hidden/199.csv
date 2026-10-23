@@ -1,0 +1,25 @@
+branch,posted,amount,units,code
+PAR1,20240105,-5,10,12345
+São Paulo,2024-01-05,-0.0,3.9
+Zürich,10,3., 2 ,Q
+a b c d e,007,-12.345,0,Q
+x,007, -3 ,
+berlin,9, 7 ,7,
+a b c d e,2024/1/5,-0,10,Q
+berlin,2024/1/5,-0,7,12345
+Österreich,20240131,.5,-2.5
+los angeles,007,0x1A,7,
+Zürich,007,,10
+Zürich,007,2500000000.75,,
+london,20240105,0.2, 2 ,ZZTOP,extra
+Österreich,9, -3 ,3
+nyc-east,20240105,0.1,abc,x,extra
+Malmö,10,1e3, 2 ,Q
+berlin,007,-0.0,-2.5,12345
+a b c d e,,1999.95, 2 ,ZZTOP
+a b c d e,2024/1/5,1999.95,3
+london,,0x1A,4e2,Ünï
+Österreich,2024-01-31,-12.345,4e2,AB12
+,20240105,-0,abc
+a b c d e, 20231231 ,0.1,3.9,AB12
+Zürich,20240105,10,1,AB12

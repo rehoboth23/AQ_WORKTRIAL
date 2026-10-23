@@ -1,0 +1,15 @@
+branch,posted,amount,units,code
+a b c d e,20240131,0.2,7,12345
+los angeles,9,3., 2 
+São Paulo,abc,0.1,4e2
+  ,abc, -3 ,4e2,ab
+  ,2024-01-05,0.1,4e2,12345
+nyc-east,007,99.999,3
+par,abc,.5,10
+  ,abc,99.999,abc,Q
+Malmö,2024/1/5,0x1A,7,
+berlin, 20231231 ,1e3,10,AB12
+Zürich,2024/1/5,0.2,0,x
+Zürich,10,1000000000,0,ZZTOP
+a b c d e,2024-01-05,250,7,Q
+nyc-east,20240105,10,1,AB12

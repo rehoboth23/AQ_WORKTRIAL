@@ -1,0 +1,8 @@
+branch,posted,amount,units,code
+Zürich,9,1e3, 2 ,ab
+berlin,2024-01-31,0x1A,10,ab
+berlin,abc,1e3,-2.5,ab
+x, 20231231 ,0.2,10,ZZTOP,extra
+berlin,2024/1/5,3.,4e2,extra
+ny,2024-01-05,-0.0,4e2,ZZTOP
+Zürich,20240105,10,1,AB12

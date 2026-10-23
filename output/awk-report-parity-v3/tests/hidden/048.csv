@@ -1,0 +1,10 @@
+branch,posted,amount,units,code
+Österreich,2024/1/5,-12.345,4e2,Q
+Zürich,2024/1/5, -3 ,3
+london,20240105,-12.345,0
+a b c d e,007,3.,abc,Q
+PAR1,007,12abc,-2.5,12345
+london,9, -3 ,4e2,Q
+berlin,20240105, 7 ,-2.5
+x,20240105,+3, 2 ,12345
+Zürich,20240105,10,1,AB12

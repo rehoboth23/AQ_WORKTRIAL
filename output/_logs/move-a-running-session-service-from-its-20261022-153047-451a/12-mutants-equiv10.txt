@@ -1,0 +1,3 @@
+```json
+{"equivalent": true, "distinguishing_case": "", "reason": "The only difference is that the mutant sets _backend='logstore' before copying sessions instead of after. However, the entire migration (dual-write enable, backend switch, copy loop, dual-write disable) executes inside a `with _db_lock:` block, and every session operation (GET, PUT, POST, DELETE) also acquires _db_lock. No concurrent request can observe the intermediate state where backend is 'logstore' but sessions haven't been copied yet, so the reordering within the locked critical section produces identical observable behavior."}
+```

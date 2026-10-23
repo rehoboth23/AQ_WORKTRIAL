@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+Zürich,2024-01-31,+3,3
+a,b
+,2024/1/5,1000000000,3
+a,b
+los angeles,007, 7 ,0,AB12
+  ,20240105,1000000000,-2.5,ZZTOP
+  ,abc,0.1,4e2,Q
+garbage
+ lon,20240105,0x1A,3,
+Österreich,20240105,-5,10
+PAR1,20240131,.5,-2.5
+Malmö,,0x1A,4e2,
+ lon,2024/1/5,-12.345,,AB12
+nyc-east,20240105,0x1A,
+NYC-West,9,-12.345,,extra
+Zürich,20240105,10,1,AB12

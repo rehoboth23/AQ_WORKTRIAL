@@ -1,0 +1,32 @@
+branch,posted,amount,units,code
+los angeles,, 7 ,7,12345
+PAR1,2024/1/5,-5,4e2,ZZTOP
+NYC-West,9,1e3, 2 
+x,2024/1/5,0x1A,7,12345
+london,,-0,3.9
+Österreich, 20231231 ,.5,10
+los angeles,20240105,-5,3,Ünï
+NYC-West,2024-01-05,99.999,abc
+garbage
+  ,20240131,+3,-2.5,x,extra
+nyc-east,2024-01-31,1999.95,-2.5,12345
+berlin,20240105,,0,x
+PAR1,, -3 ,
+  ,9,99.999,4e2
+ lon,007, 7 ,-2.5,Q
+PAR1,abc,-12.345,
+Malmö,20240105,-0,abc,12345
+ny,2024-01-05,1e3,3.9
+Malmö,2024-01-05,.5,10,ab
+los angeles,10,+3,7
+Zürich,007,12.50,,Ünï
+PAR1, 20231231 ,1999.95, 2 ,12345
+los angeles,007,-0.0,0
+NYC-West,20240131,.5,
+berlin, 20231231 ,0.2,abc
+ny,,-0.0,abc
+Malmö,2024-01-05,1e3,10,Ünï
+Malmö,,,7,Q
+Zürich,2024/1/5,250,10
+nyc-east,20240105,1e3,,AB12
+nyc-east,20240105,10,1,AB12

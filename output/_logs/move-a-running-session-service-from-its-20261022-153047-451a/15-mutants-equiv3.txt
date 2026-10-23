@@ -1,0 +1,21 @@
+Looking at the two solutions, the code (logstore.py and session_svc.py) is identical. The only difference is at the end of the mutant's solve.sh:
+
+```bash
+# BUG: Stop the service, edit code, and restart it (changes PID, drops connections)
+pkill -f "session_svc" || true
+sleep 1
+nohup python3 /app/session_svc.py > /app/data/service.log 2>&1 &
+sleep 2
+```
+
+The correct solve.sh only writes files and does not touch the running process. The task states the service is already running on port 8080.
+
+The `pkill -f "session_svc"` will match and kill the running service process (its command line contains "session_svc"), and `nohup python3 /app/session_svc.py` starts a new process with a different PID. This is certain — PIDs are never immediately reused, and `pkill -f` matches the pattern.
+
+The test only checks `X-Service-PID` before and after the `/admin/migrate` HTTP call, not before and after `solve.sh` itself. Both solutions' `/admin/migrate` handler performs an in-process migration without restarting, so that test passes for both. The test misses the restart that happens during `solve.sh`.
+
+```json
+{"equivalent": false,
+ "distinguishing_case": "1) The service is running on port 8080 (per the task description) with PID P. 2) Run solve.sh. 3) Check the service PID via `pgrep -f session_svc` or any HTTP response's X-Service-PID header. After correct solve.sh: PID is still P (solve.sh only writes files, never touches the process). After mutant solve.sh: PID is Q ≠ P, because `pkill -f \"session_svc\"` killed PID P and `nohup python3 /app/session_svc.py` started a new process. The goal explicitly says 'do not restart the service' and 'no restart that drops connections'; the mutant restarts it.",
+ "reason": "The mutant's `pkill -f \"session_svc\"` + `nohup python3 /app/session_svc.py` always kills the running service and starts a new process with a different PID, violating the goal's 'do not restart the service' requirement. The tests only check PID consistency around the /admin/migrate HTTP call, missing the restart that occurs during solve.sh itself."}
+```

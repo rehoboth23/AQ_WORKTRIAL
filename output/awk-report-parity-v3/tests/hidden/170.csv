@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+Malmö,abc,12.50,abc,Q
+PAR1,,+3,abc,12345
+nyc-east,2024-01-31,-12.345,,Q,extra
+ lon,9,-0.0,-2.5,Q,extra
+, 20231231 ,.5,4e2,AB12
+par,20240105,-0.0,3.9,Ünï
+a,b,c
+berlin, 20231231 ,2500000000.75,,ab
+par,,12.50, 2 ,
+par, 20231231 ,-12.345,0,12345
+São Paulo,,0x1A,7,Ünï
+NYC-West,10,1E2,0
+a,b,c
+par,20240105,1999.95, 2 ,ab,extra
+a b c d e,2024-01-31,1e3,3
+Zürich,20240105,10,1,AB12

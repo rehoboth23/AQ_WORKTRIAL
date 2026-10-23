@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+garbage
+Österreich,9,250,0,,extra
+Zürich, 20231231 ,0x1A, 2 ,
+ lon,2024/1/5,-0,4e2,extra
+x,2024/1/5,abc, 2 ,ab
+x,007,250,-2.5,AB12
+a b c d e,abc,,4e2,
+x,2024-01-05, -3 , 2 ,AB12
+par,2024-01-31,99.999, 2 
+los angeles,abc,250,-2.5,ab
+berlin,007,.5,0,AB12
+nyc-east,2024-01-05,2500000000.75,abc
+x,007,-5,10
+Österreich,007,abc, 2 ,
+Zürich,20240105,10,1,AB12

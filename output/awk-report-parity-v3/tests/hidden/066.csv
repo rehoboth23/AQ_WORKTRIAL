@@ -1,0 +1,22 @@
+branch,posted,amount,units,code
+,9,99.999,4e2,Ünï
+Österreich,abc,1e3,10,12345
+berlin,abc,1000000000,3.9,x
+Malmö, 20231231 ,,0
+  ,10, -3 ,3
+PAR1,2024-01-31,12.50, 2 ,ZZTOP
+berlin,,3.,3.9
+berlin, 20231231 ,250,,extra
+
+a b c d e,10,abc, 2 ,ZZTOP
+ny,007,1E2,0,12345
+ny,10,1000000000,4e2,AB12
+Zürich,20240105,,3.9
+São Paulo, 20231231 ,abc,3.9
+london,20240105,0.1,3,ab
+São Paulo,2024-01-31,-0,-2.5
+PAR1,,250,10,x
+
+ , , 
+,,1999.95,0
+london,20240105,10,1,AB12

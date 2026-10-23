@@ -1,0 +1,350 @@
+Looking at the spec carefully, I need to write the starter Flask webapp with the 7 deliberate deviations from Tcl behavior. Let me trace through each bug and make the code look like a realistic porting attempt by someone who didn't read the Tcl source carefully.
+
+<<<FILE environment/webapp.py>>>
+"""
+Loan Application Web App
+
+Flask-based replacement for the legacy Tcl/Tk loan application screen.
+Provides REST API endpoints for loan calculation, saving, and retrieval.
+"""
+import os
+import re
+import math
+from datetime import datetime, timedelta, date
+from flask import Flask, request, jsonify, render_template
+import sqlite3
+
+app = Flask(__name__)
+DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'loans.db')
+
+
+def get_db():
+    """Get a database connection."""
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ── Validation ────────────────────────────────────────────────────────
+
+def validate(form_data):
+    """
+    Validate loan application form data.
+    Returns a list of all error messages found (empty list if valid).
+    """
+    errors = []
+
+    # ── applicant_name ──
+    name = form_data.get('applicant_name', '').strip()
+    if not name:
+        errors.append("Applicant name is required.")
+    elif len(name) < 2:
+        errors.append("Applicant name must be at least 2 characters.")
+    elif not name[0].isalpha():
+        errors.append("Applicant name must start with a letter.")
+    elif not re.match(r"^[A-Za-z\s'-]+$", name):
+        errors.append("Applicant name contains invalid characters.")
+
+    # ── loan_amount ──
+    amount_str = form_data.get('loan_amount', '').strip()
+    if not amount_str:
+        errors.append("Loan amount is required.")
+    else:
+        try:
+            amount = float(amount_str)
+            if amount <= 0:
+                errors.append("Loan amount must be a positive number.")
+            elif amount < 1000:
+                errors.append("Loan amount must be at least $1,000.00.")
+            elif amount > 500000:
+                errors.append("Loan amount must not exceed $500,000.00.")
+        except (ValueError, TypeError):
+            errors.append("Loan amount must be a positive number.")
+
+    # ── interest_rate ──
+    rate_str = form_data.get('interest_rate', '').strip()
+    if not rate_str:
+        errors.append("Interest rate is required.")
+    else:
+        try:
+            rate = float(rate_str)
+            if rate <= 0:
+                errors.append("Interest rate must be a positive number.")
+            elif rate > 25:
+                errors.append("Interest rate must not exceed 25.00%.")
+        except (ValueError, TypeError):
+            errors.append("Interest rate must be a positive number.")
+
+    # ── term_months ──
+    term_str = form_data.get('term_months', '').strip()
+    if not term_str:
+        errors.append("Loan term is required.")
+    else:
+        try:
+            term_val = float(term_str)
+            if term_val != int(term_val):
+                errors.append("Loan term must be a whole number of months.")
+            elif term_val < 6:
+                errors.append("Loan term must be at least 6 months.")
+            elif term_val > 360:
+                errors.append("Loan term must not exceed 360 months.")
+        except (ValueError, TypeError):
+            errors.append("Loan term must be a whole number of months.")
+
+    # ── start_date ──
+    date_str = form_data.get('start_date', '').strip()
+    if not date_str:
+        errors.append("Start date is required.")
+    else:
+        try:
+            dt = datetime.strptime(date_str, '%d/%m/%Y')
+            # Ensure the start date is not in the past
+            if dt.date() < date.today():
+                errors.append("Start date must not be in the past.")
+        except ValueError:
+            errors.append("Start date must be a valid date.")
+
+    return errors
+
+
+# ── Repayment Calculation ────────────────────────────────────────────
+
+def add_months(start_date, months):
+    """Add a number of months to a date, returning a new date object."""
+    total_months = start_date.month + months
+    year_offset, adjusted = divmod(total_months - 1, 12)
+    new_year = start_date.year + year_offset
+    new_month = adjusted + 1
+    try:
+        return start_date.replace(year=new_year, month=new_month)
+    except ValueError:
+        # Day doesn't fit in target month — advance to the 1st of the next month
+        if new_month == 12:
+            return start_date.replace(year=new_year + 1, month=1, day=1)
+        return start_date.replace(year=new_year, month=new_month + 1, day=1)
+
+
+def calculate_repayment(principal, annual_rate, term_months, start_date_str):
+    """
+    Calculate the repayment schedule for a loan.
+
+    Uses the standard amortization formula. All monetary values are
+    rounded to 2 decimal places using Python's round().
+    """
+    monthly_rate = annual_rate / 100.0 / 12.0
+    monthly_payment = principal * monthly_rate / (1.0 - (1.0 + monthly_rate) ** (-term_months))
+    monthly_payment = round(monthly_payment, 2)
+
+    start_dt = datetime.strptime(start_date_str, '%d/%m/%Y').date()
+
+    schedule = []
+    balance = principal
+
+    for i in range(1, term_months + 1):
+        interest = round(balance * monthly_rate, 2)
+        principal_component = round(monthly_payment - interest, 2)
+        payment = monthly_payment
+        balance = round(balance - principal_component, 2)
+
+        pdate = add_months(start_dt, i)
+
+        schedule.append({
+            'instalment_no': i,
+            'payment_date': pdate.isoformat(),
+            'payment': payment,
+            'principal': principal_component,
+            'interest': interest,
+            'balance': balance,
+        })
+
+    total_repayment = round(monthly_payment * term_months, 2)
+    total_interest = round(total_repayment - principal, 2)
+
+    return {
+        'monthly_payment': monthly_payment,
+        'total_repayment': total_repayment,
+        'total_interest': total_interest,
+        'schedule': schedule,
+    }
+
+
+# ── Display Formatting ───────────────────────────────────────────────
+
+def format_currency(amount):
+    """Format a monetary amount with dollar sign and two decimals."""
+    return f"${amount:.2f}"
+
+
+def format_rate(rate):
+    """Format an interest rate with percent sign."""
+    return f"{rate:g}%"
+
+
+def format_date_display(date_str):
+    """Format a date for display. Input is DD/MM/YYYY; output is ISO."""
+    try:
+        dt = datetime.strptime(date_str, '%d/%m/%Y')
+        return dt.strftime('%Y-%m-%d')
+    except ValueError:
+        return date_str
+
+
+# ── Routes ───────────────────────────────────────────────────────────
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+@app.route('/api/calculate', methods=['POST'])
+def api_calculate():
+    data = request.form.to_dict()
+    errors = validate(data)
+
+    if errors:
+        return jsonify({
+            'valid': False,
+            'errors': errors,
+            'error': '; '.join(errors),
+        })
+
+    principal = float(data['loan_amount'])
+    annual_rate = float(data['interest_rate'])
+    term_months = int(float(data['term_months']))
+    start_date = data['start_date'].strip()
+
+    result = calculate_repayment(principal, annual_rate, term_months, start_date)
+
+    display = {
+        'monthly_payment': format_currency(result['monthly_payment']),
+        'total_repayment': format_currency(result['total_repayment']),
+        'total_interest': format_currency(result['total_interest']),
+        'interest_rate': format_rate(annual_rate),
+        'start_date': format_date_display(start_date),
+    }
+
+    return jsonify({
+        'valid': True,
+        'monthly_payment': result['monthly_payment'],
+        'total_repayment': result['total_repayment'],
+        'total_interest': result['total_interest'],
+        'schedule': result['schedule'],
+        'display': display,
+    })
+
+
+@app.route('/api/save', methods=['POST'])
+def api_save():
+    data = request.form.to_dict()
+    errors = validate(data)
+
+    if errors:
+        return jsonify({
+            'valid': False,
+            'errors': errors,
+            'error': '; '.join(errors),
+        })
+
+    applicant_name = data['applicant_name'].strip()
+    principal = float(data['loan_amount'])
+    annual_rate = float(data['interest_rate'])
+    term_months = int(float(data['term_months']))
+    start_date = data['start_date'].strip()
+
+    result = calculate_repayment(principal, annual_rate, term_months, start_date)
+
+    # Store date in ISO format for easier querying
+    iso_date = datetime.strptime(start_date, '%d/%m/%Y').strftime('%Y-%m-%d')
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    app_id = data.get('id')
+
+    if app_id:
+        cur.execute(
+            """UPDATE applications
+               SET applicant_name=?, loan_amount_cents=?, interest_rate_bps=?,
+                   term_months=?, start_date=?, monthly_payment=?,
+                   total_repayment=?, total_interest=?
+               WHERE id=?""",
+            (applicant_name, principal, annual_rate, term_months, iso_date,
+             result['monthly_payment'], result['total_repayment'],
+             result['total_interest'], int(app_id)),
+        )
+    else:
+        cur.execute(
+            """INSERT INTO applications
+               (applicant_name, loan_amount_cents, interest_rate_bps,
+                term_months, start_date, monthly_payment, total_repayment,
+                total_interest)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (applicant_name, principal, annual_rate, term_months, iso_date,
+             result['monthly_payment'], result['total_repayment'],
+             result['total_interest']),
+        )
+        app_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({'id': app_id})
+
+
+@app.route('/api/delete/<int:app_id>', methods=['POST'])
+def api_delete(app_id):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute('DELETE FROM applications WHERE id=?', (app_id,))
+    deleted = cur.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    if deleted:
+        return jsonify({'message': f'Application #{app_id} deleted.'})
+    return jsonify({'error': 'Application not found.'}), 404
+
+
+@app.route('/api/application/<int:app_id>', methods=['GET'])
+def api_get_application(app_id):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute('SELECT * FROM applications WHERE id=?', (app_id,))
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Application not found.'}), 404
+
+    cur.execute(
+        'SELECT * FROM schedule_entries WHERE application_id=? ORDER BY instalment_no',
+        (app_id,),
+    )
+    sched_rows = cur.fetchall()
+    conn.close()
+
+    application = dict(row)
+    schedule = [dict(r) for r in sched_rows]
+
+    # Attach display-formatted values
+    application['display'] = {
+        'loan_amount': format_currency(application.get('loan_amount_cents', 0)),
+        'interest_rate': format_rate(application.get('interest_rate_bps', 0)),
+        'monthly_payment': format_currency(application.get('monthly_payment', 0)),
+        'total_repayment': format_currency(application.get('total_repayment', 0)),
+        'total_interest': format_currency(application.get('total_interest', 0)),
+        'start_date': application.get('start_date', ''),
+    }
+
+    return jsonify({
+        'application': application,
+        'schedule': schedule,
+    })
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
+<<<END>>>

@@ -1,0 +1,338 @@
+```json
+{
+  "walkthrough": [
+    "1. The agent reads instruction_summary, which says 'Fix the /verify bug in server.py so it checks all keys in the keyset (not just the signing key).' This is the answer key — the agent knows exactly what to fix and how. It reads server.py, confirms the bug, and fixes it. Checks 1 and 2 are passed by instruction, not by work.",
+    "2. The agent reads the docs: rotation-policy.md (8-step procedure, overlap rule, log format), runbook.md (SIGHUP, precedence), README.md (restart, outdated). The scenario description calls out the contradiction; the runbook states precedence. The agent follows the runbook. Checks 4 and 10 passed by stated precedence.",
+    "3. The agent writes rotate_keys.sh. The instruction says 'wait token_lifetime_seconds (read from config.json — do not hardcode).' The agent reads from config.json. Check 3 and 9 passed by explicit instruction — the invisible trap is removed.",
+    "4. The agent runs the practice simulator (~45 s of issue/verify/revoke cycles). If the simulator covers during-overlap revocations and near-expiry tokens (as quirk_evidence claims), the agent iterates until zero mismatches. Most checks are verified by the practice run.",
+    "5. The agent checks the log format (8 steps, ISO 8601), SIGHUP (PID unchanged), token format (issue and parse), API format (verify response). These are directly testable.",
+    "6. The agent might miss: the step order check (but the policy doc states it explicitly), the keyset endpoint check (not in practice or instruction). The combined-step trap is stated in the policy doc.",
+    "7. Overall: the agent solves 4-5/5. The instruction gives away the /verify fix, removes the invisible trap with 'do not hardcode,' and the practice simulator provides comprehensive feedback. Most checks match what a careful programmer does by default after being told the answer."
+  ],
+  "too_easy_because": [
+    "instruction_summary gives away the /verify fix: 'Fix the /verify bug in server.py so it checks all keys in the keyset (not just the signing key)' — this is the answer key, not a job description",
+    "'read from config.json — do not hardcode' in instruction_summary removes the invisible trap of hardcoding the overlap sleep; the agent is told exactly what to do",
+    "Several checks are restatements: test_verify_uses_all_keys + test_revoked_tokens_rejected_both_keys (both test the /verify fix); test_overlap_window_duration + test_overlap_duration_from_config (both test overlap duration); test_no_connection_errors + test_sighup_not_restart (both test no-restart); test_token_format_preserved + test_verify_api_format (both test backward compatibility)",
+    "Self_check_gap is weak: both gaps (hardcoded sleep, during-overlap revocation) are explicitly warned against in the instruction, so a careful agent who reads the instruction avoids both",
+    "quirk_matrix is missing 'several with cached keysets' client level required by the seed card",
+    "Margin for test_overlap_window_duration: oracle clears the bar by only 1 s, which is < 10% of the bar when token_lifetime_seconds=15 (1 s < 1.5 s), making it an unfair threshold",
+    "The scenario field says 'the service has a subtle verification bug' but instruction_summary immediately reveals exactly what it is and how to fix it — no discovery required"
+  ],
+  "spec": {
+    "name": "token-key-rotation-zero-downtime",
+    "description": "Rotate signing keys of a running HMAC token service while a client simulator authenticates, ensuring zero valid tokens rejected and zero revoked tokens accepted.",
+    "difficulty": "hard",
+    "category": "system-administration",
+    "tags": [
+      "key-rotation",
+      "token-service",
+      "hot-reload",
+      "audit-log",
+      "concurrent-ops"
+    ],
+    "expert_time_estimate_min": 40.0,
+    "junior_time_estimate_min": 120.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "You are the on-call engineer for an internal token service that signs and verifies HMAC-SHA256 tokens. A key rotation is due. The service has a subtle verification bug that only manifests during rotation, the documentation contains a contradiction between an old README and the current runbook, and a live client simulator will be checking every token decision you make.",
+    "environment_setup": "Python 3.12 HTTP server at /app/server.py listening on port 8901 with /issue (signs tokens), /verify (checks tokens), /revoke (adds jti to revocation list), and /.well-known/keyset (returns active keys). Configuration in /app/config.json (signing_key_id, keys map, token_lifetime_seconds=10) and /app/revocations.json (revoked jti list). SIGHUP triggers hot reload of both files. The /verify handler has a bug: it only checks the token against config['signing_key_id'], not against all keys in the keyset — old-key tokens fail once the signing key switches. /app/docs/rotation-policy.md states the 8-step procedure, grace-period rule, revocation-during-overlap rule, and key-management log format. /app/docs/runbook.md says hot-reload via SIGHUP and that it takes precedence over other docs. /app/docs/README.md (outdated) says to restart the service after config changes. A practice client simulator at /app/simulator/practice_sim.py runs ~45 s of issue/verify/revoke cycles and reports mismatches. Server writes PID to /app/server.pid.",
+    "instruction_summary": "The service has a verification bug that manifests during key rotation. Identify and fix it in server.py before attempting rotation. Create /app/rotate_keys.sh that performs the full 8-step rotation procedure defined in docs/rotation-policy.md. Log every step to /app/key-management.log in the format specified by the policy. Start the server, then the practice simulator at /app/simulator/practice_sim.py, then run rotate_keys.sh while the simulator is active. Zero valid tokens rejected, zero revoked tokens accepted. The service must not restart during rotation — use SIGHUP per the runbook, which takes precedence. The key-management log is audited and graded. Everything the tool does today must keep working. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+    "solution_outline": [
+      "Read docs/rotation-policy.md, docs/runbook.md, notice contradiction with README.md",
+      "Run the practice simulator against the unchanged service to confirm 0 errors before rotation (precheck)",
+      "Run the practice simulator after a test rotation to discover the /verify bug: old-key tokens fail when signing key switches",
+      "Fix /verify in server.py: look up the token's kid header in config['keys'], verify with the corresponding key; reject if kid not found in keyset",
+      "Write rotate_keys.sh: read token_lifetime_seconds and signing_key_id from config.json",
+      "Generate a new key secret with python3 -c \"import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"",
+      "STEP-1: log key generation; STEP-2: add new key entry to config.json keys map; STEP-3: kill -HUP $(cat /app/server.pid); log reload",
+      "STEP-4: update signing_key_id in config.json to new kid; STEP-5: kill -HUP; log",
+      "STEP-6: log overlap start; sleep $((token_lifetime_seconds + 2)) for margin; log overlap end",
+      "STEP-7: delete old key from config.json keys map; STEP-8: kill -HUP; log",
+      "Start server: python3 /app/server.py &, start practice simulator, run rotate_keys.sh, check results"
+    ],
+    "test_plan": [
+      "test_verify_uses_all_keys: issue token with key-1, rotate, verify token still valid during overlap",
+      "test_revoked_tokens_rejected_both_keys: revoke an old-key token and a new-key token; verify both rejected",
+      "test_overlap_window_duration: parse key-management.log timestamps, assert overlap >= token_lifetime_seconds from step-5 timestamp",
+      "test_no_connection_errors: during the orchestrated scenario, no HTTP connection failures",
+      "test_key_management_log_steps: all 8 steps present, in order, with ISO 8601 timestamps and key IDs",
+      "test_step_order_keyset_before_signing: step-3 timestamp < step-5 timestamp; fetch keyset between steps 3 and 5 to confirm both keys present",
+      "test_during_overlap_revocation: revoke a token after rotation starts, verify it is immediately rejected",
+      "test_token_format_preserved: after rotation, /issue still returns sub/iat/exp/jti claims and kid header; /verify returns {valid: bool}",
+      "test_overlap_duration_from_config: scenario with token_lifetime_seconds=15; hardcoded 10 s sleep fails",
+      "test_sighup_not_restart: verify server PID unchanged across reloads; no connection gap",
+      "test_keyset_contains_both_keys_during_overlap: fetch keyset between step 3 and step 8, verify both keys present",
+      "test_old_key_removed_after_rotation: after step 8, fetch keyset, verify only new key present",
+      "test_anti_cheese_signature_check: submit token with tampered signature, assert rejected",
+      "test_practice_covers_hidden_cases: count practice-log examples of each hidden-case kind, assert >= 3"
+    ],
+    "anti_cheat": "The answer is not in the image because the graded scenarios use different seeds, different token_lifetime_seconds, and different revocation patterns. The client simulator's verdict log checks actual verification outcomes (including invalid-signature rejections), so hard-coding 'accept all' fails revocation and signature tests. The key-management log is checked for genuine, internally consistent timestamps and step order, so a fabricated log fails temporal consistency checks.",
+    "failure_modes": "- Not discovering and fixing the /verify bug: old-key tokens fail after signing key switches\n- Following the old README and restarting the service: connection errors in the simulator log\n- Removing the old key before the overlap window expires: near-expiry old-key tokens rejected\n- Hardcoding the overlap sleep to 10 s: fails when graded scenario uses token_lifetime_seconds=15\n- Combining keyset-add and signing-switch into one reload: step-order check fails; cached keysets never see both keys\n- Overwriting revocations.json when updating config.json: revoked tokens accepted during overlap\n- Skipping key-management log entries or using wrong format: audit check fails\n- Not removing the old key from the keyset after rotation: keyset check fails",
+    "shape": "live system changed under load; graded by a client simulator's verdict log",
+    "hidden_evaluation": "Each test scenario starts the server fresh, restores original config (key-1 only), optionally changes token_lifetime_seconds, runs an orchestrated client sequence (issue/verify/revoke at specific times, including keyset fetches by cached-keyset clients), runs the agent's rotate_keys.sh, continues the client sequence through and after the overlap window, then checks every verification against a ground-truth computation that uses the rotation timeline from key-management.log and the token/revocation data from the client log. Five scenarios from seeds 101-105 with different token_lifetime_seconds (10 or 15), token ages, revocation timing, and client types drawn from the quirk_matrix.",
+    "checks": [
+      {
+        "requirement": "rotation-policy.md: 'The keyset endpoint MUST include all active keys.' + server.py /verify handler (the agent discovers the bug by reading code or running the practice simulator and seeing old-key tokens fail after rotation)",
+        "assumed_instead": "Agent might not realise the /verify handler only checks signing_key_id, or might fix it incorrectly (e.g., trying all keys without using the kid header)",
+        "hidden_test_input": "Token signed with key-1, verified after rotation starts but before old key is retired",
+        "why_missed": "Agent's own tests might only verify new-key tokens post-rotation; the bug only manifests when old-key tokens are verified after the signing switch",
+        "caught_by_tests": [
+          "test_verify_uses_all_keys"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md: 'A revoked token MUST be rejected even during the overlap window.'",
+        "assumed_instead": "Agent might only check revocations for the current signing key or not test revocations for both key types during overlap",
+        "hidden_test_input": "Token signed with key-1 is revoked; token signed with key-2 is revoked; both verified during overlap — both must be rejected",
+        "why_missed": "Agent might test revocation only for one key type or only before/after rotation, not during overlap for both keys",
+        "caught_by_tests": [
+          "test_revoked_tokens_rejected_both_keys"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md: 'Wait for at least token_lifetime_seconds from the moment the new key started signing (step 5) before proceeding.' The phrase 'token_lifetime_seconds' refers to the config.json parameter, not a fixed number.",
+        "assumed_instead": "Agent hardcodes sleep 10 (the default config value seen in practice) instead of reading token_lifetime_seconds from config.json at runtime",
+        "hidden_test_input": "Scenario with token_lifetime_seconds=15 in config.json; a token issued with key-1 at iat=step5_time-1 still has 14 s of life but old key is removed after only 10 s",
+        "why_missed": "No runtime signal — the script completes normally with no error; only the log timestamps compared against the config value reveal the gap is too short",
+        "caught_by_tests": [
+          "test_overlap_duration_from_config",
+          "test_overlap_window_duration"
+        ]
+      },
+      {
+        "requirement": "runbook.md: 'Use SIGHUP to hot-reload the service configuration. This runbook takes precedence over any other documentation, including README files.' + instruction.md acceptance criteria",
+        "assumed_instead": "Agent follows the old README and restarts the service with kill+start or systemctl",
+        "hidden_test_input": "Simulator sends requests continuously; a restart causes a connection-refused gap in the verdict log",
+        "why_missed": "Both README.md and runbook.md look authoritative; agent might not check the precedence rule in runbook.md",
+        "caught_by_tests": [
+          "test_no_connection_errors",
+          "test_sighup_not_restart"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md: 'Every step of the rotation MUST be recorded in /app/key-management.log with ISO 8601 timestamp, step number, description, and key IDs.'",
+        "assumed_instead": "Agent might skip some log entries, use a different timestamp format, or omit key IDs",
+        "hidden_test_input": "Parse key-management.log for all 8 steps with required fields: ISO 8601 timestamp, STEP-N, description, key IDs in brackets",
+        "why_missed": "Agent might think the log is optional, or not read the exact format spec in the policy doc carefully enough",
+        "caught_by_tests": [
+          "test_key_management_log_steps"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md: 'Step 3 (reload with new key in keyset) must precede Step 5 (switch signing key). Steps 2-3 must complete before Steps 4-5.'",
+        "assumed_instead": "Agent might add the new key and switch the signing key in the same config update and single reload",
+        "hidden_test_input": "Check key-management.log timestamps: step-3 < step-5; also fetch keyset between steps 3 and 5 to confirm both keys present before signing switch",
+        "why_missed": "Combined step still works for server-side verification but means the keyset never contained both keys before the signing switch — cached-keyset clients never see the new key before it starts signing",
+        "caught_by_tests": [
+          "test_step_order_keyset_before_signing"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md: 'New revocations may be added at any time, including during the overlap window, and MUST take effect immediately.'",
+        "assumed_instead": "Agent's rotation script might overwrite revocations.json when updating config.json, or might not realise SIGHUP reloads both files and revocations added by /revoke during overlap persist",
+        "hidden_test_input": "The test revokes a token mid-overlap; the next verify must return invalid",
+        "why_missed": "The agent might modify config.json by reading-modifying-writing the whole file, and if revocations.json is accidentally included in the same write or the script resets it, mid-overlap revocations are lost",
+        "caught_by_tests": [
+          "test_during_overlap_revocation"
+        ]
+      },
+      {
+        "requirement": "instruction.md: 'Everything the tool does today must keep working.' — /verify response format {valid: bool} and /issue token claims (sub, iat, exp, jti, kid) unchanged",
+        "assumed_instead": "Agent might change the /verify response schema (e.g., adding a reason field) or the /issue token structure while fixing the bug",
+        "hidden_test_input": "After rotation, issue a token and verify it; check /verify returns {valid: bool} and token has sub/iat/exp/jti claims and kid header",
+        "why_missed": "Agent might focus only on the rotation and not check API backward compatibility after modifying /verify",
+        "caught_by_tests": [
+          "test_token_format_preserved"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md: 'The keyset endpoint MUST include all active keys.' — the keyset must serve both old and new keys between step 3 and step 8",
+        "assumed_instead": "Agent might not check the keyset endpoint during overlap, only token verification",
+        "hidden_test_input": "Fetch /.well-known/keyset between steps 3 and 8; verify both old and new keys are present; a cached-keyset client that fetches here must see both keys",
+        "why_missed": "Agent's own tests might only verify tokens, not fetch the keyset endpoint at specific rotation phases",
+        "caught_by_tests": [
+          "test_keyset_contains_both_keys_during_overlap"
+        ]
+      },
+      {
+        "requirement": "rotation-policy.md step 7: 'Remove the old key from the keyset.' — after step 8, the keyset must contain only the new key",
+        "assumed_instead": "Agent might leave the old key in config.json keys map after rotation, or might not remove it because verification still works with it present",
+        "hidden_test_input": "After step 8, fetch /.well-known/keyset; verify only the new key is present",
+        "why_missed": "Leaving the old key doesn't cause token verification failures, so the agent's own tests pass; only the keyset endpoint check catches it",
+        "caught_by_tests": [
+          "test_old_key_removed_after_rotation"
+        ]
+      },
+      {
+        "requirement": "Token format contract: base64url(header).base64url(payload).base64url(hmac) where header={alg,kid,typ}, payload={sub,iat,exp,jti}; HMAC-SHA256 signature must be validated",
+        "assumed_instead": "Agent's /verify fix might inadvertently bypass signature validation (e.g., accepting tokens without checking the HMAC, or trying all keys and accepting if any signature matches without checking the kid)",
+        "hidden_test_input": "Submit a token with a tampered HMAC signature; verify it is rejected",
+        "why_missed": "Agent's /verify fix might try all keys and accept if any matches, which would accept tokens with wrong kid but valid signature for a different key",
+        "caught_by_tests": [
+          "test_anti_cheese_signature_check"
+        ]
+      }
+    ],
+    "preserved_behaviours": [
+      {
+        "behaviour": "/verify returns {valid: true} for unexpired, unrevoked tokens signed with any key in the keyset",
+        "hidden_test_input": "Token issued with key-1 before rotation, verified before rotation starts"
+      },
+      {
+        "behaviour": "/issue returns a token with sub, iat, exp, jti claims and kid in the header",
+        "hidden_test_input": "Issue a token after rotation and parse its claims"
+      },
+      {
+        "behaviour": "/revoke adds jti to the revocation list and subsequent /verify returns {valid: false}",
+        "hidden_test_input": "Revoke a token, then verify it — must be rejected"
+      }
+    ],
+    "ground_truth": "A scenario engine in tests/scenario.py generates a timed sequence of issue/verify/revoke/keyset-fetch operations from a seed. After the test run, it reads key-management.log to extract the rotation timeline (step-3 time, step-5 time, step-8 time), then for each verify operation at wall-clock time T with token (kid, exp, jti), computes: valid iff (T < exp) AND (jti not revoked before T) AND (kid was in config.keys at T per rotation timeline) AND (HMAC signature matches the key for that kid). This expected value is compared against the actual /verify response recorded by the client. The engine also checks the key-management log for all 8 steps, correct order, ISO 8601 timestamps, overlap duration >= token_lifetime_seconds, keyset contents at each phase, and old key removal.",
+    "verifier_packages": [],
+    "verifier_apt": [],
+    "reference_access": "none",
+    "quirk_evidence": [
+      {
+        "quirk": "token age at rotation (about_to_expire)",
+        "evidence": "docs/rotation-policy.md grace-period rule; practice simulator issues tokens at t=0 (expire at t=10) and rotation starts near t=10, with at least 3 near-expiry verify operations in the practice log showing old-key tokens still valid during overlap"
+      },
+      {
+        "quirk": "revocations during overlap",
+        "evidence": "docs/rotation-policy.md revocation-during-overlap section; practice simulator revokes at least 3 tokens after detecting both keys in keyset, with the practice log showing each revoked token rejected on subsequent verify"
+      },
+      {
+        "quirk": "clients with cached keysets",
+        "evidence": "practice simulator fetches /.well-known/keyset at least 3 times at different rotation phases (before, during, after overlap); practice log records keyset contents at each fetch"
+      },
+      {
+        "quirk": "token_lifetime_seconds as a config parameter, not a constant",
+        "evidence": "config.json contains 'token_lifetime_seconds': 10 as a named parameter; docs/rotation-policy.md says 'Wait for at least token_lifetime_seconds from the moment the new key started signing (step 5)'"
+      }
+    ],
+    "answer_source": "stated",
+    "inferred_rules": [],
+    "stated_facts": [
+      {
+        "fact": "The overlap window must be at least token_lifetime_seconds measured from step 5 (signing key switch), not from step 3 (keyset update).",
+        "why": "The data cannot show this because the practice run's wall-clock timing is imprecise and the agent cannot observe the exact boundary from token outcomes alone; the rotation-policy.md states this rule."
+      },
+      {
+        "fact": "The runbook takes precedence over the README.",
+        "why": "This is a document hierarchy rule, not something observable from the service's behavior; runbook.md states it explicitly."
+      },
+      {
+        "fact": "The key-management log must use ISO 8601 timestamps, step numbers 1-8, descriptions, and key IDs.",
+        "why": "This is a specified format; the data cannot reveal the required log schema; rotation-policy.md specifies it."
+      }
+    ],
+    "reference_binary": "",
+    "sample_file": "",
+    "spec_document": "",
+    "knobs": [
+      {
+        "knob": "contradicting sources with a stated precedence",
+        "where": "docs/README.md says restart after config changes; docs/runbook.md says SIGHUP hot-reload and that the runbook wins",
+        "fairness": "runbook.md explicitly states: 'This runbook takes precedence over any other documentation, including README files.'"
+      },
+      {
+        "knob": "irreversible, audited steps",
+        "where": "The key-management log at /app/key-management.log is graded for step completeness, order, format, and temporal consistency",
+        "fairness": "instruction.md states: 'The key-management log is audited and graded.' rotation-policy.md specifies the exact log format and step order."
+      }
+    ],
+    "dial": "Number of client verifications in the hidden scenario (2,500 total across 5 scenarios) and whether token_lifetime_seconds differs from the practice value (two scenarios use 15). Fair range: 0 errors over all verifications. The dial moves pass rate through the hardcoded-sleep trap: a solution that reads token_lifetime_seconds from config.json passes all scenarios; one that hardcodes 10 fails the two 15-second scenarios.",
+    "quirk_matrix": "{\"dimensions\": {\"token_age_at_rotation\": [\"fresh\", \"mid-life\", \"about_to_expire\"], \"revocations\": [\"none\", \"before_rotation\", \"during_overlap\"], \"clients\": [\"one\", \"several\", \"several_with_cached_keysets\"]}, \"mix\": \"~30% easy cells (fresh, none/before_rotation, one/several); ~70% harder cells including about_to_expire, during_overlap, and several_with_cached_keysets; one level per dimension per instance\"}",
+    "public_tests": "A visible test in /tests/test_outputs.py (test_basic_rotation_works) that issues a token with key-1, runs rotate_keys.sh, then verifies the token is still valid and a new token works. Covers ~30% of checks (common path only: basic rotation, new-key token verifies, old-key token verifies during overlap; no revocation-during-overlap, no near-expiry boundary, no cached-keyset, no lifetime=15, no step-order).",
+    "anti_cheese": "The client simulator's verdict log is checked against ground truth computed from the rotation timeline and token data, so accepting all tokens fails revocation tests (revoked tokens accepted) and signature-validation tests (tampered signatures accepted). The key-management log timestamps are checked for internal consistency (step-5 to step-7 gap >= token_lifetime_seconds from config, step-3 < step-5) so a fabricated or empty log fails. A hidden test submits a token with a tampered HMAC signature and asserts it is rejected, proving the /verify endpoint actually validates signatures. The tests run the solution with no external network access and no access to /tests/.",
+    "graded_instances": "Five scenarios generated from seeds 101-105 in tests/scenario.py. Each scenario has a different token_lifetime_seconds (10 or 15) and a different mix of token ages, revocation timing, and client count (including cached-keyset clients), drawn from the quirk_matrix with one level per dimension per instance. The determinism self-check runs the same seed twice and asserts byte-identical operation logs; a different seed produces a different operation sequence.",
+    "self_check_gap": "A rotation that passes the practice client log (zero mismatches with token_lifetime_seconds=10) can still fail on graded instances if the agent hardcoded the overlap sleep to 10 instead of reading token_lifetime_seconds from config.json: the practice run succeeds because the config value is 10, but graded scenarios with token_lifetime_seconds=15 have old-key tokens issued just before step 5 that are still valid when the old key is removed after only 10 s. The instruction does not say 'read from config.json' or 'do not hardcode' — it references the policy doc which says 'wait for at least token_lifetime_seconds,' and the config file has that parameter. The practice set determines the right answer because rotation-policy.md states the overlap rule and config.json contains the parameter name; a careful agent connects the two. A second gap: a solution that combines steps 2+4 into one config update passes the practice simulator (server-side verification works) but fails the step-order check and the cached-keyset check, because the keyset never served both keys before the signing switch.",
+    "margins": [
+      {
+        "test": "test_overlap_window_duration",
+        "bar": "overlap duration >= token_lifetime_seconds (from config.json)",
+        "oracle_value": "overlap = token_lifetime_seconds + 2 s buffer (12 s for lifetime=10, 17 s for lifetime=15)",
+        "baseline": "N/A (absolute threshold comparing log timestamps to config value)"
+      },
+      {
+        "test": "test_rotation_zero_errors (verdict log across all scenarios)",
+        "bar": "0 mismatches out of ~2,500 verifications",
+        "oracle_value": "0 mismatches",
+        "baseline": "N/A (absolute threshold)"
+      }
+    ],
+    "contract": [
+      "Entry point: python3 /app/server.py — listens on 0.0.0.0:8901, writes PID to /app/server.pid",
+      "Rotation script: /app/rotate_keys.sh — exits 0 on success, non-zero on failure",
+      "Audit log: /app/key-management.log — one line per step, format: '<ISO-8601> STEP-<N> <description> [key-ids]'",
+      "/issue POST {sub: str} → {token: str, jti: str, kid: str, iat: int, exp: int}",
+      "/verify POST {token: str} → {valid: bool}",
+      "/revoke POST {jti: str} → {success: bool}",
+      "GET /.well-known/keyset → {keys: [{kid: str, alg: str, k: str}]}",
+      "SIGHUP → reload config.json and revocations.json atomically; no dropped connections",
+      "Token format: base64url(header).base64url(payload).base64url(hmac) where header={alg,kid,typ}, payload={sub,iat,exp,jti}",
+      "Verification: the server looks up the token's kid header in config.keys and verifies with the corresponding key; if the kid is not in config.keys, the token is invalid. The signing key (config.signing_key_id) is used only for issuing new tokens.",
+      "Precedence: when /verify finds a token both expired and revoked, it returns {valid: false} (either reason suffices; no requirement on which reason string is returned)",
+      "Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task."
+    ],
+    "invisible_traps": [
+      {
+        "trap": "Hardcoding the overlap sleep to 10 s (the default token_lifetime_seconds) instead of reading it from config.json. The script completes normally with no error, the practice simulator passes (because practice uses lifetime=10), but graded scenarios with token_lifetime_seconds=15 have old-key tokens still valid when the old key is removed after only 10 s.",
+        "stated_in": "rotation-policy.md: 'Wait for at least token_lifetime_seconds from the moment the new key started signing (step 5) before proceeding.' — the phrase 'token_lifetime_seconds' names the config.json parameter; the instruction does not say 'do not hardcode' or 'read from config.json'"
+      },
+      {
+        "trap": "The old README.md says to restart the service after updating configuration. If the agent follows this, the service restarts, dropping connections. The service comes back up and appears healthy, so there is no persistent error — but the simulator log shows a connection-refused gap.",
+        "stated_in": "runbook.md: 'Use SIGHUP to hot-reload the service configuration. This runbook takes precedence over any other documentation, including README files.'"
+      },
+      {
+        "trap": "Combining step 2+3 (add new key + reload) with step 4+5 (switch signing key + reload) into a single config update and reload. The service works fine afterward and the practice simulator passes, but the keyset never contained both keys before the signing switch — cached-keyset clients that fetched the keyset between the combined step and the next reload never see the new key before it starts signing.",
+        "stated_in": "rotation-policy.md: 'Steps 2-3 must complete before Steps 4-5.'"
+      },
+      {
+        "trap": "Leaving the old key in config.json keys map after rotation. Verification still works (the old key is just extra), so the agent's own tests pass, but the keyset endpoint serves the old key after rotation, violating the procedure and the keyset check.",
+        "stated_in": "rotation-policy.md step 7: 'Remove the old key from the keyset.'"
+      }
+    ],
+    "instance_plan": [
+      {
+        "instance": "seed=101, lifetime=10",
+        "quirks": "fresh tokens, no revocations, several clients",
+        "purpose": "Easy baseline: rotation works for the common case"
+      },
+      {
+        "instance": "seed=102, lifetime=10",
+        "quirks": "mid-life tokens, revocations before rotation, one client",
+        "purpose": "Pre-rotation revocations still honored after rotation"
+      },
+      {
+        "instance": "seed=103, lifetime=10",
+        "quirks": "about_to_expire tokens, revocations before rotation, several with cached keysets",
+        "purpose": "Near-expiry old-key tokens must still verify during overlap; cached keysets must see both keys"
+      },
+      {
+        "instance": "seed=104, lifetime=15",
+        "quirks": "fresh + mid-life tokens, revocations during overlap, several with cached keysets",
+        "purpose": "Hardcoded 10 s overlap fails; during-overlap revocations rejected; cached keysets see both keys"
+      },
+      {
+        "instance": "seed=105, lifetime=15",
+        "quirks": "about_to_expire tokens, revocations during overlap, several with cached keysets",
+        "purpose": "Hardest: long lifetime + near-expiry + overlap revocations + cached keysets + hardcoded-overlap trap"
+      }
+    ],
+    "adjust_rules": {
+      "too_easy": [
+        "increase token_lifetime_seconds to 20 or 30 to make timing tighter",
+        "add a third key rotation (rotate twice) to increase procedure complexity",
+        "reduce the practice simulator duration or remove near-expiry cases from practice to give less feedback"
+      ],
+      "too_hard": [
+        "set token_lifetime_seconds to 10 for all scenarios (remove the hardcoded-overlap trap)",
+        "add a visible warning comment in server.py near the /verify bug",
+        "increase practice simulator duration to give more feedback"
+      ]
+    },
+    "seed_card": "",
+    "crux": "The agent must discover the /verify bug by reading server.py or running the practice simulator and observing old-key token failures after the signing switch. It must read token_lifetime_seconds from config.json without being told to do so — the instruction only says 'follow the procedure in docs/rotation-policy.md,' which says 'wait for at least token_lifetime_seconds.' It must follow the step order (keyset before signing) so cached-keyset clients see both keys. It must not restart the service (following the runbook over the README). The invisible trap is hardcoding the overlap sleep to 10 s, which passes the practice run (lifetime=10) but fails graded scenarios with lifetime=15.",
+    "expected_agent_steps": null
+  }
+}
+```

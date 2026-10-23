@@ -1,0 +1,18 @@
+branch,posted,amount,units,code
+par,abc,1000000000,-2.5
+PAR1,2024-01-31,abc,7
+los angeles,2024/1/5,1000000000,0,Ünï
+los angeles,20240131,,0
+PAR1,abc,.5,0
+NYC-West,abc,0x1A,abc,
+Malmö,9,,7
+Österreich,2024/1/5,,4e2,extra
+NYC-West,, -3 ,0,Ünï
+Malmö,10,12.50,4e2,Ünï,extra
+ny,2024/1/5,1e3,,12345
+berlin,20240131,12.50,,x
+par,abc,1000000000,7
+los angeles,abc,0.2,,x
+  ,2024/1/5,1e3,3.9,Ünï
+a b c d e,,-0,,
+Zürich,20240105,10,1,AB12

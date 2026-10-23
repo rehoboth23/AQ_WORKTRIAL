@@ -1,0 +1,8 @@
+branch,posted,amount,units,code
+ny,9,-5,0,x
+Malmö,abc, 7 ,10,extra
+par,007,-12.345,,AB12
+ lon,007,0.1,0
+Malmö,007, 7 ,0,Q
+Malmö,007,0x1A,abc
+london,20240105,10,1,AB12

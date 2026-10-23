@@ -1,0 +1,457 @@
+<<<MANIFEST>>>
+environment/cipher.py
+environment/README.md
+environment/generate_data.py
+environment/decrypt.py
+<<<END>>>
+<<<FILE environment/cipher.py>>>
+"""
+WobbleStream v1.0 - Lightweight Stream Cipher
+
+A stream cipher for internal messaging. Uses a 128-bit key with a
+32-bit nonce to produce a keystream via a 20-stage LFSR initialized
+from the key schedule.
+
+Security: 128-bit key space provides strong confidentiality.
+
+Usage:
+    from cipher import WobbleStream, make_message, verify_message
+
+    msg = make_message(b'Hello!', content_type=0x01)
+    ws = WobbleStream(key, nonce)
+    encrypted = ws.encrypt(msg)
+
+    ws2 = WobbleStream(key, nonce)
+    decrypted = ws2.decrypt(encrypted[4:])
+    assert verify_message(decrypted)
+"""
+
+import struct
+
+# LFSR polynomial: x^20 + x^3 + 1 (primitive over GF(2))
+_FALLBACK_SEED = 0xAC01  # Used when key schedule produces zero
+
+# Message format constants
+MAGIC = b'\x89\x57'
+VERSION = 0x01
+TYPE_TEXT = 0x01
+TYPE_BINARY = 0x02
+TYPE_MIXED = 0x03
+
+
+def _crc16_xmodem(data: bytes) -> int:
+    """CRC-16/XMODEM checksum."""
+    crc = 0x0000
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc <<= 1
+            crc &= 0xFFFF
+    return crc
+
+
+def _expand_key(key: bytes) -> int:
+    """Expand 128-bit key to 32-bit hash state (murmur3-style mixing)."""
+    assert len(key) == 16
+    h = 0
+    for i in range(0, 16, 4):
+        k = struct.unpack('>I', key[i:i+4])[0]
+        h = (h ^ k) & 0xFFFFFFFF
+        h = (h * 0x5BD1E995) & 0xFFFFFFFF
+    return h
+
+
+def _finalize_state(state: int) -> int:
+    """Finalize key schedule: avalanche mixing then extract LFSR seed.
+
+    Applies MurmurHash3-style finalization to ensure that small
+    changes in the input produce large, unpredictable changes in
+    the output. Returns the fully mixed internal state value.
+    """
+    state ^= state >> 16
+    state = (state * 0x85EBCA6B) & 0xFFFFFFFF
+    state ^= state >> 13
+    state = (state * 0xC2B2AE35) & 0xFFFFFFFF
+    state ^= state >> 16
+    return state & 0xFFFFF
+
+
+def _derive_seed(key: bytes, nonce: bytes) -> int:
+    """Derive LFSR seed from a 128-bit key and 32-bit nonce.
+
+    The key schedule expands the full key, combines with the nonce
+    via XOR, and applies avalanche finalization to produce the
+    LFSR initialization seed.
+    """
+    assert len(key) == 16 and len(nonce) == 4
+    key_state = _expand_key(key)
+    nonce_val = struct.unpack('>I', nonce)[0]
+    combined = (key_state ^ nonce_val) & 0xFFFFFFFF
+    seed = _finalize_state(combined)
+    if seed == 0:
+        seed = _FALLBACK_SEED
+    return seed
+
+
+def _lfsr_step(state: int) -> int:
+    """Advance 20-bit LFSR by one step.
+
+    Uses primitive polynomial x^20 + x^3 + 1.
+    Feedback bit enters at LSB; MSB shifts out.
+    """
+    feedback = (state >> 19) & 1
+    state = ((state << 1) | feedback) & 0xFFFFF
+    state ^= feedback << 3
+    return state
+
+
+def _lfsr_byte(state: int):
+    """Generate one keystream byte from 8 LFSR steps (MSB first).
+
+    Returns (keystream_byte, new_state).
+    """
+    val = 0
+    for i in range(8):
+        state = _lfsr_step(state)
+        val |= (state & 1) << (7 - i)
+    return val, state
+
+
+def make_message(payload: bytes, content_type: int) -> bytes:
+    """Create a WobbleStream formatted message.
+
+    Format: magic(2) + version(1) + type(1) + payload + CRC-16/XMODEM(2)
+    The CRC covers all bytes before it (magic + version + type + payload).
+    """
+    if content_type not in (TYPE_TEXT, TYPE_BINARY, TYPE_MIXED):
+        raise ValueError(f"Bad content type: {content_type:#x}")
+    header = MAGIC + bytes([VERSION, content_type])
+    body = header + payload
+    crc = _crc16_xmodem(body)
+    return body + struct.pack('>H', crc)
+
+
+def verify_message(plaintext: bytes) -> bool:
+    """Verify the CRC-16/XMODEM of a WobbleStream message."""
+    if len(plaintext) < 6:
+        return False
+    data, crc_bytes = plaintext[:-2], plaintext[-2:]
+    return _crc16_xmodem(data) == struct.unpack('>H', crc_bytes)[0]
+
+
+class WobbleStream:
+    """WobbleStream cipher (128-bit key, 32-bit nonce).
+
+    The key schedule derives an LFSR seed from the key and nonce.
+    Encryption and decryption are symmetric (XOR with keystream).
+    """
+
+    def __init__(self, key: bytes, nonce: bytes):
+        if len(key) != 16:
+            raise ValueError(f"Key must be 16 bytes, got {len(key)}")
+        if len(nonce) != 4:
+            raise ValueError(f"Nonce must be 4 bytes, got {len(nonce)}")
+        self._nonce = nonce
+        self._seed = _derive_seed(key, nonce)
+        self._state = self._seed
+
+    @property
+    def seed(self):
+        """The derived LFSR seed (for debugging/verification)."""
+        return self._seed
+
+    def _keystream(self, n: int) -> bytes:
+        """Generate n bytes of keystream."""
+        out = bytearray(n)
+        st = self._state
+        for i in range(n):
+            b, st = _lfsr_byte(st)
+            out[i] = b
+        self._state = st
+        return bytes(out)
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        """Encrypt plaintext. Returns nonce (4 bytes) + ciphertext."""
+        ks = self._keystream(len(plaintext))
+        ct = bytes(p ^ k for p, k in zip(plaintext, ks))
+        return self._nonce + ct
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        """Decrypt ciphertext (without the 4-byte nonce prefix)."""
+        ks = self._keystream(len(ciphertext))
+        return bytes(c ^ k for c, k in zip(ciphertext, ks))
+<<<END>>>
+<<<FILE environment/README.md>>>
+# WobbleStream Message Format and Cipher Interface
+
+## Encrypted File Format
+
+A WobbleStream encrypted file (`.bin`) contains:
+
+| Offset | Length | Field | Description |
+|--------|--------|-------|-------------|
+| 0      | 4      | Nonce | Big-endian unsigned 32-bit integer |
+| 4      | N      | Ciphertext | Encrypted message bytes |
+
+The nonce must be unique for each message encrypted under the same key.
+Reusing a nonce with the same key produces identical keystreams, which
+compromises confidentiality.
+
+## Plaintext Message Format
+
+The plaintext (before encryption) follows this structure:
+
+| Offset | Length | Field | Description |
+|--------|--------|-------|-------------|
+| 0      | 2      | Magic | Always `0x89 0x57` |
+| 2      | 1      | Version | Always `0x01` |
+| 3      | 1      | Content Type | `0x01` = text, `0x02` = binary, `0x03` = mixed |
+| 4      | N      | Payload | The actual message data |
+| 4+N    | 2      | CRC | CRC-16/XMODEM checksum (big-endian) |
+
+The CRC-16/XMODEM checksum is computed over all bytes preceding it:
+magic + version + content type + payload.
+
+### Content Types
+
+- **0x01 (Text)**: Text content (ASCII or UTF-8). All payload bytes are
+  in the printable ASCII range.
+- **0x02 (Binary)**: Arbitrary binary data. Payload may contain any byte
+  values from `0x00` through `0xFF`. Do not apply any text processing
+  to binary payloads.
+- **0x03 (Mixed)**: Mixed content containing both printable ASCII and
+  non-ASCII bytes (values `0x80`-`0xFF`).
+
+## Cipher Interface
+
+```python
+from cipher import WobbleStream, make_message, verify_message
+
+# Create a properly formatted message
+msg = make_message(b'payload data', content_type=0x01)
+
+# Encrypt with a 16-byte key and 4-byte nonce
+key = b'\x00' * 16          # 16-byte key
+nonce = b'\x00\x00\x00\x01' # 4-byte nonce
+ws = WobbleStream(key, nonce)
+encrypted_file = ws.encrypt(msg)  # Returns nonce + ciphertext
+
+# Decrypt (requires same key and nonce)
+nonce = encrypted_file[:4]
+ciphertext = encrypted_file[4:]
+ws2 = WobbleStream(key, nonce)
+plaintext = ws2.decrypt(ciphertext)
+
+# Verify message integrity
+assert verify_message(plaintext)
+```
+
+## Notes
+
+- The cipher uses a 128-bit key and a 32-bit nonce.
+- Nonces should be unique per message. Sequential counters or timestamps
+  are common choices.
+- Encryption and decryption are symmetric: both XOR the data with the
+  same keystream.
+- The minimum message size is 6 bytes: 4-byte header + 0-byte payload +
+  2-byte CRC.
+<<<END>>>
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""Generate known pairs and challenge data for WobbleStream.
+
+Run this script during Docker image build to create:
+  known_pairs/pair_{1..10}.bin  - encrypted files (nonce + ciphertext)
+  known_pairs/pair_{1..10}.plain - plaintext files
+  challenge/challenge_0.bin     - visible challenge ciphertext
+  challenge/challenge_0.plain   - visible challenge plaintext
+
+After running, delete this script from the image.
+"""
+
+import os
+import sys
+import random
+import struct
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cipher import WobbleStream, make_message
+
+# --- Keys ---
+KEY_A = b'WobbleStream_Key'  # Sample-like (ASCII) key
+KEY_B = bytes([0x4a, 0x7c, 0x39, 0x2f, 0x8b, 0x11, 0xd5, 0xe6,
+               0x93, 0x04, 0x57, 0xa8, 0xf2, 0xcc, 0x6e, 0xb0])
+KEY_C = bytes([0xd7, 0x1e, 0xa3, 0x49, 0x5b, 0x8f, 0x02, 0xc6,
+               0xf8, 0x3d, 0x91, 0x74, 0x26, 0xab, 0xe5, 0x09])
+KEY_D = bytes([0x71, 0xf4, 0x28, 0xb3, 0x9c, 0x05, 0xda, 0x46,
+               0x83, 0x1f, 0x6e, 0xa7, 0xd2, 0x5b, 0x10, 0xcc])
+
+
+def gen_text(rng, n):
+    """Generate English-like text payload of approximately n bytes."""
+    words = [
+        'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'it',
+        'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this',
+        'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she', 'or',
+        'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what',
+        'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me',
+        'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know',
+        'take', 'into', 'year', 'your', 'good', 'some', 'could', 'them',
+        'see', 'other', 'than', 'then', 'now', 'look', 'only', 'come',
+        'its', 'over', 'think', 'also', 'back', 'after', 'use', 'two',
+        'how', 'our', 'work', 'first', 'well', 'way', 'even', 'new',
+        'want', 'because', 'any', 'these', 'give', 'day', 'most', 'us',
+        'system', 'data', 'process', 'message', 'network', 'security',
+        'encrypt', 'server', 'client', 'protocol', 'stream', 'cipher',
+        'key', 'payload', 'nonce', 'internal', 'dispatch', 'report',
+        'status', 'update', 'request', 'response', 'channel', 'session',
+    ]
+    parts = []
+    total = 0
+    while total < n:
+        w = rng.choice(words)
+        needed = len(w) + (1 if parts else 0)
+        if total + needed > n:
+            # Fill remaining with spaces
+            parts.append(' ' * (n - total))
+            break
+        if parts:
+            parts.append(' ')
+            total += 1
+        parts.append(w)
+        total += len(w)
+    return ''.join(parts)[:n].encode('ascii')
+
+
+def gen_binary(rng, n):
+    """Generate random binary payload of n bytes."""
+    return bytes(rng.getrandbits(8) for _ in range(n))
+
+
+def gen_mixed(rng, n):
+    """Generate mixed content payload (ASCII + high bytes) of n bytes."""
+    out = bytearray()
+    for _ in range(n):
+        if rng.random() < 0.6:
+            out.append(rng.randint(0x20, 0x7E))
+        else:
+            out.append(rng.randint(0x80, 0xFF))
+    return bytes(out)
+
+
+def create_pair(key, nonce, payload, ctype, directory, name):
+    """Encrypt payload and write .bin and .plain files."""
+    plaintext = make_message(payload, ctype)
+    ws = WobbleStream(key, nonce)
+    encrypted = ws.encrypt(plaintext)
+
+    with open(os.path.join(directory, f'{name}.bin'), 'wb') as f:
+        f.write(encrypted)
+    with open(os.path.join(directory, f'{name}.plain'), 'wb') as f:
+        f.write(plaintext)
+
+
+def main():
+    base = os.path.dirname(os.path.abspath(__file__))
+    pairs_dir = os.path.join(base, 'known_pairs')
+    chal_dir = os.path.join(base, 'challenge')
+    os.makedirs(pairs_dir, exist_ok=True)
+    os.makedirs(chal_dir, exist_ok=True)
+
+    rng = random.Random(42)
+
+    # Define 10 known pairs: (key, nonce, payload_length, content_type)
+    # Sizes chosen so .bin files match documented sizes:
+    #   .bin = 4 (nonce) + 4 (header) + payload_len + 2 (CRC)
+    #
+    # Coverage:
+    #   Short (50-150 bytes .bin):  pairs 1, 4, 7     (3 examples)
+    #   Medium (300-600 bytes .bin): pairs 2, 5, 8, 10 (4 examples)
+    #   Long (1500-2500 bytes .bin): pairs 3, 6, 9     (3 examples)
+    #   Text (0x01):    pairs 1, 3, 6, 10  (4 examples)
+    #   Binary (0x02):  pairs 5, 7, 9      (3 examples)
+    #   Mixed (0x03):   pairs 2, 4, 8      (3 examples)
+    #   KEY_A: pairs 1, 2, 3, 10
+    #   KEY_B: pairs 4, 5, 6
+    #   KEY_C: pairs 7, 8, 9
+
+    pairs = [
+        # pair 1: short text (150 bytes .bin)
+        (KEY_A, struct.pack('>I', 1),   140, 0x01),
+        # pair 2: medium mixed (500 bytes .bin)
+        (KEY_A, struct.pack('>I', 2),   492, 0x03),
+        # pair 3: long text (1800 bytes .bin)
+        (KEY_A, struct.pack('>I', 3),  1790, 0x01),
+        # pair 4: short mixed (100 bytes .bin)
+        (KEY_B, struct.pack('>I', 100),  90, 0x03),
+        # pair 5: medium binary (304 bytes .bin, 300 bytes .plain)
+        (KEY_B, struct.pack('>I', 101), 294, 0x02),
+        # pair 6: long text (1600 bytes .bin)
+        (KEY_B, struct.pack('>I', 102),1590, 0x01),
+        # pair 7: short binary (80 bytes .bin)
+        (KEY_C, struct.pack('>I', 200),  70, 0x02),
+        # pair 8: medium mixed, timestamp nonce (500 bytes .bin)
+        (KEY_C, struct.pack('>I', 0x6647F2A0), 492, 0x03),
+        # pair 9: long binary (2200 bytes .bin)
+        (KEY_C, struct.pack('>I', 201),2190, 0x02),
+        # pair 10: medium text (456 bytes .bin)
+        (KEY_A, struct.pack('>I', 4),   442, 0x01),
+    ]
+
+    for i, (key, nonce, plen, ctype) in enumerate(pairs, 1):
+        if ctype == 0x01:
+            payload = gen_text(rng, plen)
+        elif ctype == 0x02:
+            payload = gen_binary(rng, plen)
+        else:
+            payload = gen_mixed(rng, plen)
+        create_pair(key, nonce, payload, ctype, pairs_dir, f'pair_{i}')
+        print(f'  Created pair_{i} (type={ctype:#04x}, payload={plen})')
+
+    # Challenge pair: 4th key, medium English text
+    crng = random.Random(12345)
+    challenge_payload = gen_text(crng, 492)
+    create_pair(KEY_D, struct.pack('>I', 999), challenge_payload,
+                0x01, chal_dir, 'challenge_0')
+    print('  Created challenge_0')
+
+    print('Data generation complete.')
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE environment/decrypt.py>>>
+#!/usr/bin/env python3
+"""WobbleStream decryption script.
+
+Usage: python3 decrypt.py <ciphertext_file>
+
+Reads a WobbleStream ciphertext file (4-byte nonce + encrypted bytes)
+and outputs the exact plaintext bytes to stdout.
+"""
+
+import sys
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} <ciphertext_file>", file=sys.stderr)
+        sys.exit(1)
+
+    filepath = sys.argv[1]
+
+    with open(filepath, 'rb') as f:
+        data = f.read()
+
+    # TODO: Implement actual decryption.
+    # Currently just outputs the raw file contents (incorrect).
+    sys.stdout.buffer.write(data)
+
+
+if __name__ == '__main__':
+    main()
+<<<END>>>

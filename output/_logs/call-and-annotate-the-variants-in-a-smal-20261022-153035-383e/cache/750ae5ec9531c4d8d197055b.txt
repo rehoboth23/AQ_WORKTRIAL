@@ -1,0 +1,299 @@
+<<<FILE environment/tools/align.py>>>
+#!/usr/bin/env python3
+"""
+Simple ungapped/gapped aligner producing a pileup TSV.
+
+Usage:
+    python3 align.py --reads reads.fq --reference ref.fa --output pileup.tsv
+
+Output TSV columns:
+    pos  ref  A  C  G  T  ins  del  depth
+
+pos   : 1-based reference position
+ref   : reference base at this position
+A,C,G,T : count of reads with this base aligned at this position
+ins   : insertion events between this position and the next;
+        semicolon-separated "seq:count" entries, or "." if none
+del   : deletion events starting at this position;
+        semicolon-separated "len:count" entries, or "." if none
+depth : total number of reads overlapping this position (with a base
+        or a deletion here; reads with only N at this position are
+        excluded)
+"""
+
+import argparse
+import sys
+from collections import defaultdict
+
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
+
+_COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+_BASE_IDX = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+
+def revcomp(seq):
+    """Return the reverse complement of a DNA sequence."""
+    return seq.translate(_COMPLEMENT)[::-1]
+
+
+def parse_fasta(path):
+    """Parse a single-contig FASTA file and return the uppercase sequence."""
+    parts = []
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith(">"):
+                parts.append(line.upper())
+    return "".join(parts)
+
+
+def parse_fastq(path):
+    """Parse a FASTQ file and return a list of uppercase sequences."""
+    reads = []
+    with open(path) as fh:
+        while True:
+            hdr = fh.readline()
+            if not hdr:
+                break
+            seq = fh.readline().strip().upper()
+            fh.readline()  # +
+            fh.readline()  # quality
+            if seq:
+                reads.append(seq)
+    return reads
+
+
+def find_best_ungapped(read, ref_arr):
+    """Find the best ungapped alignment position for *read* against *ref_arr*.
+
+    Uses a numpy vectorised sliding-window comparison for speed.
+    Returns ``(0-based_position, mismatch_count)``.
+    """
+    r = np.frombuffer(read.encode(), dtype=np.uint8)
+    rlen = len(read)
+    if rlen == 0 or rlen > len(ref_arr):
+        return 0, rlen
+
+    windows = sliding_window_view(ref_arr, rlen)
+    mm = np.sum(windows != r, axis=1)
+    pos = int(np.argmin(mm))
+    return pos, int(mm[pos])
+
+
+def nw_semiglobal(query, target, match=2, mismatch=-1, gap=-5):
+    """Semi-global Needleman-Wunsch alignment.
+
+    The *query* (read) is fully consumed; the *target* (reference segment)
+    can have free end-gaps (semi-global).  Returns
+    ``(aligned_query, aligned_target, target_start_0based)`` where
+    aligned strings use ``'-'`` for gaps.
+    """
+    m, n = len(query), len(target)
+    if m == 0 or n == 0:
+        return "", "", 0
+
+    # dp[i][j]: best score aligning query[0:i] to target[0:j]
+    # Free horizontal start: dp[0][j] = 0 for all j
+    # Penalise vertical start: dp[i][0] = gap * i
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    tb = [[0] * (n + 1) for _ in range(m + 1)]
+    # traceback codes: 0 = diag, 1 = up (gap in target / del in ref),
+    #                  2 = left (gap in query / ins in ref)
+
+    for i in range(1, m + 1):
+        dp[i][0] = gap * i
+        tb[i][0] = 1
+
+    for i in range(1, m + 1):
+        qi = query[i - 1]
+        row_prev = dp[i - 1]
+        row_curr = dp[i]
+        tb_curr = tb[i]
+        for j in range(1, n + 1):
+            s = match if qi == target[j - 1] else mismatch
+            d = row_prev[j - 1] + s
+            u = row_prev[j] + gap
+            l = row_curr[j - 1] + gap
+            if d >= u and d >= l:
+                dp[i][j] = d
+                tb_curr[j] = 0
+            elif u >= l:
+                dp[i][j] = u
+                tb_curr[j] = 1
+            else:
+                dp[i][j] = l
+                tb_curr[j] = 2
+
+    # Best end in the last row (free end in target)
+    best_j = 0
+    best_score = dp[m][0]
+    for j in range(1, n + 1):
+        if dp[m][j] > best_score:
+            best_score = dp[m][j]
+            best_j = j
+
+    # Traceback
+    aq, at = [], []
+    i, j = m, best_j
+    while i > 0:
+        if j > 0 and tb[i][j] == 0:
+            aq.append(query[i - 1])
+            at.append(target[j - 1])
+            i -= 1
+            j -= 1
+        elif tb[i][j] == 1:
+            aq.append(query[i - 1])
+            at.append("-")
+            i -= 1
+        elif j > 0:
+            aq.append("-")
+            at.append(target[j - 1])
+            j -= 1
+        else:
+            break  # should not happen with proper semi-global init
+
+    return "".join(reversed(aq)), "".join(reversed(at)), j
+
+
+def process_gapped(best_read, ref, reflen, seg_start, seg_end,
+                   base_counts, ins_counts, del_counts, depth):
+    """Align *best_read* with gaps and update pileup structures in place."""
+
+    ref_seg = ref[seg_start:seg_end]
+    aq, at, aln_start = nw_semiglobal(best_read, ref_seg)
+
+    rp = seg_start + aln_start  # current 0-based reference position
+
+    del_start = None
+    del_len = 0
+
+    def _finalise_deletion():
+        nonlocal del_start, del_len
+        if del_start is not None and del_start < reflen:
+            actual = min(del_len, reflen - del_start)
+            if actual > 0:
+                del_counts[del_start][actual] += 1
+                for p in range(del_start, del_start + actual):
+                    depth[p] += 1
+        del_start = None
+        del_len = 0
+
+    i = 0
+    while i < len(aq):
+        if at[i] != "-":
+            # Column aligns to reference position *rp*
+            if aq[i] == "-":
+                # Deletion (read skips this reference position)
+                if del_start is None:
+                    del_start = rp
+                del_len += 1
+            else:
+                _finalise_deletion()
+                if 0 <= rp < reflen:
+                    b = aq[i]
+                    if b in _BASE_IDX:
+                        base_counts[rp][_BASE_IDX[b]] += 1
+                        depth[rp] += 1
+            rp += 1
+            i += 1
+        else:
+            # Insertion (read has extra base, reference has gap)
+            _finalise_deletion()
+            ins_seq = aq[i]
+            i += 1
+            while i < len(aq) and at[i] == "-":
+                ins_seq += aq[i]
+                i += 1
+            prev_rp = rp - 1
+            if 0 <= prev_rp < reflen:
+                ins_counts[prev_rp][ins_seq] += 1
+
+    _finalise_deletion()
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Simple ungapped/gapped aligner producing a pileup TSV"
+    )
+    ap.add_argument("--reads", required=True, help="Input FASTQ")
+    ap.add_argument("--reference", required=True, help="Input FASTA (single contig)")
+    ap.add_argument("--output", required=True, help="Output pileup TSV")
+    args = ap.parse_args()
+
+    ref = parse_fasta(args.reference)
+    if not ref:
+        print("Error: empty reference sequence", file=sys.stderr)
+        sys.exit(1)
+
+    ref_arr = np.frombuffer(ref.encode(), dtype=np.uint8)
+    reads = parse_fastq(args.reads)
+    reflen = len(ref)
+
+    # Per-position pileup (0-based indexing internally)
+    base_counts = [[0, 0, 0, 0] for _ in range(reflen)]  # A C G T
+    ins_counts = [defaultdict(int) for _ in range(reflen)]
+    del_counts = [defaultdict(int) for _ in range(reflen)]
+    depth = [0] * reflen
+
+    UNGAP_FRAC = 0.10   # >10 % mismatches → try gapped
+    BAND = 30            # extra reference bases on each side for gapped window
+    MIN_READ_LEN = 20
+
+    for read_seq in reads:
+        rlen = len(read_seq)
+        if rlen < MIN_READ_LEN:
+            continue
+
+        rc = revcomp(read_seq)
+
+        # Best ungapped position, both orientations
+        pf, mf = find_best_ungapped(read_seq, ref_arr)
+        pr, mr = find_best_ungapped(rc, ref_arr)
+
+        if mf <= mr:
+            bread, bpos, bmm = read_seq, pf, mf
+        else:
+            bread, bpos, bmm = rc, pr, mr
+
+        thresh = max(3, int(rlen * UNGAP_FRAC))
+
+        if bmm <= thresh:
+            # ---- ungapped alignment (fast path) ----
+            for k in range(rlen):
+                rp = bpos + k
+                if 0 <= rp < reflen:
+                    b = bread[k]
+                    if b in _BASE_IDX:
+                        base_counts[rp][_BASE_IDX[b]] += 1
+                        depth[rp] += 1
+        else:
+            # ---- gapped alignment ----
+            ss = max(0, bpos - BAND)
+            se = min(reflen, bpos + rlen + BAND)
+            process_gapped(bread, ref, reflen, ss, se,
+                           base_counts, ins_counts, del_counts, depth)
+
+    # ---- write pileup TSV ----
+    with open(args.output, "w") as out:
+        out.write("pos\tref\tA\tC\tG\tT\tins\tdel\tdepth\n")
+        for p in range(reflen):
+            rb = ref[p]
+            a, c, g, t = base_counts[p]
+            ins_s = (
+                ";".join(f"{s}:{n}" for s, n in sorted(ins_counts[p].items()))
+                or "."
+            )
+            del_s = (
+                ";".join(f"{l}:{n}" for l, n in sorted(del_counts[p].items()))
+                or "."
+            )
+            out.write(
+                f"{p + 1}\t{rb}\t{a}\t{c}\t{g}\t{t}\t{ins_s}\t{del_s}\t{depth[p]}\n"
+            )
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>

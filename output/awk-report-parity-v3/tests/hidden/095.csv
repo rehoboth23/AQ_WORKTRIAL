@@ -1,0 +1,30 @@
+branch,posted,amount,units,code
+ , , 
+nyc-east,007,0x1A,3.9,
+ny,,-12.345,3.9,
+a,b
+  ,,0x1A,10
+,,1e3,0,
+Malmö,2024-01-31,12abc,0,12345
+x,2024-01-31,1e3,3
+PAR1,9,,3
+ lon,10,.5,abc
+x,9,.5,abc,ZZTOP
+PAR1,9,1999.95,-2.5,12345
+NYC-West,,-5,3.9,AB12
+Zürich,2024/1/5,.5,
+Malmö,abc, -3 ,0
+nyc-east,2024-01-05,-12.345,10
+PAR1,10, 7 ,3.9
+Malmö,2024-01-31, -3 ,4e2,x,extra
+,2024-01-05,,4e2
+PAR1,9, 7 ,7
+Österreich,20240105,1e3,abc,AB12
+nyc-east,20240105, -3 ,0
+a b c d e,2024/1/5,-5,abc
+garbage
+garbage
+garbage
+,20240131,.5,abc
+par,007,12abc, 2 ,ZZTOP
+nyc-east,20240105,10,1,AB12

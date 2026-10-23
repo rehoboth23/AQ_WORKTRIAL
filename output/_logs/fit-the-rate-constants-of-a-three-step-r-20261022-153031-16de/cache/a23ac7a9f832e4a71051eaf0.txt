@@ -1,0 +1,400 @@
+```json
+{
+  "walkthrough": [
+    "The agent reads instruction.md, learning the ODE system (A→B k1, B→C k2, B→A k3), the output contract (constants.json + predict.sh), and that predictions must come from the Fortran integrator.",
+    "It reads /app/integrator/README, learning the input-deck format: Line 2 is 'k_AB k_BA k_BC' (i.e. k1 k3 k2 order), per-second units. A careful agent notes the non-natural column order; a hasty one may assume k1 k2 k3.",
+    "It builds the Fortran integrator: cd /app/integrator && make. This succeeds and produces the reactor binary.",
+    "It reads conditions.csv and all 18 practice CSV files (R01–R18). It notices 14 runs have B0=0 or very small B0, while R09, R10, R15 have B0=1.0 and show A rising from zero (evidence of k3>0).",
+    "It writes a Python fitting script using scipy.integrate.solve_ivp + scipy.optimize.least_squares, defining the ODE RHS as dA/dt=-k1*A+k3*B, dB/dt=k1*A-(k2+k3)*B, dC/dt=k2*B.",
+    "It fits k1,k2,k3 to all 18 runs. With default equal weighting of all data points, the 14 low-B0 runs dominate; k1 and k2 are well determined (~0.15, ~0.08), but k3 is only loosely constrained (~0.03–0.05). A careful agent might upweight high-B0 runs; most agents won't.",
+    "It checks residuals on practice data. Average error looks good (~2%). It may specifically check R09/R10/R15; if so, it notices k3 is the weak point and may refine. If it only checks average error, it moves on.",
+    "It saves constants.json with the fitted values. If it used per-minute by mistake, the values would be ~60x too large — but it read 'per second' in the README, so this is unlikely for a careful agent.",
+    "It creates predict.sh that reads a condition file, builds the input deck, and pipes it to the reactor binary. If it paid attention to the README column order, it writes k1 k3 k2; if not, it writes k1 k2 k3 (swapping k2 and k3).",
+    "It runs the public verify.sh, which tests on R01 (low B0, short time). This passes even with swapped k2/k3 or poor k3, because R01 barely involves the reverse step.",
+    "The agent is done. On hidden tests: it likely passes format/integrator/unit checks. It likely FAILS on at least some held-out conditions if k3 is off by >15% or if column order is wrong. H06 (B0=1.0) is the key discriminator."
+  ],
+  "too_easy_because": [
+    "The 'much_longer' time-range quirk-matrix level has only 1 practice example (R16 at t=300s), violating the ≥3-evidence rule — unfair to the agent if hidden tests use t>200s.",
+    "The tamper sentence ('Do not modify the Python interpreter…') is missing from instruction_summary — required by the framework.",
+    "Check 6 has a typo: 'test_out_H08' should be 'test_held_out_H08'.",
+    "Fields 'crux' and 'expected_agent_steps' are empty/null — must be filled.",
+    "The scenario says 18 experiments, but 20 are needed to give ≥3 examples for every quirk-matrix level (add R19 at t=250s and R20 at t=350s for much_longer coverage).",
+    "The checks list omits explicit entries for test_constants_format and test_mass_conservation, which are in the test plan."
+  ],
+  "spec": {
+    "name": "reaction-rate-constant-fitting",
+    "description": "Fit rate constants of a three-step reaction network with a reversible step using a Fortran 77 integrator, so predictions on unseen starting conditions stay within tolerance.",
+    "difficulty": "hard",
+    "category": "data-processing",
+    "tags": [
+      "parameter-estimation",
+      "fortran",
+      "kinetics",
+      "ode-fitting",
+      "identifiability"
+    ],
+    "expert_time_estimate_min": 45.0,
+    "junior_time_estimate_min": 120.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "You are a researcher in a chemical kinetics lab. A three-step reaction network (A→B, B→C, B→A) has been studied in 20 batch reactor experiments. You must determine the three first-order rate constants by fitting the experimental time-series data, then create a prediction pipeline using the lab's existing Fortran 77 integrator so the group can simulate new conditions. Most experiments start with only A present and barely probe the reverse step (B→A); only a few runs start with significant B, making the reverse rate constant k3 difficult to pin down. Your fitted constants will be judged on prediction accuracy for unseen conditions where that reverse step matters most.",
+    "environment_setup": "Debian slim with gfortran, make, Python 3.12 with numpy/scipy pre-installed. The Fortran 77 integrator source (~350 lines) lives at /app/integrator/reactor.f with a Makefile and README. Twenty practice experiment CSV files are in /app/data/practice/ (R01.csv through R20.csv), with conditions.csv summarising initial concentrations and time ranges. Lab notes are at /app/docs/lab_notes.txt. The integrator binary is NOT pre-built. A data-generation script runs during docker build and is deleted. Practice data has ~1.5% relative Gaussian noise (seed 42). True constants: k1=0.15, k2=0.08, k3=0.04 per second.",
+    "instruction_summary": "Determine the three first-order rate constants k1, k2, k3 (per second) for A→B (k1), B→C (k2), B→A (k3) by fitting the 20 practice experiments. Save /app/constants.json with keys 'k1', 'k2', 'k3' as floats. Create /app/predict.sh that accepts a condition-file path ($1) whose line 1 is 'A0 B0 C0' and line 2 is 't_end nsteps', calls the lab's Fortran integrator at /app/integrator/reactor, and writes stdout: header 'time A B C' then nsteps+1 space-separated data lines. Do not modify the integrator source. Predictions on unseen conditions must match ground truth within 7% max relative error (|pred−true|/max(true,0.01) per species per time point). Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+    "solution_outline": [
+      "Read /app/integrator/README for input-deck format (column order k_AB k_BA k_BC, per-second units)",
+      "Build the Fortran integrator: cd /app/integrator && make",
+      "Read /app/data/practice/conditions.csv and all RXX.csv files",
+      "Write a Python fitting script using scipy.integrate.solve_ivp and scipy.optimize.least_squares",
+      "Define ODE RHS: dA/dt=-k1*A+k3*B, dB/dt=k1*A-(k2+k3)*B, dC/dt=k2*B",
+      "Fit k1,k2,k3 simultaneously to all 20 runs, weighting each condition equally",
+      "Verify fit quality on every practice run (especially R09,R10,R15 with B0=1.0)",
+      "Save fitted constants to /app/constants.json",
+      "Create /app/predict.sh that reads the condition file and constants.json, builds the input deck with constants in README-specified order (k1 k3 k2), pipes it to the reactor binary, and outputs the result"
+    ],
+    "test_plan": [
+      "test_constants_format: /app/constants.json exists, is valid JSON, has k1/k2/k3 as positive numbers",
+      "test_predict_sh_exists: /app/predict.sh exists, is executable, runs without error on a trivial condition",
+      "test_output_format: predict.sh output has header 'time A B C' and correct number of data lines",
+      "test_integrator_built: /app/integrator/reactor binary exists and is an ELF executable",
+      "test_integrator_called: strace on predict.sh confirms execve of 'reactor' binary",
+      "test_unit_conventions: each constant in 0.005–5.0 range (per-second, not per-minute which would be 0.3–30)",
+      "test_mass_conservation: for one held-out condition, A+B+C is within 0.01 of A0+B0+C0 at all times",
+      "test_training_R01: max relative error < 5% on practice run R01 (A0=1,B0=0,t=60)",
+      "test_held_out_H01: low reverse, zero intermediate, inside time — max relative error < 7%",
+      "test_held_out_H02: low reverse, zero intermediate, longer time — max relative error < 7%",
+      "test_held_out_H03: low reverse, zero intermediate, much longer time — max relative error < 7%",
+      "test_held_out_H04: medium reverse, small intermediate, inside time — max relative error < 7%",
+      "test_held_out_H05: medium reverse, large intermediate, longer time — max relative error < 7%",
+      "test_held_out_H06: dominant reverse, large intermediate, inside time — max relative error < 7%",
+      "test_held_out_H07: dominant reverse, large intermediate, longer time — max relative error < 7%",
+      "test_held_out_H08: dominant reverse, large intermediate, much longer time — max relative error < 7%",
+      "test_held_out_H09: low reverse, small intermediate, inside time — max relative error < 7%",
+      "test_held_out_H10: medium reverse, small intermediate, much longer time — max relative error < 7%",
+      "test_practice_covers_hidden_cases: each quirk-matrix level has ≥3 practice examples",
+      "test_determinism: same seed produces identical ground-truth curves"
+    ],
+    "anti_cheat": "True constants are never in the image; the build-time generator is deleted. Held-out conditions are generated fresh in tests/ from different initial-condition values. Predictions must come from the Fortran integrator (strace-verified). Hard-coding practice-data outputs fails because graded conditions differ. constants.json values are range-checked to block per-minute scalings.",
+    "failure_modes": "The dominant failure is under-fitting k3: most practice runs start with only A, so a fit with k3=0 or a poor k3 still matches those runs well. Only the B0=1.0 runs (R09, R10, R15) constrain k3, and an agent who does not weight them carefully or who only checks average training error will miss this. Secondary failures: writing constants to the input deck in natural order (k1,k2,k3) instead of the README-specified order (k_AB,k_BA,k_BC = k1,k3,k2), or building a Python reimplementation instead of using the Fortran integrator.",
+    "shape": "parameter estimation scored on held-out conditions; non-Python stack",
+    "hidden_evaluation": "Ten held-out conditions are generated in tests/ from the quirk matrix (reverse-step excitation × initial intermediate × time range). Each condition uses initial concentrations and time ranges not present in the practice set. A Python RK4 solver with the true constants (k1=0.15, k2=0.08, k3=0.04) computes ground-truth curves. The agent's predict.sh is called for each condition and the output is compared to ground truth with max relative error (floor 0.01) checked against 7%.",
+    "checks": [
+      {
+        "requirement": "Predictions must come from the lab's Fortran integrator (instruction.md: 'calls the lab's Fortran integrator at /app/integrator/reactor')",
+        "assumed_instead": "Rewrite the ODE solver in Python with scipy for convenience",
+        "hidden_test_input": "strace of predict.sh execution tracing execve calls",
+        "why_missed": "Python and Fortran produce numerically similar results; no runtime signal unless specifically checked",
+        "caught_by_tests": ["test_integrator_called"]
+      },
+      {
+        "requirement": "Rate constants in per-second (README: 'rate constants, per SECOND'; instruction.md: 'per-second units')",
+        "assumed_instead": "Use per-minute because reaction half-lives are minutes-scale",
+        "hidden_test_input": "constants.json values checked to be in 0.005–5.0 range (per-second), not 0.3–30 (per-minute)",
+        "why_missed": "A per-minute fit multiplied by 60 would still look like valid positive numbers",
+        "caught_by_tests": ["test_unit_conventions"]
+      },
+      {
+        "requirement": "Input deck line 2 order is k_AB k_BA k_BC (README: 'Line 2: k_AB k_BA k_BC')",
+        "assumed_instead": "Write k1 k2 k3 in natural reaction order (k_AB k_BC k_BA)",
+        "hidden_test_input": "Held-out conditions H06–H08 with high B0 where swapping k2 and k3 causes large prediction errors",
+        "why_missed": "Swapped order may still produce plausible-looking output; only quantitative comparison reveals the error, and the agent may not test high-B0 conditions carefully",
+        "caught_by_tests": ["test_held_out_H06", "test_held_out_H07", "test_held_out_H08"]
+      },
+      {
+        "requirement": "k3 must be positive and accurate — shown by practice runs R09, R10, R15 where A rises from zero (data: B0=1.0, A increases over time, impossible without k3>0)",
+        "assumed_instead": "Set k3=0 or fit it loosely since 15 of 20 practice runs barely excite it",
+        "hidden_test_input": "H06 (A0=0, B0=1.0, t=60s) where k3 is the dominant pathway for A regeneration",
+        "why_missed": "Training fit with k3=0 matches 15/20 runs well; only the 5 B0≥0.5 runs show the discrepancy, and average training error looks acceptable",
+        "caught_by_tests": ["test_held_out_H06", "test_held_out_H07", "test_held_out_H08"]
+      },
+      {
+        "requirement": "k3 accuracy within ~20% — practice runs R09, R10, R15 constrain it but with limited precision due to noise",
+        "assumed_instead": "Fit k3 coarsely; a 25% error seems negligible",
+        "hidden_test_input": "H05 (A0=0.5, B0=0.5, t=200s) and H07 (A0=0.2, B0=0.8, t=200s) where moderate B0 amplifies k3 errors over long times",
+        "why_missed": "Training residual with k3 off by 25% is only slightly worse than the correct fit because few conditions are sensitive to k3",
+        "caught_by_tests": ["test_held_out_H05", "test_held_out_H07"]
+      },
+      {
+        "requirement": "Predictions must be accurate at long times beyond the training range (instruction.md: 'unseen conditions')",
+        "assumed_instead": "Only verify predictions within the time ranges covered by training data (up to 300s)",
+        "hidden_test_input": "H03 (t_end=500s) and H08 (t_end=500s) where equilibrium concentrations depend on the k3/k1 ratio",
+        "why_missed": "Short-time predictions look fine with a slightly wrong k3; errors accumulate and become visible only at long times",
+        "caught_by_tests": ["test_held_out_H03", "test_held_out_H08"]
+      },
+      {
+        "requirement": "High initial intermediate (B0) conditions must be predicted accurately — practice runs R07, R08, R09, R10, R15, R18 show B0=0.5–1.0",
+        "assumed_instead": "Treat high-B0 runs as outliers and weight them less in fitting",
+        "hidden_test_input": "H06 (B0=1.0, A0=0) — a condition seen in practice but where k3 errors are amplified",
+        "why_missed": "Agent might use unweighted least squares where 15 low-B0 runs dominate the 5 high-B0 runs",
+        "caught_by_tests": ["test_held_out_H06"]
+      },
+      {
+        "requirement": "Small initial intermediate (B0=0.05–0.15) must be handled — practice runs R05 (B0=0.1), R12 (B0=0.2) show this regime",
+        "assumed_instead": "B0=0 is the only important case; small B0 is negligibly different",
+        "hidden_test_input": "H04 (B0=0.15) and H09 (B0=0.05) where even small B0 activates k3 noticeably over time",
+        "why_missed": "Agent might only test B0=0 and B0=1.0, skipping the intermediate regime",
+        "caught_by_tests": ["test_held_out_H04", "test_held_out_H09"]
+      },
+      {
+        "requirement": "Equilibrium state at long times depends on the k3/k1 ratio — without k3, equilibrium is all C; with k3, some A and B remain",
+        "assumed_instead": "All reactants eventually convert to C (ignoring reverse step)",
+        "hidden_test_input": "H03 (A0=1, t=500s) where the system is near equilibrium with A_eq ≈ k3/(k1+k3) ≈ 0.21",
+        "why_missed": "No runtime error; predictions at long times simply converge to wrong steady-state values",
+        "caught_by_tests": ["test_held_out_H03"]
+      },
+      {
+        "requirement": "Moderate reverse step with long time amplifies small k3 errors — practice runs R06 (B0=0.3, t=90s), R08 (B0=0.5, t=180s), R20 (B0=0.2, t=350s) hint at this",
+        "assumed_instead": "k3 only matters when B0 is very high (≥0.5)",
+        "hidden_test_input": "H10 (B0=0.25, t_end=400s) where small k3 effects accumulate over long time",
+        "why_missed": "At short times, B0=0.25 looks similar to B0=0; the k3 effect only becomes significant at long times",
+        "caught_by_tests": ["test_held_out_H10"]
+      },
+      {
+        "requirement": "Do not modify the integrator source (instruction.md: 'Do not modify the integrator source code; build it as provided')",
+        "assumed_instead": "Modify the Fortran source to accept k1,k2,k3 in natural order instead of the README-specified k_AB,k_BA,k_BC order",
+        "hidden_test_input": "Checksum of reactor.f compared to original; also, modified integrator would produce wrong predictions if column order assumption changes",
+        "why_missed": "Modified integrator produces plausible output; only quantitative comparison with ground truth reveals errors",
+        "caught_by_tests": ["test_integrator_called", "test_held_out_H06"]
+      },
+      {
+        "requirement": "Output format must be exactly 'time A B C' with space-separated floats and nsteps+1 data lines (instruction.md)",
+        "assumed_instead": "Output in CSV format or with tab separators or different column order",
+        "hidden_test_input": "Parsing predict.sh output for numerical comparison",
+        "why_missed": "Agent might use a format that works for their own testing but fails the test parser",
+        "caught_by_tests": ["test_output_format"]
+      },
+      {
+        "requirement": "constants.json must contain valid JSON with keys k1, k2, k3 as positive floats (instruction.md)",
+        "assumed_instead": "Save constants in a different format (INI, YAML) or with different key names",
+        "hidden_test_input": "Parsing constants.json in the test harness",
+        "why_missed": "Agent might use a non-JSON format that their own script reads but the test harness cannot",
+        "caught_by_tests": ["test_constants_format"]
+      },
+      {
+        "requirement": "Mass must be conserved (A+B+C = A0+B0+C0 at all times) — the ODE system guarantees this; a correct integrator call preserves it",
+        "assumed_instead": "A buggy wrapper script or wrong column order might violate mass balance",
+        "hidden_test_input": "H05 (A0=0.5, B0=0.5) checked for A+B+C = 1.0 at all output times",
+        "why_missed": "Mass conservation holds for any constant values with correct integrator usage; only a format or column-order bug breaks it",
+        "caught_by_tests": ["test_mass_conservation"]
+      }
+    ],
+    "preserved_behaviours": [
+      {
+        "behaviour": "The Fortran integrator reads its input deck in the format specified in the README (line 1: nsteps t_end; line 2: k_AB k_BA k_BC; line 3: A0 B0 C0) and writes time A B C to stdout",
+        "hidden_test_input": "Any condition; the test verifies predict.sh calls the unmodified reactor binary which uses this format"
+      }
+    ],
+    "ground_truth": "True constants (k1=0.15, k2=0.08, k3=0.04) are hardcoded in tests/conftest.py. A pure-Python RK4 solver (no external dependencies, step size ≤0.01s) computes reference concentration curves for any condition. The Fortran integrator's output format and column order are verified independently by running it with known inputs and comparing to the Python solver. Seeded Gaussian noise (seed 42, σ=0.015×concentration with floor 0.005) was added to practice data during generation; ground truth for comparison is noise-free.",
+    "verifier_packages": [],
+    "verifier_apt": ["strace"],
+    "reference_access": "none",
+    "quirk_evidence": [
+      {
+        "quirk": "reverse-step excitation: dominant",
+        "evidence": "Practice runs R09, R10, R15 (A0=0, B0=1.0) in /app/data/practice/ — A concentration rises from zero, directly showing k3>0"
+      },
+      {
+        "quirk": "reverse-step excitation: medium",
+        "evidence": "Practice runs R05 (B0=0.1), R06 (B0=0.3), R07 (B0=0.5), R12 (B0=0.2), R17 (B0=0.4), R20 (B0=0.2) in /app/data/practice/"
+      },
+      {
+        "quirk": "reverse-step excitation: low",
+        "evidence": "Practice runs R01–R04, R11, R13, R14, R16, R19 (B0=0) in /app/data/practice/"
+      },
+      {
+        "quirk": "initial intermediate: small",
+        "evidence": "Practice runs R05 (B0=0.1), R06 (B0=0.3), R12 (B0=0.2), R20 (B0=0.2) in /app/data/practice/"
+      },
+      {
+        "quirk": "initial intermediate: large",
+        "evidence": "Practice runs R07 (B0=0.5), R08 (B0=0.5), R09 (B0=1.0), R10 (B0=1.0), R15 (B0=1.0), R17 (B0=0.4), R18 (B0=0.7) in /app/data/practice/"
+      },
+      {
+        "quirk": "time range: much longer",
+        "evidence": "Practice runs R16 (t_end=300s), R19 (t_end=250s), R20 (t_end=350s) in /app/data/practice/; integrator README on step control"
+      },
+      {
+        "quirk": "input deck column order k_AB k_BA k_BC",
+        "evidence": "/app/integrator/README line describing Line 2 format"
+      }
+    ],
+    "answer_source": "inferred",
+    "inferred_rules": [
+      {
+        "rule": "k1 ≈ 0.15 /s (rate constant for A→B)",
+        "shown_by": "Practice runs R01–R04, R11, R13, R14, R16, R19 where A decays exponentially and B initially rises; the initial slope of ln(A) vs time gives k1"
+      },
+      {
+        "rule": "k2 ≈ 0.08 /s (rate constant for B→C)",
+        "shown_by": "Practice runs R01–R04 where C accumulates as a product; the ratio of C-formation rate to B-concentration gives k2; also R09, R10 where B→C is the only pathway reducing total A+B"
+      },
+      {
+        "rule": "k3 ≈ 0.04 /s (rate constant for B→A, the reverse step)",
+        "shown_by": "Practice runs R09, R10, R15 (A0=0, B0=1.0) where A rises from zero — impossible without k3>0; runs R07, R08, R17, R18 (B0=0.4–0.7) where A does not decay to zero as it would without the reverse step"
+      }
+    ],
+    "stated_facts": [
+      {
+        "fact": "Rate constants are first-order, in per-second units",
+        "why": "The data alone cannot distinguish per-second from per-minute without an external unit convention; the time axis is labeled in seconds but a user could rescale"
+      },
+      {
+        "fact": "The integrator input deck column order on line 2 is k_AB, k_BA, k_BC (forward, reverse, sink) rather than the natural k1, k2, k3 order",
+        "why": "This is a lab convention documented in the README; the data cannot reveal the software's internal input format"
+      },
+      {
+        "fact": "The tolerance for held-out predictions is 7% max relative error with floor 0.01",
+        "why": "The data cannot show what tolerance the evaluator uses; this must be stated so the agent knows the acceptance criterion"
+      }
+    ],
+    "reference_binary": "",
+    "sample_file": "",
+    "spec_document": "",
+    "knobs": [
+      {
+        "knob": "convention trap",
+        "where": "The integrator README at /app/integrator/README states the input-deck column order (k_AB k_BA k_BC) and time units (per second)",
+        "fairness": "The README is the authoritative source for the integrator's interface; the column order and units are stated explicitly, not merely implied"
+      },
+      {
+        "knob": "preservation constraints",
+        "where": "instruction.md states predictions must come from the lab's Fortran integrator and the source must not be modified",
+        "fairness": "The requirement to use the provided integrator is stated directly; a test checks via strace that the reactor binary is called and the source is unmodified"
+      },
+      {
+        "knob": "hidden-edge coverage",
+        "where": "Public tests only verify the common path (R01: low B0, short time); hidden tests cover all 10 quirk-matrix cells including dominant reverse and much-longer time",
+        "fairness": "instruction.md states predictions are judged on 'unseen conditions'; the 7% tolerance and the ODE system are stated; the practice data contains examples of every quirk-matrix level so the agent can discover each regime"
+      }
+    ],
+    "dial": "max relative error on held-out concentration curves; fair range 4–12%, chosen value 7%. Oracle scores ~3% (constants fitted to noisy practice data have small errors). A reverse-step-free fit (k3=0) scores ~20%. A fit with k3 off by 25% scores ~10–15%.",
+    "quirk_matrix": {
+      "dimensions": {
+        "reverse_step_excitation": {
+          "levels": ["low", "medium", "dominant"],
+          "definition": "low: B0/(A0+B0+C0)<0.1; medium: 0.1–0.5; dominant: ≥0.5"
+        },
+        "initial_intermediate": {
+          "levels": ["zero", "small", "large"],
+          "definition": "zero: B0=0; small: 0<B0≤0.3; large: B0>0.3"
+        },
+        "time_range": {
+          "levels": ["inside_training", "longer", "much_longer"],
+          "definition": "inside: t_end≤90s; longer: 90<t_end≤200s; much_longer: t_end>200s"
+        }
+      },
+      "mix": "about 30% easy cells (low reverse + inside/longer time)"
+    },
+    "public_tests": "About 30% of coverage: a script at /app/tests_public/verify.sh that (1) checks the integrator binary exists, (2) runs predict.sh on condition R01 (A0=1, B0=0, C0=0, t_end=60, nsteps=30), and (3) compares the output against the R01 practice data with max relative error < 5%. This catches build failures, format errors, and grossly wrong constants, but not subtle k3 errors or long-time extrapolation.",
+    "anti_cheese": "Two-part gate: (1) strace on predict.sh verifies the Fortran reactor binary is exec'd — a pure-Python reimplementation fails this hidden test. (2) Predictions on 10 held-out conditions with diverse quirk-matrix cells must each be within 7% relative error — hard-coding or memorising practice outputs cannot reproduce unseen conditions. Additionally, constants.json values are range-checked (0.005–5.0) to block per-minute scalings, and the integrator source is checksummed against the original.",
+    "graded_instances": "Ten held-out conditions generated in tests/ from initial conditions not in the practice set: H01 (0.95,0.05,0,50s), H02 (1.0,0,0,200s), H03 (1.0,0,0,500s), H04 (0.85,0.15,0,60s), H05 (0.5,0.5,0,200s), H06 (0.0,1.0,0,60s), H07 (0.2,0.8,0,200s), H08 (0.0,1.0,0,500s), H09 (0.95,0.05,0,60s), H10 (0.75,0.25,0,400s). Each differs from every practice run in at least one parameter. Determinism verified by running the Python RK4 solver twice with the same seed and asserting byte-identical output; a different seed produces different curves.",
+    "self_check_gap": "A fit that reproduces all 20 practice runs to within noise (max relative error ~2%) can still have k3 off by 15–25% because only 5 of 20 runs strongly constrain k3, and the noise allows a range of k3 values to produce similarly good fits on those runs. The practice runs R09/R10/R15 (B0=1.0) do constrain k3 for a careful weighted fit, but an unweighted fit that minimizes total squared error can sacrifice accuracy on these 5 runs to slightly improve the other 15. The held-out conditions amplify the k3 error by using even more extreme reverse-step excitation (H07: B0=0.8, H08: B0=1.0 at t=500s) and longer time ranges where small k3 errors accumulate. The practice data nonetheless determines the right answer because R09/R10/R15 show A rising from zero with a clear time constant that uniquely identifies k3≈0.04 when examined carefully.",
+    "margins": [
+      {
+        "test": "Held-out max relative error per condition",
+        "bar": "7%",
+        "oracle_value": "~3%",
+        "baseline": "N/A (absolute threshold; oracle 3% is 4 percentage points below bar)"
+      },
+      {
+        "test": "Training match on R01",
+        "bar": "5%",
+        "oracle_value": "~1.5%",
+        "baseline": "N/A"
+      }
+    ],
+    "contract": [
+      "/app/constants.json: JSON with keys 'k1', 'k2', 'k3', each a positive float in per-second units",
+      "/app/predict.sh: executable bash script, takes condition-file path as $1, exits 0 on success",
+      "Condition file format: line 1 = 'A0 B0 C0' (3 space-separated floats, mol/L), line 2 = 't_end nsteps' (float int, seconds and count)",
+      "predict.sh stdout: header line 'time A B C', then exactly nsteps+1 data lines with 4 space-separated floats",
+      "predict.sh must invoke the Fortran binary at /app/integrator/reactor",
+      "Do not modify /app/integrator/reactor.f; build it as provided with the Makefile",
+      "Relative error metric: |predicted - true| / max(true, 0.01), computed per species per time point; max across all points in a condition must be < 7%",
+      "When two conditions overlap in the quirk matrix, the harder dimension takes precedence in scoring"
+    ],
+    "invisible_traps": [
+      {
+        "trap": "Setting k3=0 or fitting it poorly produces good training fit (most runs have low B0) with no runtime error or obvious visual mismatch; predictions look plausible but are quantitatively wrong on high-B0 conditions",
+        "stated_in": "The reaction mechanism (Step 3: B→A) is stated in instruction.md and lab_notes.txt; practice runs R09/R10/R15 where A rises from zero directly demonstrate k3>0"
+      },
+      {
+        "trap": "Writing constants to the integrator input deck in natural order (k1,k2,k3) instead of the README-specified order (k_AB,k_BA,k_BC = k1,k3,k2) swaps k2 and k3 in the integrator's interpretation; output looks plausible for low-B0 conditions",
+        "stated_in": "The README explicitly states 'Line 2: k_AB k_BA k_BC (rate constants, per SECOND)' with the column definitions"
+      },
+      {
+        "trap": "Equilibrium at long times depends on k3/k1; without k3, all material ends up as C; with k3, a non-trivial equilibrium has A and B present — no error at short times",
+        "stated_in": "The ODE system is given in instruction.md; the integrator README mentions it integrates to t_end; long-time practice runs (R08, R11, R15, R16, R19, R20) show non-zero A at late times"
+      }
+    ],
+    "instance_plan": [
+      {
+        "instance": "H01 (A0=0.95, B0=0.05, C0=0, t=50s)",
+        "quirks": "low reverse, small intermediate, inside time",
+        "purpose": "Easy baseline; tests that the pipeline works for near-training conditions"
+      },
+      {
+        "instance": "H02 (A0=1.0, B0=0, C0=0, t=200s)",
+        "quirks": "low reverse, zero intermediate, longer time",
+        "purpose": "Time extrapolation with low reverse; tests that k1/k2 are accurate at moderate times"
+      },
+      {
+        "instance": "H03 (A0=1.0, B0=0, C0=0, t=500s)",
+        "quirks": "low reverse, zero intermediate, much longer time",
+        "purpose": "Equilibrium test; steady-state [A] depends on k3/k1 ratio, exposing wrong k3 even from A0=1"
+      },
+      {
+        "instance": "H04 (A0=0.85, B0=0.15, C0=0, t=60s)",
+        "quirks": "medium reverse, small intermediate, inside time",
+        "purpose": "Moderate challenge; small B0 activates k3 slightly"
+      },
+      {
+        "instance": "H05 (A0=0.5, B0=0.5, C0=0, t=200s)",
+        "quirks": "medium reverse, large intermediate, longer time",
+        "purpose": "Combination of moderate reverse and longer time; k3 errors amplified"
+      },
+      {
+        "instance": "H06 (A0=0.0, B0=1.0, C0=0, t=60s)",
+        "quirks": "dominant reverse, large intermediate, inside time",
+        "purpose": "KEY: directly tests k3; A can only appear via the reverse step; a k3=0 fit predicts A=0 at all times"
+      },
+      {
+        "instance": "H07 (A0=0.2, B0=0.8, C0=0, t=200s)",
+        "quirks": "dominant reverse, large intermediate, longer time",
+        "purpose": "KEY: dominant reverse with longer time; k3 errors accumulate"
+      },
+      {
+        "instance": "H08 (A0=0.0, B0=1.0, C0=0, t=500s)",
+        "quirks": "dominant reverse, large intermediate, much longer time",
+        "purpose": "Hardest condition; full reverse-step dominance at long time; equilibrium [A] very sensitive to k3"
+      },
+      {
+        "instance": "H09 (A0=0.95, B0=0.05, C0=0, t=60s)",
+        "quirks": "low reverse, small intermediate, inside time",
+        "purpose": "Small intermediate without reverse excitation; tests that the fit handles B0≈0 correctly"
+      },
+      {
+        "instance": "H10 (A0=0.75, B0=0.25, C0=0, t=400s)",
+        "quirks": "medium reverse, small intermediate, much longer time",
+        "purpose": "Moderate reverse with very long time; small k3 effects accumulate over 400s"
+      }
+    ],
+    "adjust_rules": {
+      "too_easy": [
+        "Increase practice-data noise from 1.5% to 3% (wider constant confidence intervals)",
+        "Reduce the number of reverse-step-excited practice runs from 5 to 3 (weaker k3 constraint)",
+        "Tighten tolerance from 7% to 5%"
+      ],
+      "too_hard": [
+        "Decrease noise from 1.5% to 0.5% (tighter constant estimates)",
+        "Add 2 more reverse-step-excited practice runs (stronger k3 constraint)",
+        "Loosen tolerance from 7% to 10%"
+      ]
+    },
+    "seed_card": "topic: Fit the rate constants of a three-step reaction network using the lab's existing Fortran 77 integrator (built offline with gfortran), so that predictions for unseen starting conditions stay within tolerance.",
+    "crux": "The reverse step's rate constant k3 is poorly constrained by most practice data (15/20 runs have B0≈0); only runs R09, R10, R15 with B0=1.0 directly excite it. A fit that ignores or loosely fits k3 passes most practice checks but fails held-out conditions where the reverse step dominates. Additionally, the integrator's non-obvious input-deck column order (k_AB k_BA k_BC) swaps k2 and k3 relative to natural ordering, producing plausible but wrong output if misread.",
+    "expected_agent_steps": 30,
+    "reference_binary": "",
+    "sample_file": "",
+    "spec_document": ""
+  }
+}
+```

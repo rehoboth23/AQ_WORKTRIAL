@@ -1,0 +1,22 @@
+branch,posted,amount,units,code
+par, 20231231 ,,4e2,x,extra
+a,b,c
+berlin,007,,-2.5
+london,abc,250,-2.5
+São Paulo,,99.999,0
+ny, 20231231 ,-5,,Ünï
+PAR1,2024-01-31,-0,3,ZZTOP
+PAR1,abc,,0,ZZTOP
+ lon,abc,250,3.9,
+a,b,c
+  ,abc,1e3,0,Q
+,20240131,1999.95,10,ZZTOP
+a b c d e,2024-01-05,.5,abc,Q
+berlin,,2500000000.75, 2 ,AB12
+
+,2024-01-31,,0
+PAR1,2024-01-05,250,abc,Q,extra
+los angeles,,3.,
+Österreich,007, 7 ,10
+São Paulo,20240105,12abc,-2.5,extra
+Zürich,20240105,10,1,AB12

@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+berlin,2024-01-05,-5,abc,ab
+São Paulo,2024/1/5, 7 ,7,AB12
+ lon,,1e3,2,ab
+nyc-east,007,+3,2,Q
+nyc-east,10,0x1A,10,12345
+berlin,20240131,0.1, 2 ,Q
+São Paulo,007,12.50,0,Ünï
+a b c d e,9,, 2 ,Ünï
+
+x,10,1E2,,ZZTOP,extra
+Österreich,,12.50, 2 ,x
+par,2024/1/5, 7 ,4e2,
+NYC-West,9,2500000000.75,3.9,ab
+london,2024-01-05,,7,ZZTOP
+x,007,1999.95, 2 ,Q
+a b c d e,2024/1/5,12abc,3.9,ZZTOP
+PAR1, 20231231 ,12.50,3.9,AB12
+ny,2024/1/5, -3 ,10,12345
+london,20240105,,3.9,Q

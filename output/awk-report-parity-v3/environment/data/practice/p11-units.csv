@@ -1,0 +1,9 @@
+branch,posted,amount,units,code
+UNI,,99.999,1e3,x
+UNI,2024/1/5,1000000000,0x10,ZZTOP
+UNI, ,+3,-2.9,12345
+UNI,007,+3,2.9,
+UNI,20240131,abc,abc,x
+UNI,2024-01-31,0x1A,,Ünï
+UNI,20240105, , 7 ,x
+UNI,2024/1/5, -3 ,3000000000,AB12

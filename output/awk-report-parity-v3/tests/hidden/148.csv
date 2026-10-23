@@ -1,0 +1,28 @@
+branch,posted,amount,units,code
+par,,, 2 
+,20240105,-0,10
+  ,20240131,2500000000.75,7,x,extra
+São Paulo,2024-01-31,-0,4e2,AB12
+NYC-West,007,+3,10,ZZTOP
+São Paulo,9,-0.0,abc
+  ,10,12.50,-2.5,ab
+ lon,10,1E2,0
+São Paulo,,250,3.9,x
+Malmö,9,0x1A,10,Q,extra
+london,,abc,4e2
+Zürich,2024-01-31,0.2,3.9,12345
+São Paulo,20240105,0.1,-2.5
+ lon,2024-01-05,1000000000,0,Ünï
+PAR1,20240105,12abc,0,AB12
+Malmö,,1999.95,4e2
+NYC-West,,abc,0
+,007,-0.0,,extra
+los angeles,2024/1/5,12abc,
+Malmö, 20231231 ,-5,,Q
+los angeles,007, 7 ,,x
+ny,20240105,2500000000.75,0
+Zürich,,1E2,3.9,12345
+los angeles,,0x1A,4e2
+ lon,,99.999, 2 ,ZZTOP
+los angeles,abc,2500000000.75,3.9,x
+nyc-east,20240105,10,1,AB12

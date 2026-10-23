@@ -1,0 +1,440 @@
+{
+  "name": "tcl-loan-screen-web-port",
+  "description": "Port a legacy Tcl/Tk loan-application screen to a Flask web app that preserves exact validation order, per-step rounding, last-instalment adjustment, and database record format.",
+  "difficulty": "hard",
+  "category": "software-engineering",
+  "tags": [
+    "porting",
+    "tcl",
+    "flask",
+    "validation",
+    "rounding",
+    "sqlite"
+  ],
+  "expert_time_estimate_min": 90.0,
+  "junior_time_estimate_min": 240.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A regional credit union has used a Tcl/Tk loan-application screen since 2004. The business has commissioned a Flask web replacement that must preserve every visible behaviour: which error appears first, how the repayment schedule is rounded at each step, how the last instalment clears the balance, and the exact bytes written to the SQLite database on save and delete. The original Tcl source is available for the developer to read, but tclsh is not installed on the build machine and cannot be installed. A starter Flask app exists but was written by someone who did not read the Tcl source carefully and made several common porting mistakes. Recorded transcripts of the old screen's behaviour on specific inputs are provided for verification.",
+  "environment_setup": "The Dockerfile starts from python:3.12-slim-bookworm, installs Flask via pip, copies all files, initialises the SQLite database via Python's sqlite3 module, then REMOVES apt, dpkg, and all package managers to prevent the agent from installing tclsh. Specifically: (1) /app/loanapp.tcl \u2014 the original Tcl source defining validation procs, repayment calculation with per-step format(\"%.2f\") rounding, month-addition for payment dates, save/delete logic; (2) /app/schema.sql \u2014 the canonical SQLite schema with applications (amounts as integer cents, rate as integer basis points, dates as DD/MM/YYYY text) and schedule_entries tables; (3) /app/webapp.py \u2014 a starter Flask app that runs but has 7 deliberate deviations from the Tcl behaviour (shows all validation errors instead of first-only; uses round(x,2) without per-step rounding; no last-instalment adjustment; saves amounts as floats and dates as ISO; delete has no cascade or confirmation; currency display lacks commas; rate display omits trailing zeros); (4) /app/templates/ \u2014 HTML templates; (5) /app/transcripts/ \u2014 28 JSON practice transcripts covering every quirk-dimension cell at least 3 times each; (6) /app/loans.db \u2014 an empty SQLite database initialised with schema.sql via Python. After setup, the Dockerfile runs: `apt-get purge -y apt dpkg 2>/dev/null; rm -rf /var/lib/apt/lists/* /var/cache/apt/* /usr/bin/apt* /usr/bin/dpkg*` ensuring no package manager remains. No tclsh or wish is installed or installable in the image.",
+  "instruction_summary": "Read /app/loanapp.tcl carefully and fix /app/webapp.py so the Flask web app produces identical behaviour: validation returns only the first error by field-priority order with exact message text; the repayment schedule rounds every intermediate value (interest, principal, balance) to 2 decimal places at each step using the same rounding as Tcl's format \"%.2f\"; the last instalment's principal equals the remaining balance; save persists amounts as integer cents, rate as basis points, dates as DD/MM/YYYY; delete requires confirmation and removes schedule_entries first; display formats use comma-separated currency ($X,XXX.XX), two-decimal percentage (X.XX%), and DD/MM/YYYY dates. The minimum start date is 01/01/2025. API endpoints: POST /api/calculate, POST /api/save, POST /api/delete/<id>, GET /api/application/<id>. Practice transcripts in /app/transcripts/ verify common paths. Do not modify schema.sql, loanapp.tcl, or anything under /tests. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+  "solution_outline": [
+    "Read loanapp.tcl to extract validation proc (field order, rule order within fields, exact messages), repayment proc (per-step rounding with format %.2f, last-instalment adjustment, month-addition for dates), and save/delete logic",
+    "Replace validate() in webapp.py: check fields in name\u2192amount\u2192rate\u2192term\u2192date order; within each field check rules in source order; return only the first error with exact Tcl message text including trailing period",
+    "Replace calculate_repayment(): implement rounding that replicates Tcl format %.2f at each step; round interest, principal, and balance at each step; set last-instalment principal = remaining balance; compute total_repayment as sum of all payments and total_interest as sum of all interests",
+    "Add month-addition function matching Tcl's add_months (handles day-of-month overflow by capping to last day of target month, e.g. 31 Jan \u2192 28 Feb)",
+    "Fix save(): convert loan_amount to cents (int(round(amount*100))), interest_rate to basis points (int(round(rate*100))), store start_date as DD/MM/YYYY; insert schedule_entries rows alongside the application row; if id provided, UPDATE application and REPLACE schedule entries",
+    "Fix delete(): first call without confirmed=true returns confirmation message; with confirmed=true, DELETE FROM schedule_entries WHERE application_id=? then DELETE FROM applications WHERE id=?",
+    "Fix display formatting: format_currency produces $X,XXX.XX with commas; format_rate produces X.XX%; dates always DD/MM/YYYY",
+    "Restart the Flask app to pick up changes"
+  ],
+  "test_plan": [
+    "test_validation_first_error_only: POST /api/calculate with two invalid fields, assert response error matches Tcl's first-field message",
+    "test_validation_within_field_order: POST with a name violating two rules (too short AND invalid chars), assert first-rule message",
+    "test_validation_exact_messages: POST with each single invalid field, compare error string to Tcl output character-by-character",
+    "test_validation_date_minimum: POST with start_date 31/12/2024, assert rejection; 01/01/2025, assert acceptance",
+    "test_repayment_per_step_rounding: POST with cents amounts ($15,333.50, 4.75%, 24 months), compare every schedule entry to Tcl output",
+    "test_repayment_last_instalment: For any valid app, verify balance after last instalment is exactly 0.00",
+    "test_repayment_totals: total_repayment == sum(schedule.payment) and total_interest == sum(schedule.interest)",
+    "test_payment_dates_month_end: POST with start_date 31/01/2025, verify February instalment date is 28/02/2025",
+    "test_save_database_format: POST /api/save, then SELECT from loans.db and verify loan_amount_cents is integer cents, interest_rate_bps is integer bps, start_date is DD/MM/YYYY",
+    "test_save_schedule_entries: After save, SELECT from schedule_entries and verify row count equals term_months and values match Tcl computation",
+    "test_save_then_edit: Save app, then POST /api/save with id and changed amount, verify database updated not duplicated",
+    "test_delete_confirmation: POST /api/delete/1 without confirmed=true, assert application still exists and response is confirmation prompt",
+    "test_delete_cascade: POST /api/delete/1 with confirmed=true, assert schedule_entries and applications rows both removed",
+    "test_display_currency_format: Parse response for amount >= 1000, assert format matches $X,XXX.XX with commas",
+    "test_display_rate_format: Parse response, assert rate shows X.XX% (two decimals even for whole-number rates)",
+    "test_display_date_format: Parse response, assert dates are DD/MM/YYYY not ISO",
+    "test_hidden_scenario_suite: 25 parametrized scenarios from quirk matrix, each computing expected via tclsh and comparing to webapp output",
+    "test_practice_covers_hidden_cases: Read /app/transcripts/*.json and verify each hidden-case tag appears >= 3 times",
+    "test_anti_cheese_no_tcl: Verify no tclsh/wish/tcl binary exists anywhere on the filesystem; verify webapp source contains no subprocess/os.system/popen/importlib.import_module calls; start webapp and verify it serves correct responses",
+    "test_determinism: Run Tcl driver with same seed twice, assert byte-identical output; different seed, assert different output"
+  ],
+  "anti_cheat": "The webapp source is scanned for subprocess/os.system/popen/importlib calls and tested with NO tclsh binary anywhere on the filesystem (apt/dpkg removed from the image so tclsh cannot be installed). The SQLite records are compared byte-identically against those produced by the Tcl logic, so hard-coding practice-scenario outputs fails on hidden inputs. No expected outputs or solutions exist anywhere in the image.",
+  "failure_modes": "A capable agent will likely: (1) fix the obvious all-errors bug but miss that within a field the first failing rule must be returned; (2) implement rounding but forget to round at every intermediate step, causing schedule drift on longer terms; (3) not adjust the last instalment because the balance error is tiny (0.01) and invisible in casual testing; (4) store amounts as floats that happen to equal the integer-cent values for round amounts; (5) delete without cascade because the practice database has no orphaned entries; (6) format rates as '5%' instead of '5.00%'. These are all the agent's fault because the Tcl source shows the correct behaviour and the practice transcripts demonstrate it.",
+  "shape": "port with behavioural parity; graded by HTTP tests against Tcl reference on hidden scenarios",
+  "hidden_evaluation": "25 hidden end-to-end scenarios drawn from the quirk matrix (errors_at_once \u00d7 amounts \u00d7 actions) are generated in tests/ using a seeded Tcl driver that sources loanapp.tcl. Each scenario submits form data to the Flask app and compares the HTTP response (error message, schedule entries, formatted values) and the SQLite database state against the Tcl reference output. The agent never sees these scenarios; they combine quirk dimensions in ways the practice transcripts show only individually.",
+  "checks": [
+    {
+      "requirement": "When multiple fields fail validation, the web app must display the error for the first field (by the order listed above) that fails. (instruction.md)",
+      "assumed_instead": "Show all validation errors simultaneously (common in modern web frameworks)",
+      "hidden_test_input": "applicant_name='' AND loan_amount='500' AND interest_rate='30'",
+      "why_missed": "The starter already shows all errors; an agent who only fixes the most obvious bug might add a 'first error' mechanism but still return all errors for the second and third fields",
+      "caught_by_tests": [
+        "test_validation_first_error_only",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "When a single field fails multiple rules, the first failing rule's message is shown. (instruction.md and Tcl source proc order)",
+      "assumed_instead": "Show the most specific or last rule's message",
+      "hidden_test_input": "applicant_name='1' (fails min-length AND invalid-characters; first rule is min-length)",
+      "why_missed": "Single-field multi-rule violations are rare in practice; the agent might test each rule independently but not combinations",
+      "caught_by_tests": [
+        "test_validation_within_field_order",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "All validation rules and error messages are defined in /app/loanapp.tcl, with exact text including trailing period. (instruction.md)",
+      "assumed_instead": "Paraphrased messages without trailing period (e.g. 'Applicant name is required' without the period)",
+      "hidden_test_input": "Any single invalid field submission",
+      "why_missed": "The period at the end is easy to overlook when reading the Tcl source; most form validation messages don't use periods",
+      "caught_by_tests": [
+        "test_validation_exact_messages",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Your implementation must produce identical figures, including the rounding of every intermediate value. (instruction.md)",
+      "assumed_instead": "Round only the final displayed values, compute intermediates in full float precision",
+      "hidden_test_input": "$15,333.50 at 4.75% for 24 months (accumulates drift without per-step rounding)",
+      "why_missed": "For round amounts and short terms, full-precision intermediates give the same result; the drift only shows with cents amounts over longer terms",
+      "caught_by_tests": [
+        "test_repayment_per_step_rounding",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Including the handling of the last instalment (principal = remaining balance, payment recalculated). (instruction.md)",
+      "assumed_instead": "Last instalment uses same payment formula as all others, leaving balance of \u00b10.01\u20130.02",
+      "hidden_test_input": "Any valid application where accumulated rounding makes the last balance differ from the formula payment",
+      "why_missed": "A final balance of 0.01 looks like rounding noise; without comparing to the Tcl output, the agent may not notice",
+      "caught_by_tests": [
+        "test_repayment_last_instalment",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Total repayment equals sum of all instalment payments, total interest equals sum of all interest components. (instruction.md schedule definition)",
+      "assumed_instead": "total_repayment = monthly_payment \u00d7 term, total_interest = total_repayment \u2212 principal",
+      "hidden_test_input": "Application where last payment differs from monthly_payment",
+      "why_missed": "For many inputs the two formulas agree; the difference is only visible when the last instalment is adjusted",
+      "caught_by_tests": [
+        "test_repayment_totals",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Saved applications must be stored in the applications table with amounts as integer cents, interest rate as integer basis points, and dates as DD/MM/YYYY text. (instruction.md and schema.sql)",
+      "assumed_instead": "Store as Python float and ISO date (the starter's approach)",
+      "hidden_test_input": "Save $15,333.50 (1533350 cents) at 4.75% (475 bps) with start_date 01/03/2025",
+      "why_missed": "Round dollar amounts and integer rates produce the same stored value either way; only fractional amounts expose the bug",
+      "caught_by_tests": [
+        "test_save_database_format",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Schedule entries must be stored in the schedule_entries table alongside the application row. (instruction.md and schema.sql)",
+      "assumed_instead": "Only store the application row without schedule entries",
+      "hidden_test_input": "Save a valid 12-month application, query schedule_entries",
+      "why_missed": "The starter may save the application but skip the schedule insert; the page still displays correctly from the calculate response",
+      "caught_by_tests": [
+        "test_save_schedule_entries",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Delete requires explicit confirmation: first call returns a prompt, second with confirmed=true executes. (instruction.md)",
+      "assumed_instead": "Delete immediately on POST without confirmed parameter",
+      "hidden_test_input": "POST /api/delete/1 without confirmed=true",
+      "why_missed": "A single-step delete is simpler and works for the happy path; the agent might not re-read the Tcl source for the confirmation dialog",
+      "caught_by_tests": [
+        "test_delete_confirmation",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Deleting an application must first remove all its schedule entries, then the application itself. (instruction.md)",
+      "assumed_instead": "DELETE only the applications row (foreign-key constraint may block or leave orphans)",
+      "hidden_test_input": "Delete an application that has 12 schedule_entries rows",
+      "why_missed": "If the starter's test database has no schedule entries, delete appears to work without cascade",
+      "caught_by_tests": [
+        "test_delete_cascade",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Currency amounts: $X,XXX.XX (comma thousand separator, two decimal places, dollar sign). (instruction.md)",
+      "assumed_instead": "Display as $10000 or 10000.00 without commas",
+      "hidden_test_input": "Any amount >= 1000 (e.g. $10,000.00)",
+      "why_missed": "The starter omits commas; the agent might not notice for amounts under 10000 where commas are less expected",
+      "caught_by_tests": [
+        "test_display_currency_format",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Interest rate: X.XX% (always two decimal places, percent sign). (instruction.md)",
+      "assumed_instead": "Display as 5% or 5.0%",
+      "hidden_test_input": "Rate of 5% (should display as 5.00%)",
+      "why_missed": "A rate of 5% displaying as '5%' is common and looks correct; only the Tcl source specifies two decimal places",
+      "caught_by_tests": [
+        "test_display_rate_format",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Dates: DD/MM/YYYY. (instruction.md)",
+      "assumed_instead": "Display as YYYY-MM-DD (Python's default) or MM/DD/YYYY (US convention)",
+      "hidden_test_input": "Start date 01/03/2025 (1 March, not 3 January)",
+      "why_missed": "ISO format is Python's default; the agent might not convert unless they test a date where day > 12",
+      "caught_by_tests": [
+        "test_display_date_format",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "The minimum start date for new loans is 01/01/2025. (instruction.md)",
+      "assumed_instead": "No minimum date or a relative 'not in the past' check",
+      "hidden_test_input": "start_date = '31/12/2024' (should be rejected)",
+      "why_missed": "The agent might implement 'must not be in the past' relative to the current date instead of the fixed business rule",
+      "caught_by_tests": [
+        "test_validation_date_minimum",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "POST /api/save accepts same fields + optional id; on re-save with id, UPDATE the application and REPLACE schedule entries, do not INSERT a duplicate. (instruction.md contract)",
+      "assumed_instead": "Always INSERT a new row on save, never UPDATE",
+      "hidden_test_input": "Save an application, then POST /api/save with its id and a changed loan_amount",
+      "why_missed": "The edit path is secondary functionality; the agent might only implement create",
+      "caught_by_tests": [
+        "test_save_then_edit",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "The Tcl source's add_months function adjusts the day for months with fewer days (31 Jan \u2192 28 Feb). (instruction.md: payment dates use add_months)",
+      "assumed_instead": "Simple month arithmetic without day capping (31 Jan \u2192 3 Mar instead of 28 Feb)",
+      "hidden_test_input": "start_date = '31/01/2025', term = 3 months (Feb instalment should be 28/02/2025)",
+      "why_missed": "Python's dateutil.relativedelta handles this but datetime + timedelta(days=30) does not; the agent might use the wrong approach",
+      "caught_by_tests": [
+        "test_payment_dates_month_end",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Applicant name must start with a letter and contain only letters, spaces, hyphens and apostrophes. (instruction.md and Tcl source)",
+      "assumed_instead": "Allow any non-empty string or use a simpler regex that permits digits",
+      "hidden_test_input": "applicant_name = 'John123' (should fail with 'Applicant name contains invalid characters.')",
+      "why_missed": "A simple non-empty check passes most test names; the character restriction only matters for unusual names",
+      "caught_by_tests": [
+        "test_validation_exact_messages",
+        "test_hidden_scenario_suite"
+      ]
+    },
+    {
+      "requirement": "Loan term must be a whole number of months (rejects '12.5'). (instruction.md and Tcl source)",
+      "assumed_instead": "Accept any numeric value and truncate or round",
+      "hidden_test_input": "term_months = '12.5' (should fail with 'Loan term must be a whole number of months.')",
+      "why_missed": "HTML number inputs often truncate; the agent might not test fractional terms",
+      "caught_by_tests": [
+        "test_validation_exact_messages",
+        "test_hidden_scenario_suite"
+      ]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Valid application with round amounts computes correct monthly payment and schedule",
+      "hidden_test_input": "$10,000 at 5% for 12 months starting 01/01/2025 \u2014 must produce the same figures as the Tcl source"
+    },
+    {
+      "behaviour": "Single-field error returns the correct message for that field",
+      "hidden_test_input": "Empty applicant_name \u2192 'Applicant name is required.'"
+    },
+    {
+      "behaviour": "Save creates a retrievable application record with schedule",
+      "hidden_test_input": "Save a valid application, then GET /api/application/<id> returns its data and schedule"
+    }
+  ],
+  "ground_truth": "The tests install tclsh via apt (verifier_apt, in the verifier context only \u2014 not in the agent's container) and run a Tcl driver script (/tests/tcl_driver.tcl) that sources /app/loanapp.tcl and calls its validation and repayment procs. Expected error messages, schedule entries, and database values are computed by this Tcl reference. The SQLite database is also queried directly to verify stored values. All expected values come from code the tests run, never from hand-computed constants.",
+  "verifier_packages": [],
+  "verifier_apt": [
+    "tclsh"
+  ],
+  "reference_access": "frozen_examples",
+  "quirk_evidence": [
+    {
+      "quirk": "errors_at_once: three_with_precedence",
+      "evidence": "/app/transcripts/scenario_09.json, scenario_10.json, scenario_11.json \u2014 three fields invalid, only the first-field error appears in the output"
+    },
+    {
+      "quirk": "errors_at_once: two_fields",
+      "evidence": "/app/transcripts/scenario_06.json, scenario_07.json, scenario_08.json \u2014 two invalid fields, only the first-field error returned"
+    },
+    {
+      "quirk": "amounts: rounding_boundary",
+      "evidence": "/app/transcripts/scenario_18.json, scenario_19.json, scenario_20.json \u2014 amounts where per-step rounding produces different schedule entries than full-precision computation; the Tcl source's format \"%.2f\" calls at each step"
+    },
+    {
+      "quirk": "amounts: cents",
+      "evidence": "/app/transcripts/scenario_15.json, scenario_16.json, scenario_17.json \u2014 non-round dollar amounts where per-step rounding drift accumulates"
+    },
+    {
+      "quirk": "actions: delete_with_dependents",
+      "evidence": "/app/transcripts/scenario_27.json, scenario_28.json \u2014 delete scenarios where schedule_entries rows must be removed first; the Tcl source's delete proc"
+    },
+    {
+      "quirk": "actions: save_then_edit",
+      "evidence": "/app/transcripts/scenario_24.json, scenario_25.json, scenario_26.json \u2014 save followed by edit with id parameter; the Tcl source's update path"
+    }
+  ],
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "The minimum start date is 01/01/2025 (a fixed business rule, not relative to 'today').",
+      "why": "All practice dates are in 2025 and the agent has no access to a running Tcl interpreter to test past dates dynamically; the rule could be 'not in the past' or a fixed cutoff, and the data cannot disambiguate."
+    },
+    {
+      "fact": "Amounts are stored as integer cents, rates as integer basis points, dates as DD/MM/YYYY text.",
+      "why": "The practice transcripts show input/output pairs, not the internal storage format; only schema.sql and the Tcl source reveal the storage convention; a developer might reasonably store floats and ISO dates."
+    },
+    {
+      "fact": "Delete requires a two-step confirmation (first call returns a prompt, second with confirmed=true executes).",
+      "why": "The practice transcripts show the final outcome ('Application deleted'), not the intermediate confirmation step; without running the Tcl app interactively the agent cannot observe the two-step flow."
+    }
+  ],
+  "reference_binary": "",
+  "sample_file": "",
+  "spec_document": "",
+  "knobs": [
+    {
+      "knob": "preservation constraints",
+      "where": "SQLite schema and record format in /app/schema.sql and the instruction's database-format sentences",
+      "fairness": "instruction.md states 'amounts as integer cents, interest rate as integer basis points, and dates as DD/MM/YYYY text' and 'Do not modify the schema file or create new tables'"
+    },
+    {
+      "knob": "hidden-edge coverage",
+      "where": "Every behavioural edge is visible in /app/loanapp.tcl source code which the agent can read",
+      "fairness": "The Tcl source defines every validation rule, every rounding step, and every save/delete action; there are no undocumented behaviours"
+    },
+    {
+      "knob": "convention traps",
+      "where": "Date format DD/MM/YYYY vs ISO, currency commas, rate decimals, cents vs dollars, basis points vs percentage \u2014 all stated in instruction.md",
+      "fairness": "instruction.md states each display format explicitly and the database storage format; the Tcl source also shows these conventions"
+    },
+    {
+      "knob": "Stale local tests",
+      "where": "The starter webapp.py contains 7 deliberate deviations from the Tcl behaviour that look correct at first glance",
+      "fairness": "instruction.md states the job is to fix webapp.py to match the Tcl source, and the practice transcripts show the correct behaviour"
+    }
+  ],
+  "dial": "Number of hidden end-to-end scenarios; fair range 15\u201340, chosen value 25. Each scenario combines one level from each quirk dimension (errors_at_once \u00d7 amounts \u00d7 actions). About 30% are easy cells (one_field error, round amount, simple save).",
+  "quirk_matrix": "{\"dimensions\": {\"errors_at_once\": [\"one_field\", \"two_fields\", \"three_with_precedence\"], \"amounts\": [\"round\", \"cents\", \"rounding_boundary\"], \"actions\": [\"save\", \"save_then_edit\", \"delete_with_dependents\"]}, \"mix\": \"27 cells total (3\\u00d73\\u00d73); about 30% (8) are easy cells (one_field \\u00d7 round \\u00d7 save, one_field \\u00d7 round \\u00d7 save_then_edit, etc.); the remaining 19 mix harder dimensions. Hidden scenarios sample ~25 of the 27 cells, ensuring every level of every dimension appears at least 5 times.\"}",
+  "public_tests": "About 30%: visible tests in /app/tests_public/ that cover a valid application with round amounts and one single-field error (empty applicant_name). These let the agent verify the basic calculation and validation loop works. They do NOT cover multi-field errors, cents amounts, boundary rounding, save format, delete cascade, display formatting, or date validation.",
+  "anti_cheese": "The hidden tests verify that NO tclsh/wish/tcl binary exists anywhere on the filesystem (apt/dpkg are removed from the image so tclsh cannot be installed). The webapp source is scanned for subprocess/os.system/popen/importlib.import_module/ctypes calls. The Flask app is started and tested with this guarantee. Additionally, the SQLite records for hidden scenarios are compared byte-identically to those produced by the Tcl logic, so hard-coding practice outputs fails on different inputs. Hidden test: test_anti_cheese_no_tcl.",
+  "graded_instances": "25 hidden scenarios are generated in tests/ from a seeded Python RNG that picks quirk-matrix cells and concrete input values. The same seed always produces the same scenarios (determinism self-check). A different seed produces different scenarios (diversity self-check). Each scenario's expected output is computed by running tclsh (installed only in the verifier context) with the Tcl driver. The graded instances use different seeds and amounts from the practice transcripts, so a solution that hard-codes practice outputs cannot pass.",
+  "self_check_gap": "A solution that reproduces all 28 practice transcripts perfectly can still: (1) round a boundary-amount schedule entry differently on longer terms (24\u201336 months) where the practice set shows boundary rounding only for 12\u201318 month terms \u2014 the accumulated per-step drift is larger, and a solution using Python's round() instead of the Tcl-equivalent format(\"%.2f\") matches the shorter-term boundary cases but diverges on longer ones; (2) return the wrong first-error message when three fields fail and the first failing field is NOT applicant_name \u2014 the practice transcripts show three-error precedence starting with name, but hidden scenarios include cases where name is valid and other fields fail first; (3) fail to cascade delete because the practice database state at delete-time has no schedule_entries rows, so a non-cascading delete appears to work. The practice set nonetheless determines the right answer because: the Tcl source defines the exact field priority, the rounding rule (format \"%.2f\" at each step), and the cascade delete logic, and the practice transcripts confirm each dimension individually with the correct Tcl output.",
+  "margins": [],
+  "contract": [
+    "POST /api/calculate accepts form fields: applicant_name, loan_amount, interest_rate, term_months, start_date (all as strings)",
+    "On validation failure: returns HTTP 200 with JSON {\"valid\": false, \"error\": \"<message>\"} with exactly one error message matching Tcl source text including trailing period",
+    "On success: returns HTTP 200 with JSON {\"valid\": true, \"monthly_payment\": <float>, \"total_repayment\": <float>, \"total_interest\": <float>, \"schedule\": [{\"instalment_no\": <int>, \"payment_date\": \"DD/MM/YYYY\", \"payment\": <float>, \"principal\": <float>, \"interest\": <float>, \"balance\": <float>}, ...], \"display\": {\"monthly_payment\": \"$X,XXX.XX\", \"total_repayment\": \"$X,XXX.XX\", \"total_interest\": \"$X,XXX.XX\", \"interest_rate\": \"X.XX%\", \"start_date\": \"DD/MM/YYYY\"}}",
+    "Validation field priority: applicant_name \u2192 loan_amount \u2192 interest_rate \u2192 term_months \u2192 start_date; first failing field's first failing rule is returned",
+    "Monthly payment = format(\"%.2f\", principal \u00d7 monthly_rate / (1 \u2212 (1+monthly_rate)^(-term))) where monthly_rate = annual_rate/100/12",
+    "Schedule: for i in 1..term: interest = format(\"%.2f\", balance \u00d7 monthly_rate); if i==term: principal=balance, payment=format(\"%.2f\", principal+interest); else: principal=format(\"%.2f\", monthly_payment\u2212interest), payment=monthly_payment; balance=format(\"%.2f\", balance\u2212principal)",
+    "Payment dates: start_date + N months using Tcl's add_months (day capped to last day of target month)",
+    "POST /api/save accepts same fields + optional id; validates and calculates; INSERT or UPDATE applications row (loan_amount_cents=int, interest_rate_bps=int, start_date=DD/MM/YYYY); DELETE+INSERT schedule_entries; returns HTTP 200 with {\"id\": <int>}",
+    "POST /api/delete/<id> without confirmed=\"true\": returns HTTP 200 with {\"message\": \"Confirm deletion of application #<id>?\"}; application and entries remain",
+    "POST /api/delete/<id> with confirmed=\"true\": DELETE FROM schedule_entries WHERE application_id=<id>, then DELETE FROM applications WHERE id=<id>; returns HTTP 200 with {\"message\": \"Application #<id> deleted.\"}",
+    "GET /api/application/<id>: returns HTTP 200 with application data and schedule from database with display-formatted fields; HTTP 404 with {\"error\": \"Application not found.\"} if id does not exist"
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Returning all validation errors instead of the first one: the form still 'works' and shows useful feedback, with no runtime error.",
+      "stated_in": "When multiple fields fail validation, the web app must display the error for the first field (by the order listed above) that fails."
+    },
+    {
+      "trap": "Not rounding intermediate schedule values: the displayed schedule looks correct for common inputs and no error is raised; only the Tcl comparison on cents amounts over longer terms reveals the drift.",
+      "stated_in": "Your implementation must produce identical figures, including the rounding of every intermediate value."
+    },
+    {
+      "trap": "Storing amounts as floats in the database: SQLite accepts any type, and round amounts like 10000.0 compare equal to 1000000 cents after conversion, so basic save/load works.",
+      "stated_in": "Saved applications must be stored in the applications table with amounts as integer cents, interest rate as integer basis points, and dates as DD/MM/YYYY text."
+    },
+    {
+      "trap": "Deleting without cascade when no schedule entries exist in the test database: the DELETE succeeds, no error, but fails when entries are present.",
+      "stated_in": "Deleting an application must first remove all its schedule entries, then the application itself."
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "H01: empty name + amount 500 + rate 30",
+      "quirks": "three_with_precedence \u00d7 round \u00d7 save",
+      "purpose": "Verify first-error-only with three invalid fields"
+    },
+    {
+      "instance": "H02: name='1' + amount 500",
+      "quirks": "two_fields \u00d7 round \u00d7 save",
+      "purpose": "Verify within-field rule order (min-length before invalid-chars)"
+    },
+    {
+      "instance": "H03: valid, $15,333.50 at 4.75% for 24 months",
+      "quirks": "one_field(none) \u00d7 cents \u00d7 save",
+      "purpose": "Verify per-step rounding with cents amounts and longer term"
+    },
+    {
+      "instance": "H04: valid, $25,000 at 4.5% for 30 months, then save then edit amount to $30,000",
+      "quirks": "one_field(none) \u00d7 round \u00d7 save_then_edit",
+      "purpose": "Verify save-then-edit updates rather than duplicates"
+    },
+    {
+      "instance": "H05: save valid app, then delete with dependents",
+      "quirks": "one_field(none) \u00d7 round \u00d7 delete_with_dependents",
+      "purpose": "Verify delete cascade and confirmation"
+    },
+    {
+      "instance": "H06: valid boundary amount, $12,345 at 3.75% for 36 months",
+      "quirks": "one_field(none) \u00d7 rounding_boundary \u00d7 save",
+      "purpose": "Verify rounding at boundary produces correct schedule on longer term"
+    },
+    {
+      "instance": "H07: name='A1' + rate 30 + start_date='15/06/2024'",
+      "quirks": "three_with_precedence \u00d7 cents \u00d7 save_then_edit",
+      "purpose": "Three errors with name first, then fix and save-edit"
+    },
+    {
+      "instance": "H08: valid cents amount, then delete with dependents",
+      "quirks": "one_field(none) \u00d7 cents \u00d7 delete_with_dependents",
+      "purpose": "Delete cascade with cents amounts in database"
+    },
+    {
+      "instance": "H09: two invalid fields with boundary amount input",
+      "quirks": "two_fields \u00d7 rounding_boundary \u00d7 save",
+      "purpose": "First-error-only with boundary-amount valid fields"
+    },
+    {
+      "instance": "H10: start_date 31/01/2025, term 3",
+      "quirks": "one_field(none) \u00d7 round \u00d7 save",
+      "purpose": "Month-end payment date handling (Feb = 28 days)"
+    },
+    {
+      "instance": "H11: valid name + amount 0 + rate 30 (amount fails first, not name)",
+      "quirks": "two_fields \u00d7 round \u00d7 save",
+      "purpose": "Verify field priority when name is valid but other fields fail"
+    },
+    {
+      "instance": "H12\u2013H25: remaining cells from the quirk matrix",
+      "quirks": "varied combinations ensuring every dimension level appears \u22655 times",
+      "purpose": "Comprehensive coverage of all quirk-matrix cells including longer-term boundary rounding and non-name-first three-error scenarios"
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Increase hidden scenario count from 25 toward 40",
+      "Add a second rounding boundary case where format(\"%.2f\") and Python round() differ at a .5 midpoint",
+      "Add a scenario where save-then-edit must also update schedule_entries (not just the application row)"
+    ],
+    "too_hard": [
+      "Reduce hidden scenario count from 25 toward 15",
+      "Remove the rounding_boundary dimension (keep only round and cents)",
+      "Add a public test for two-field error precedence so the agent can verify that behavior"
+    ]
+  },
+  "seed_card": "topic: 'Move a legacy Tcl/Tk loan-application screen into a small web app that keeps exactly what users\n  saw: field validation, computed repayment figures, messages, save and delete.'\nshape: port with behavioural parity; graded by browser tests on hidden scenarios\nagent_cannot_verify: Validation order and message precedence when several fields are wrong, rounding of\n  the repayment schedule, and save/delete side effects only show in combined scenarios the agent's manual\n  checks do not try.\ndial: number of hidden end-to-end scenarios; fair range 15-40.\nquirk_matrix:\n  errors at once:\n  - one field\n  - two fields\n  - three with precedence\n  amounts:\n  - round\n  - cents\n  - rounding boundary\n  actions:\n  - save\n  - save then edit\n  - delete with dependents\n  mix: about 30% easy cells\nself_check_gap: a port matching the recorded practice scenarios can still round a boundary amount differently\n  or show errors in a different order when several occur; the Tcl source determines both\nanswer_source: stated\nreference_access: frozen_examples\nquirk_evidence:\n- quirk: errors at once\n  evidence: recorded transcripts and screenshots of practice scenarios with several errors\n- quirk: amounts\n  evidence: recorded practice scenarios at rounding boundaries; the Tcl source\n- quirk: actions\n  evidence: recorded practice scenarios for every action; the Tcl source\npublic_tests: 'about 30%: visible browser tests for a valid application and one single-field error'\nanti_cheese: hidden scenarios checked against the Tcl logic AND the SQLite records byte-identical\nground_truth: the original Tcl logic runs under tclsh in tests/ to produce expected values and messages\n  for each hidden scenario.\nchecks:\n- validation order and which message shows first\n- repayment schedule rounding (per-instalment vs total)\n- save writes the same record format to the same SQLite table\n- delete asks for confirmation and removes dependent rows\n- field formats (dates, currency) as the old screen displayed them\nknobs:\n- knob: preservation constraints\n  fairness: instruction says the database and record formats stay identical\n- knob: hidden-edge coverage\n  fairness: every behaviour is in the Tcl source the agent can read and run with tclsh\nmust_keep:\n- SQLite schema and record format\nenvironment: debian slim with python3 web stack; the Tcl source and recorded practice transcripts, but\n  no tclsh/wish in the agent's image (tcl runs only in the verifier); headless browser for tests; no network.\nout_of_bounds:\n- pixel-level layout\n- behaviour not in the Tcl source\nprecheck:\n- confirm tclsh can drive the logic headlessly for the tests\n",
+  "crux": "The agent must read the Tcl source carefully enough to extract every rule, then implement them faithfully in Flask without being able to run the Tcl reference to verify \u2014 only the frozen practice transcripts are available for comparison, and the hidden scenarios combine quirk dimensions in ways the practice set shows only individually.",
+  "expected_agent_steps": 35.0
+}

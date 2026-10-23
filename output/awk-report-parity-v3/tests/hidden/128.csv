@@ -1,0 +1,21 @@
+branch,posted,amount,units,code
+PAR1,,12abc,4e2,12345
+ny,007,250,abc,12345
+london,abc,0.1,3.9
+london,007,0.2,abc,Q
+,20240105,-12.345,4e2
+ lon,abc,1E2,abc,
+São Paulo,9,-0,3
+  ,abc,0.1,3.9,12345
+par,2024/1/5,99.999,3,12345
+  ,20240131, -3 ,3.9,Ünï
+ny,abc,12abc,10
+a b c d e,2024-01-05,-0, 2 
+ lon,10, 7 ,0,extra
+london, 20231231 ,-0.0,0,Q
+nyc-east,2024/1/5, -3 ,4e2,Q
+  ,9,-0.0,7,AB12
+Malmö,10,,3
+PAR1,,2500000000.75,0,
+london,20240105,.5,3.9
+london,20240105,10,1,AB12

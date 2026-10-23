@@ -1,0 +1,26 @@
+branch,posted,amount,units,code
+  ,9,1e3,3.9,Ünï
+São Paulo,10,.5, 2 ,12345
+NYC-West,,.5, 2 ,x
+Malmö, 20231231 ,-0.0,abc
+ny,9,12abc,10,ZZTOP
+Zürich,,250,abc
+los angeles,10,1e3,abc,ZZTOP
+berlin,,0.1,7,
+berlin,10,-0.0,10,ZZTOP,extra
+Malmö,20240105,0.2, 2 
+ny,007,+3,3,x
+,2024-01-31,250,abc,extra
+nyc-east,10,+3,,12345
+  ,,1999.95,4e2,Q
+ lon,007,0.1,10,Q
+Malmö,20240105,3.,3.9,ZZTOP
+Österreich,007,3.,-2.5
+ny,2024/1/5,-0.0,4e2,
+Österreich,2024/1/5,12.50,4e2
+ny,,,abc
+Malmö,007,250, 2 ,ab
+Malmö,2024-01-31,-0.0,-2.5
+berlin,abc,+3,3.9,Q
+nyc-east,20240131,99.999, 2 ,12345
+london,20240105,10,1,AB12

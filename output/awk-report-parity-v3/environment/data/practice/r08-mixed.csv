@@ -1,0 +1,33 @@
+branch,posted,amount,units,code
+london,,2500000000.75,3,AB12
+x,10,12abc,-2.5,ZZTOP
+garbage
+  ,9,250,10,Q
+nyc-east,2024/1/5,12.50,3,AB12
+nyc-east,007,+3,0,ZZTOP
+NYC-West,2024/1/5,+3,0,x
+los angeles,abc, 7 ,3.9,
+los angeles, ,1E2,abc,Q
+PAR1,9,250, 2 ,ZZTOP
+x,2024-01-31, ,3,Q
+berlin, 20231231 , 7 ,10,Q
+ ,,0.1,-2.5,12345
+São Paulo, 20231231 ,12abc,3.9,ZZTOP
+,2024-01-05,-0.0,7,ZZTOP
+Malmö,007,250,,12345
+ny,10,1E2,3.9,Ünï
+a b c d e,007,250,4e2,ZZTOP
+berlin,2024-01-05,,abc,ZZTOP
+ny,007,0x1A,10,12345
+NYC-West,2024-01-05,abc,10,x
+par,20240131,abc,-2.5,Ünï
+los angeles,20240105,1E2,3.9,ab,extra
+,2024-01-31,abc,0,x
+NYC-West, ,-0,abc,12345
+london,10,1000000000,3.9,
+PAR1,2024/1/5,99.999,2,Ünï
+x,2024-01-05,0.2,4e2,ZZTOP
+berlin,2024/1/5, 7 ,7,AB12
+a b c d e, ,-5,7,Q
+, 20231231 ,1000000000,3.9,
+  ,20240131,15.25,3,Q

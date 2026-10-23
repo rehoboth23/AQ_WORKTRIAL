@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+ , , 
+NYC-West,20240105,,3.9,ZZTOP
+los angeles,,1000000000,,
+a b c d e,2024-01-05,99.999, 2 ,ab
+par,007, 7 ,10
+london,2024-01-05,-5,4e2
+,2024/1/5,-0.0,
+x, 20231231 ,99.999,4e2,Q
+São Paulo,2024-01-31,99.999,-2.5,ab
+london,,99.999,3
+ lon,abc,250,4e2,12345
+nyc-east,9,-12.345, 2 ,AB12
+ , , 
+nyc-east,9,-12.345,4e2,12345,extra
+nyc-east,20240105,10,1,AB12

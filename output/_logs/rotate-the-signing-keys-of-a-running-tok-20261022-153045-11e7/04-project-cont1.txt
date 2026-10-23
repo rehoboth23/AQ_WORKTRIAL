@@ -1,0 +1,377 @@
+<<<FILE environment/docs/README.md>>>
+# Token Service
+
+## Overview
+
+The HMAC-SHA256 Token Service issues and verifies bearer tokens for internal
+microservices. It listens on port 8901 and provides the following endpoints:
+
+- `POST /issue` — Sign and return a new token
+- `POST /verify` — Validate a token's signature and expiry
+- `POST /revoke` — Add a token's JTI to the revocation list
+- `GET /.well-known/keyset` — Return the current signing key(s)
+
+## Configuration
+
+Configuration is stored in `/app/config.json`. The server reads this file on
+startup. After making changes to the configuration (for example, adding a new
+signing key or changing the active key ID), you **must restart the service**
+for changes to take effect:
+
+```bash
+kill $(cat /app/server.pid)
+python3 /app/server.py &
+```
+
+Revocations are stored in `/app/revocations.json`, which is also read at
+startup.
+
+## Token Format
+
+Tokens are formatted as `base64url(header).base64url(payload).base64url(signature)`.
+
+- **Header**: `{alg, kid, typ}` — `alg` is `HS256`, `kid` identifies the
+  signing key, `typ` is `JWT`.
+- **Payload**: `{sub, iat, exp, jti}` — `sub` is the subject, `iat` and
+  `exp` are Unix timestamps, `jti` is a unique token identifier.
+- **Signature**: HMAC-SHA256 of `base64url(header).base64url(payload)` using
+  the key identified by `kid`.
+
+## Key Rotation
+
+To rotate the signing key:
+
+1. Generate a new 256-bit key secret (base64url-encoded).
+2. Add the new key entry to the `keys` map in `/app/config.json`.
+3. Update `signing_key_id` in `/app/config.json` to point to the new key.
+4. **Restart the service** to reload the configuration.
+5. Wait for any tokens issued under the old key to expire.
+6. Remove the old key from the `keys` map in `/app/config.json`.
+7. **Restart the service** again.
+
+For the complete rotation procedure, see the rotation policy document.
+
+## Monitoring
+
+The server writes its process ID to `/app/server.pid`. Use this PID to
+send signals or to confirm the service is running.
+<<<END>>>
+
+<<<FILE environment/simulator/practice_sim.py>>>
+#!/usr/bin/env python3
+"""
+Practice client simulator for the HMAC-SHA256 token service.
+Runs ~45 s of issue / verify / revoke cycles while the agent performs
+key rotation, then reports any verification mismatches.
+All operations are logged to /app/simulator/practice_log.jsonl.
+"""
+
+import base64
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE_URL = "http://127.0.0.1:8901"
+LOG_FILE = "/app/simulator/practice_log.jsonl"
+DURATION = 45  # target run-time in seconds
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
+
+def _post(endpoint, body):
+    req = urllib.request.Request(
+        f"{BASE_URL}{endpoint}",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read()), False
+    except urllib.error.URLError as exc:
+        return {"error": str(exc), "connection_error": True}, True
+    except Exception as exc:
+        return {"error": str(exc), "connection_error": True}, True
+
+
+def _get(endpoint):
+    try:
+        with urllib.request.urlopen(f"{BASE_URL}{endpoint}", timeout=5) as resp:
+            return json.loads(resp.read()), False
+    except urllib.error.URLError as exc:
+        return {"error": str(exc), "connection_error": True}, True
+    except Exception as exc:
+        return {"error": str(exc), "connection_error": True}, True
+
+
+def _b64ud(s):
+    """Decode base64url with padding."""
+    pad = 4 - len(s) % 4
+    if pad != 4:
+        s += "=" * pad
+    return base64.urlsafe_b64decode(s)
+
+
+def _decode_token(tok):
+    parts = tok.split(".")
+    if len(parts) != 3:
+        return None, None
+    try:
+        header = json.loads(_b64ud(parts[0]))
+        payload = json.loads(_b64ud(parts[1]))
+        return header, payload
+    except Exception:
+        return None, None
+
+
+# ── main ─────────────────────────────────────────────────────────────────
+
+def main():
+    ops = []          # every operation logged here
+    mismatches = []   # only when expected != actual
+    tokens = {}       # jti -> {token, kid, iat, exp, sub, revoked}
+
+    t0 = time.time()
+
+    def now():
+        return time.time() - t0
+
+    def log(entry):
+        entry["t"] = round(now(), 3)
+        ops.append(entry)
+
+    # ── issue ──────────────────────────────────────────────────────────
+    def issue(sub, phase=""):
+        resp, err = _post("/issue", {"sub": sub})
+        if err:
+            log({"op": "issue", "sub": sub, "phase": phase, "error": resp.get("error"), "connection_error": True})
+            return None
+        tok = resp.get("token", "")
+        hdr, pay = _decode_token(tok)
+        if hdr is None:
+            log({"op": "issue", "sub": sub, "phase": phase, "error": "bad_token"})
+            return None
+        jti = resp.get("jti") or pay.get("jti")
+        rec = {
+            "token": tok,
+            "kid": hdr.get("kid"),
+            "iat": pay.get("iat"),
+            "exp": pay.get("exp"),
+            "sub": sub,
+            "revoked": False,
+        }
+        tokens[jti] = rec
+        log({"op": "issue", "jti": jti, "kid": rec["kid"], "iat": rec["iat"],
+             "exp": rec["exp"], "sub": sub, "phase": phase})
+        return jti
+
+    # ── verify ────────────────────────────────────────────────────────
+    def verify(jti, expected, phase, reason=""):
+        if jti not in tokens:
+            return
+        resp, err = _post("/verify", {"token": tokens[jti]["token"]})
+        actual = resp.get("valid") if not err else None
+        log({"op": "verify", "jti": jti, "kid": tokens[jti]["kid"],
+             "expected": expected, "actual": actual,
+             "phase": phase, "reason": reason, "connection_error": err})
+        if err:
+            mismatches.append({"t": now(), "jti": jti, "kid": tokens[jti]["kid"],
+                               "expected": expected, "actual": None, "reason": "connection_error"})
+        elif actual != expected:
+            mismatches.append({"t": now(), "jti": jti, "kid": tokens[jti]["kid"],
+                               "expected": expected, "actual": actual,
+                               "phase": phase, "reason": reason})
+
+    # ── revoke ────────────────────────────────────────────────────────
+    def revoke(jti, phase=""):
+        if jti not in tokens:
+            return
+        resp, err = _post("/revoke", {"jti": jti})
+        tokens[jti]["revoked"] = True
+        log({"op": "revoke", "jti": jti, "kid": tokens[jti]["kid"],
+             "phase": phase, "success": resp.get("success") if not err else False})
+
+    # ── keyset ─────────────────────────────────────────────────────────
+    def keyset(phase=""):
+        resp, err = _get("/.well-known/keyset")
+        kids = [k.get("kid") for k in resp.get("keys", [])] if not err and "keys" in resp else []
+        log({"op": "keyset", "kids": kids, "phase": phase, "connection_error": err})
+        return kids
+
+    # ── bulk verify (all non-expired) ─────────────────────────────────
+    def verify_all(phase, reason_prefix=""):
+        ct = now()
+        for jti, info in list(tokens.items()):
+            if info["exp"] is not None and ct >= info["exp"]:
+                continue
+            exp_ = not info["revoked"]
+            r = f"{reason_prefix}{'revoked' if info['revoked'] else 'valid'}"
+            verify(jti, exp_, phase, r)
+
+    # ==================================================================
+    #  Phase 1 — pre-rotation baseline  (≈ 0 – 5 s)
+    # ==================================================================
+    early = []
+    for i in range(6):
+        j = issue(f"early-{i}", "pre-rotation")
+        if j:
+            early.append(j)
+        time.sleep(0.1)
+
+    # baseline verify
+    for j in early:
+        verify(j, True, "pre-rotation", "baseline valid")
+
+    # revoke two before rotation
+    for j in early[:2]:
+        revoke(j, "pre-rotation")
+    for j in early[:2]:
+        verify(j, False, "pre-rotation", "revoked pre-rotation")
+
+    keyset("pre-rotation")           # 1st keyset fetch
+    time.sleep(3)
+
+    # ==================================================================
+    #  Phase 2 — issue mid-life tokens, start monitoring  (≈ 5 – 12 s)
+    # ==================================================================
+    mid = []
+    for i in range(4):
+        j = issue(f"mid-{i}", "monitoring-early")
+        if j:
+            mid.append(j)
+        time.sleep(0.1)
+
+    keyset("monitoring-early")        # 2nd keyset fetch
+
+    verify_all("monitoring-early", "early-monitor ")
+    time.sleep(4)
+
+    # ==================================================================
+    #  Phase 3 — during overlap  (≈ 12 – 25 s)
+    # ==================================================================
+    keyset("overlap-start")           # 3rd keyset fetch
+
+    overlap = []
+    for i in range(4):
+        j = issue(f"overlap-{i}", "overlap")
+        if j:
+            overlap.append(j)
+        time.sleep(0.1)
+
+    # verify everything (old-key near-expiry tokens checked here)
+    verify_all("overlap", "overlap ")
+
+    # revoke several tokens DURING overlap (≥ 3 for coverage)
+    ct = now()
+    active = [j for j, inf in tokens.items()
+              if not inf["revoked"] and inf["exp"] is not None and ct < inf["exp"]]
+    overlap_revoked = []
+    for j in active[:5]:
+        revoke(j, "during-overlap")
+        overlap_revoked.append(j)
+        # immediately verify that revocation took effect
+        verify(j, False, "overlap-revocation", "revoked-during-overlap must reject")
+
+    keyset("overlap-mid")             # 4th keyset fetch
+    time.sleep(3)
+
+    # another round of overlap verification
+    verify_all("overlap-late", "overlap-late ")
+    keyset("overlap-late")             # 5th keyset fetch
+    time.sleep(3)
+
+    # ==================================================================
+    #  Phase 4 — late overlap / post-rotation  (≈ 25 – 37 s)
+    # ==================================================================
+    keyset("post-rotation-early")     # 6th keyset fetch
+
+    late = []
+    for i in range(3):
+        j = issue(f"late-{i}", "post-rotation")
+        if j:
+            late.append(j)
+        time.sleep(0.1)
+
+    verify_all("post-rotation-early", "post-early ")
+    time.sleep(5)
+
+    # ==================================================================
+    #  Phase 5 — post-rotation final  (≈ 37 – 45 s)
+    # ==================================================================
+    keyset("post-rotation-mid")       # 7th keyset fetch
+
+    post = []
+    for i in range(3):
+        j = issue(f"post-{i}", "post-rotation-final")
+        if j:
+            post.append(j)
+        time.sleep(0.1)
+
+    verify_all("post-rotation-final", "post-final ")
+
+    keyset("post-rotation-final")     # 8th keyset fetch
+
+    # wait out the remaining time
+    remaining = DURATION - now()
+    if remaining > 0:
+        time.sleep(remaining)
+
+    # one last keyset
+    keyset("end")
+
+    # ==================================================================
+    #  Write log & report
+    # ==================================================================
+    with open(LOG_FILE, "w") as fh:
+        for op in ops:
+            fh.write(json.dumps(op) + "\n")
+
+    conn_errs = sum(1 for o in ops if o.get("connection_error"))
+    overlap_rev_count = sum(1 for o in ops if o["op"] == "revoke" and o.get("phase") == "during-overlap")
+    keyset_count = sum(1 for o in ops if o["op"] == "keyset")
+
+    # count near-expiry overlap verify attempts (tokens with iat close to start, checked in overlap phase)
+    near_expiry_overlap = 0
+    for o in ops:
+        if o["op"] != "verify":
+            continue
+        if o.get("phase", "") not in ("overlap", "overlap-late", "overlap-revocation",
+                                      "overlap-start", "overlap-mid", "monitoring-early"):
+            continue
+        jti = o.get("jti")
+        if jti and jti in tokens:
+            info = tokens[jti]
+            # token issued in first 2 s of the sim → near-expiry when overlap window is active
+            if info["iat"] is not None and info["iat"] < t0 + 2:
+                near_expiry_overlap += 1
+
+    print()
+    print("=" * 55)
+    print("  Practice Simulator Report")
+    print("=" * 55)
+    print(f"  Duration           : {now():.1f} s")
+    print(f"  Total operations   : {len(ops)}")
+    print(f"  Connection errors  : {conn_errs}")
+    print(f"  Overlap revocations: {overlap_rev_count}")
+    print(f"  Keyset fetches     : {keyset_count}")
+    print(f"  Near-expiry checks : {near_expiry_overlap}")
+    print(f"  Mismatches         : {len(mismatches)}")
+    print("=" * 55)
+
+    if mismatches:
+        print(f"\n  ⚠  {len(mismatches)} MISMATCH(ES) DETECTED:\n")
+        for m in mismatches:
+            print(f"    t={m['t']:.1f}s  jti={m.get('jti','?')}  "
+                  f"kid={m.get('kid','?')}  "
+                  f"expected={m['expected']}  actual={m['actual']}  "
+                  f"({m.get('reason','')})")
+        sys.exit(1)
+    else:
+        print("\n  ✓  All verifications matched expected results.\n")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>

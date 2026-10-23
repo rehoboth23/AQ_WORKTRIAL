@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+london,20240131,250,
+Österreich,20240105,2500000000.75,10,AB12
+Malmö,10,1E2, 2 ,12345
+x, 20231231 ,abc,10,ZZTOP
+ny,20240131,0.1,4e2,AB12
+  ,20240105,-0,7,AB12
+Malmö,10,12.50,,Q
+PAR1,2024-01-05,-12.345,3,ab
+los angeles,2024-01-05,1000000000,4e2,AB12
+Malmö,abc,1e3,3.9,Ünï
+ny,20240131,2500000000.75,3,Ünï
+Österreich,10,+3, 2 ,x
+x,20240131,250,0,ZZTOP,extra
+Österreich,,.5, 2 ,x
+x,2024-01-05,-0,,extra
+São Paulo,2024-01-05,1e3,,AB12
+berlin,20240131,250, 2 ,ZZTOP
+Zürich,20240105,10,1,AB12

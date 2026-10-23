@@ -1,0 +1,10 @@
+branch,posted,amount,units,code
+São Paulo,2024/1/5, 7 ,3,x
+london,2024-01-31,1e3,3.9
+nyc-east,2024-01-05,1e3,0,12345
+Malmö,10,250,7
+los angeles,007,-5,-2.5,ZZTOP
+ lon,abc,-12.345,10,12345
+São Paulo,2024/1/5,12.50,3.9
+Zürich,20240131,1000000000,3.9,extra
+london,20240105,10,1,AB12

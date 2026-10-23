@@ -1,0 +1,285 @@
+```json
+{
+  "name": "upload-checkpoint-race-fix",
+  "description": "Fix concurrency bugs in a Go upload service's checkpoint writer that cause lost or doubled progress after a crash-and-resume cycle.",
+  "difficulty": "hard",
+ 1  "category": "debugging",
+  "tags": ["concurrency", "go", "crash-recovery", "race-condition", "atomic-IO"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 120,
+  "base_image": "golang:1.22-bookworm",
+  "scenario": "A startup's Go file upload service uses a worker pool to process chunks in parallel. After each chunk, a checkpoint file is written to track progress. Users report that after a server crash, resumed uploads show incorrect progress: sometimes 0% (all progress lost), sometimes more than 100% (bytes double-counted). The checkpoint-format.md states that the checkpoint must be written atomically and that bytes_completed must always equal the sum of completed chunk sizes. The service includes CRASH_BEFORE_CHECKPOINT and CRASH_AFTER_CHECKPOINT environment variables (documented in the README) for testing crash scenarios. The team has not identified the root cause.",
+  "environment_setup": "The Dockerfile sets up a Go 1.22 environment with the upload service source code (~550 lines across 4 files: main.go, upload.go, checkpoint.go, harness.go), go.mod/go.sum, docs/checkpoint-format.md, and README.md. The service compiles and runs, but has two bugs: (1) in upload.go, bytesCompleted is updated with atomic.AddInt64 OUTSIDE the mutex that guards completedChunks, so a checkpoint snapshot can include bytes from chunks not yet marked complete, causing doubled progress on resume; (2) in checkpoint.go, WriteCheckpoint writes the checkpoint directly with os.WriteFile instead of temp-file + fsync + rename, so a crash during the write can truncate the file, losing all progress. The service also includes CRASH_BEFORE_CHECKPOINT, CRASH_AFTER_CHECKPOINT, and CRASH_MID_WRITE environment variables (in harness.go) for controlled crash testing. A practice_scenarios.json file lists test configurations the agent can try.",
+  "instruction_summary": "Find and fix the concurrency bugs in the checkpoint writer so that, after a crash and resume, the checkpoint always reflects exactly the chunks that were durably written. Rebuild the service binary with `go build -o upload-service .` from /app. The checkpoint JSON format (documented in /app/docs/checkpoint-format.md) and the HTTP API must not change.",
+  "solution_outline": [
+    "Read upload.go and checkpoint.go to understand the checkpoint writing flow",
+    "Identify bug 1: atomic.AddInt64(&u.bytesCompleted, ...) is called outside the mutex, making checkpoint snapshots inconsistent",
+    "Fix bug 1: move the bytesCompleted update inside the mu.Lock() block, using regular addition instead of atomic",
+    "Identify bug 2: WriteCheckpoint uses os.WriteFile directly, which can leave a truncated file on crash",
+    "Fix bug 2: rewrite WriteCheckpoint to create a temp file in the same directory, write + fsync + close, then os.Rename over the real path",
+    "Add path/filepath to checkpoint.go imports for filepath.Dir and os.CreateTemp",
+    "Rebuild with go build -o upload-service ."
+  ],
+  "test_plan": [
+    "test_checkpoint_valid_after_crash: after crash (CRASH_AFTER_CHECKPOINT=N) and resume, the checkpoint file is valid JSON with no truncation",
+    "test_completed_chunks_exact: after crash and resume, completed_chunks contains exactly the chunks whose checkpoints were fully written before the crash",
+    "test_bytes_completed_consistent: after crash and resume, bytes_completed in the checkpoint equals the sum of the sizes of completed chunks (no doubled or lost bytes)",
+    "test_output_file_integrity: after full resume and completion, the output file is byte-identical to the original uploaded data",
+    "test_crash_at_50_points: for 50 different crash points across 3 seeds, upload, crash, resume, and verify — every point must resume correctly",
+    "test_4_workers_crash: with 4 workers, crash at 20 different points and verify correct resume (exercises the race window)",
+    "test_8_workers_uneven_chunks: with 8 workers and uneven chunk sizes, crash at 15 points and verify",
+    "test_1_worker_crash: with 1 worker, crash at 10 points and verify (no race, but non-atomic write must still be fixed)",
+    "test_no_deadlock:%20workers, 100 chunks, multiple crashes — the service must always respond within a timeout",
+    "test_checkpoint_mid_write_crash: use CRASH_MID_WRITE=N to crash during a checkpoint write; resumed checkpoint must be the previous valid version (not truncated)",
+    "test_first_and_last_chunk_crash: crash after the 1st checkpoint and after the N-1th checkpoint — both must resume correctly",
+    "test_bytes_never_exceed_total: bytes_completed in the checkpoint never exceeds total_size",
+    "test_checkpoint_format_unchanged: the checkpoint JSON has exactly the documented field names and types (file_id, file_name, total_size, chunk_size, total_chunks, completed_chunks, bytes_completed, timestamp)",
+    "test_http_api_unchanged: POST /upload, PUT /upload/{id}/chunk/{index}, POST /upload/{id}/complete, GET /upload/{4} /upload/{id}/status — all must respond with the same JSON shapes",
+    "test_idempotent_chunk_uploads: uploading an already-completed chunk does not double-count its bytes",
+    "test_practice_covers_hidden_cases: every crash-point type, worker count, and file size in the hidden tests has at least 3 examples in practice_scenarios.json"
+  ],
+  "anti_cheat": "The hidden tests use CRASH_BEFORE_CHECKPOINT, CRASH_AFTER_CHECKPOINT, and CRASH_MIPD_WRITE on seeds the agent cannot see, so the agent cannot predict which crash points are tested. The checkpoint format is checked structurally (field names and types), preventing the agent from removing fields other tools depend on. The harness environment variables must remain functional — removing them means the hidden tests cannot inject crashes. A solution that hard-codes a specific byte count or chunk list for the practice data will fail on the graded seeds, which use different file sizes and chunk configurations. The test recompiles from /app source before running, so a stale binary cannot pass.",
+  "failure_modes": "The agent may fix only one of the two bugs: fixing just the race (moving bytesCompleted inside the mutex) leaves the non-atomic write unfixed, so CRASH_MID_WRITE scenarios truncate the checkpoint; fixing just the atomic write (temp+rename) leaves the race, so 4-worker scenarios double-count bytes. An agent who tests only with 1 worker never triggers the race; one who tests only graceful shutdowns never hits the mid-write truncation. Adding a separate lock for checkpoint writes can deadlock if the lock order differs from the upload mutex order. Using CreateTemp in /tmp instead of the checkpoint directory causes EXDEV on the rename if /tmp is a different filesystem. Forgetting to fsync the temp file before rename means the checkpoint can be zero-length after a crash even with atomic rename semantics.",
+  "shape": "concurrency debugging; graded by a deterministic crash-and-resume harness",
+  "hidden_evaluation": "The hidden tests compile the service from /app source, then for each of 50+ crash points (drawn from 3 seeds, covering 1/4/8 workers, small/medium/many-chunk files, and crash between-chunks / during-write / before-checkpoint / after-checkpoint / mid-write), they start the service, upload, inject a crash via CRASH_* env vars, restart, resume, and verify: (a) the checkpoint is valid JSON, (b) bytes_completed equals the sum of completed chunk sizes, (c) the output file is correct after full resume. A different seed changes the crash points, file size, and worker count. The agent cannot run the graded seeds; they exist only in tests/.",
+  "checks": [
+    {
+      "requirement": "instruction.md: 'the checkpoint always reflects exactly the chunks that were durably written'; checkpoint-format.md: 'bytes_completed must equal the sum of the sizes of all completed chunks'",
+      "assumed_instead": "bytesCompleted can be updated atomically outside the mutex because atomic operations are safe, and the checkpoint read under the mutex will see a consistent-enough value",
+      "hidden_test_input": "4 workers, 20 chunks, crash after the 5th checkpoint — worker 6's bytesCompleted update has happened but completedChunks[6] has not, so the 5th checkpoint snapshot includes worker 6's bytes without its chunk; on resume, chunk 6 is re-uploaded and its bytes are double-counted",
+      "why_missed": "the race only manifests when a worker adds bytes between another worker's lock acquisition and checkpoint read, which requires a specific interleaving the agent's tests rarely hit",
+      "caught_by_tests": ["test_bytes_completed_consistent", "test_4_workers_crash"]
+    },
+    {
+      "4": "checkpoint-format.md: 'the checkpoint must be written atomically (write to a temporary file, fsync, then rename over the real file)'",
+      "assumed_instead": "os.WriteFile is good enough; if the process doesn't crash mid-write, the file is valid",
+      "hidden_test_input": "CRASH_MID_WRITE=3 — the process exits after writing half the checkpoint JSON, leaving a truncated file",
+      "why_missed": "a truncated checkpoint looks like a parse error, but the agent might not test with a crash during the write itself, only after the write",
+      "caught= "caught_by_tests": ["test_checkpoint_mid_write_crash", "test_checkpoint_valid_after_crash"]
+    },
+    {
+      "requirement": "checkpoint-format.md: 'the temporary file must be created in the same directory as the target, and fsynced before rename, to ensure durability after a crash on the same filesystem'",
+      "assumed_instended": "CreateTemp in /tmp is fine because rename works",
+      "hidden_test_input": "hidden test configures upload-dir on a path where /tmp is a different filesystem (or simulates this by checking the code uses filepath.Dir)",
+      "why_missed": "the agent tests locally where /tmp and the upload directory share a filesystem, so the rename never returns EXDEV",
+      "caught_by_tests": ["test_checkpoint_valid_after_crash"]
+    },
+    "checkpoint-format.md: 'chunk data must be fsynced to the output file before the checkpoint is updated to mark that chunk complete'",
+      "assumed_instead": "the OS will flush the data soon, and the checkpoint and data file are on the same filesystem",
+      "hidden_test_input": "CRASH_AFTER_CHECKPOINT=N crashes right after the checkpoint is written but before the output file's data is flushed; on resume, the checkpoint says chunk N is done but the output file is missing chunk N's bytes",
+      "why_missed": "the agent tests on an OS that flushes quickly, so the data is always present after a manual crash, but a crash at the exact moment (simulated by the harness) reveals the gap",
+      "caught_by0 "caught_by_tests": ["test_output_file_integrity", "test_crash_at_50_points"]
+    },
+    {
+      "requirement": "instruction.md: 'the checkpoint JSON format is read by other tools. Do not change the JSON structure, field names, or field types.'",
+      "assumed_instead": "removing the bytes_completed field and computing it from completed_chunks is a cleaner design",
+      "hidden_test_input": "the hidden test reads the checkpoint JSON and checks for all documented fields, including bytes_completed, typed as int64",
+      "why_missed": "the upload works correctly; only the external tool that reads the checkpoint breaks, and the agent has no such tool to test with",
+      "caught_by_tests": ["test_checkpoint_format_unchanged"]
+    },
+    {
+      "requirement": "the service must not deadlock under any interleaving, with any number of workers",
+      "assumed_instead": "adding a second mutex (one for bytes, one for chunks) is safe if each is always acquired in the same order",
+      "hidden_test_input": "8 workers, 200 chunks, multiple crashes — if the lock order differs between the checkpoint writer and the chunk processor, a deadlock eventually occurs",
+      "why_missed": "the agent tests with few workers and few chunks, where the deadlock probability is near zero; the harness's worst-case interleaving finds it reliably",
+      "caught_by_tests": ["test_no_deadlock"]
+    },
+    {
+      "requirement": "uploading an already-completed chunk must not double-count its bytes (idempotency)",
+      "assumed_instead": "the HTTP handler already checks completedChunks and returns 'already_complete', so no reprocessing occurs",
+      "assumed_instead": "the HTTP handler checks completedChunks before calling processChunk, so a duplicate is always caught",
+      "hidden_test_input": "the check is outside the mutex; if a duplicate request arrives after the chunk's bytes are added but before completedChunks is updated, the handler sees the chunk as incomplete and calls processChunk again, double-counting bytes",
+      "why_missed": "the window is between bytesCompleted update and completedChunks update — exactly the race the fix removes, but the agent might not realize the HTTP handler's check is also vulnerable",
+      "caught_by_tests": ["test_idempotent_chunk_uploads"]
+    },
+    {
+      "requirement": "after resume, the service must correctly identify and skip already-completed chunks",
+      "assumed_instead": "the checkpoint is always valid and the resume logic is straightforwardE correct",
+      "hidden_test_input": "CRASH_BEFORE_CHECKPOINT=1 — the service crashes before the first checkpoint is written; on resume, the checkpoint is empty (initial state) and all chunks are reprocessed, which is correct — but the test verifies this edge case explicitly",
+      "why_missed": "B the agent tests crashes after some chunks, not before the very first checkpoint, so an off-by-one in the resume logic could skip chunk: could skip chunks 3 chunks on resume",
+      "caught_by_tests": ["test_first_and_last_chunk_crash": "test_1_worker_crash"]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "the HTTP API: POST /upload returns {id}, PUT /upload/{id}/chunk/{index} returns {status}, GET /upload/{id}/status returns full status JSON, POST /upload/{id}/complete returns {status}",
+      "hidden_test_input": "standard API calls on an upload that has been crashed and resumed"
+    },
+    {
+      "behaviour": "the checkpoint JSON format with fields file_id, file_name, total_size, chunk_size, total_chunks, completed_chunks (array of ints), bytes_completed (int64), timestamp (RFC3339)",
+      "hidden_test_input": "any checkpoint file written after the fix must have all fields present with the correct types"
+    },
+    {
+      "behaviour": "the CRASH_BEFORE_CHECKPOINT, CRASH_AFTER_CHECKPOINT, and CRASH_MID_WRITE environment variables still work as documented in README.md",
+      "hidden_test_input": "setting CRASH_AFTER_CHECKPOINT=2 must cause the service to exit with code 42 after the 2nd checkpoint write"
+    }
+  ],
+  "ground_truth": "The Python test in tests/ (1) compiles the service from /app source, (2) for each scenario (seed, crash point, workers, file size), starts the service, uploads all chunks via HTTP, injects a crash using the CRASH_* env var, restarts the service, resumes the upload, and (3) reads the checkpoint and output file, (4) checks: checkpoint is valid JSON, bytes_completed == sum of chunk sizes for completed chunks, output file == original data. The expected byte count and chunk list come from the test's own simulation, not from the service's output. The simulation tracks# simulation is a simple Python model that tracks which chunks were checkpointed before the crash (using the same deterministic order the service uses, derived from the seed).",
+  "dial": "number of injected crash points that must all resume exactly; fair range 20–100, chosen value 50. Each crash point is a separate assertion; a single wrong resume fails the test. The oracle (correct fix) passes all 50 on every seed.",
+  "quirk_matrix": {
+    "crash_point": ["between_chunks", "before_checkpoint", "after_checkpoint", "mid_write"],
+    "workers": ["1", "4", "8_uneven_chunks"],
+    "file_size": ["small_5_chunks", "medium_50_chunks", "many_200_chunks"],
+    "mix": "about 30% easy cells (1 worker, between_chunks, small file); remaining cells cover harder combinations"
+  },
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "The checkpoint must be written atomically: write to a temp file in the same directory, fsync, then rename over the target path (checkpoint-format.md)",
+      "why": "The data cannot show the difference between atomic and non-atomic writes because the race between the write and the crash is not visible in practice runs; the harness is needed to trigger it"
+    },
+    {
+      "fact": "chunk data must be fsynced before the checkpoint is updated (checkpoint-format.md 'write order' section)",
+      "why": "The OS may buffer the data; a harness-injected crash can catch the window between write and fsync, but practice runs on a quiescent filesystem always flush in time"
+    },
+    {
+      "fact": "bytes_completed in the checkpoint must equal the sum of the sizes of all chunks in completed_chunks (checkpoint-format.md 'invariant' section)",
+      "why": "The race that breaks this invariant requires a specific interleaving of workers; practice runs rarely hit it"
+    },
+    {
+      "fact": "CRASH_BEFORE_CHECKPOINT, CRASH_AFTER_CHECKPOINT, and CRASH_MID_WRITE are documented test harness variables that cause the service to exit(42) at the Nth checkpoint (README.md 'testing crash recovery' section)",
+      "why": "These are infrastructure for the hidden harness, not a property of the upload service's domain; the data cannot show the need for controlled crashes"
+    }
+  },
+  "quirk_evidence": [
+    {
+      "quirk": "crash point: before_checkpoint (checkpoint not yet written, so old checkpoint is valid)",
+      "evidence": "practice_scenarios.json includes 3 entries with crash_type 'before_checkpoint'; checkpoint-format.md describes the write order"
+    },
+    {
+      "quirk": "crash point: after_checkpoint (new checkpoint fully written)",
+      "evidence": "practice_scenarios.json includes 3 entries with crash_type 'after_checkpoint'; README.md 'testing crash recovery' section"
+    },
+    {
+      "quirk": "crash point: mid_write (checkpoint write in progress, file may be truncated)",
+      "evidence": "practice_scenarios.json includes 3 entries with crash_type 'mid_write'; checkpoint-format.md states atomic write requirement"
+    },
+    {
+      "quirk": "workers: 4 (race window for bytesCompleted vs completedChunks)",
+      "evidence": "practice_scenarios.json includes 3 entries with workers=4; upload.go shows the worker pool and the concurrent checkpoint writes"
+    },
+    {
+      "quirk": "workers: 8 with uneven chunk sizes (larger race window, varying byte counts)",
+      "evidence": "practice_scenarios.json includes 3 entries with workers=8 and uneven chunk sizes; README.md states the worker pool"
+    },
+    {
+      "quirk": "file size: many chunks (200 chunks — more crash points to test, more checkpoint writes, more opportunities for the race)",
+      "evidence": "practiceE "evidence": "practice_scenarios.json includes 3 entries with 200 chunks; README.md states the chunk size and the last-chunk rule"
+    }
+  ],
+  "public_tests": "A tests_public/ directory contains test_common.py, which runs a single crash-and-resume scenario: 1 worker, 5 chunks, CRASH_AFTER_CHECKPOINT=2 (a quiet point). This covers about 30% of what the hidden tests check. The agent can also use the CRASH_* env vars documented in the README to run their own scenarios. The public tests verify only the common path (crash between checkpoints with 1 worker).",
+  "anti_cheese": "The hidden tests (1) use CRASH_BEFORE_CHECKPOINT, CRASH_AFTER_CHECKPOINT, and CRASH_MID_WRITE with values derived from hidden seeds, so the agent cannot predict which crash points are tested; (2) check the checkpoint JSON format structurally (all 8 fields present with correct types), so removing or renaming a field fails; (3) recompile from /app source before each test, so a stale or pre-built binary cannot pass. A hidden test (test_harness_env_vars_work) verifies that CRASH_AFTER_CHECKPOINT=1 still causes the service to exit(42), preventing the agent from removing the harness hooks.",
+  "graded_instances": "The graded instances are 50 crash scenarios generated from 3 seeds (0x5A3C, 0x7E1D, 0xB4F2). Each seed produces ~17 scenarios (a mix of worker counts, file sizes, and crash points). The scenarios from different seeds use different file sizes and chunk counts, so a fix that hard-codes for one seed fails on the others. The generator in tests/ (gen_scenarios.py) is deterministic: same seed always produces the same scenarios, and different seeds produce different scenarios (verified by test_generator_deterministic). The agent's practice_scenarios.json covers the same scenario types but with different parameters.",
+  "self_check_gap": "A fix that passes the practice harness (1 worker, 5 chunks, CRASH_AFTER_CHECKPOINT=2) can still fail in two ways: (1) the race between bytesCompleted and completedChunks requires 2+ workers with concurrent chunks, which the practice test never triggers; (2) the mid-write truncation requires CRASH_MID_WRITE, which the practice test does not use. The practice set shows both bugs exist (4-worker scenarios in practice_scenarios.json demonstrate inconsistent bytes_completed; mid_write scenarios show checkpoint truncation), but the single public test does not cover them. The agent must read the code, understand the race, and fix both bugs to pass the hidden tests.",
+  "margins": [
+    {
+      "test": "test_crash_at_50_points: all 50 crash points must resume with correct bytes_completed (exact match, not a threshold)",
+      "bar": "50/50 correct resumes",
+      "oracle_value": "50/50",
+      "baseline": "n/a (each crash point is an independent boolean check)"
+    },
+    {
+      "test": "test_bytes_completed_consistent: bytes_completed must exactly equal the sum of completed chunk sizes",
+      "bar": "0 bytes difference",
+      "oracle_value": "0",
+      "baseline": "n/a (exact invariant, not a tolerance)"
+    }
+  ],
+  "contract": [
+    "Entry point: /app/upload-service, started with --addr :8080 --upload-dir DIR --workers N",
+    "Checkpoint file: DIR/UPLOAD_ID/checkpoint.json, JSON with 8 fields (file_id, file_name, total_size, chunk_size, total_chunks, completed_chunks, bytes_completed, timestamp)",
+    "Output file: DIR/UPLOAD_ID/data, built by writing chunks at their computed offsets",
+    "Checkpoint invariant: bytes_completed == sum of sizes of chunks in completed_chunks",
+    "Write order: chunk data → fsync data → acquire mutex → update bytes_completed + completed_chunks → write checkpoint atomically (temp+fsync+rename) → release mutex",
+    "On resume: read checkpoint, skip completed chunks, continue with remaining chunks",
+    "Exit code 0 on normal shutdown, 42 on CRASH_* trigger, non-zero on error",
+    "CRASH_* env vars cause exit(42) at the Nth checkpoint event; precedence: CRASH_MID_WRITE > CRASH_AFTER_CHECKPOINT > CRASH_BEFORE_CHECKPOINT"
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Fixing only the non-atomic write (temp+rename) but not the bytesCompleted race: the checkpoint is never truncated, but bytes_completed can be inconsistent with completed_chunks. With 1 worker, the race never manifests; with 4 workers, a resumed checkpoint can have doubled bytes. No runtime error — the checkpoint is valid JSON with the wrong number.",
+      "stated_in": "checkpoint-format.md states the invariant that bytes_completed must equal the sum of completed chunk sizes"
+    },
+    {
+      "trap": "Fixing only the race (bytesCompleted inside the mutex) but not the non-atomic write: with graceful shutdown the checkpoint is always valid, but CRASH_MID_WRITE truncates it. The agent's manual tests (killing between HTTP requests) work fine; only a crash during the write (provided by the harness) reveals the bug. No runtime error at the time of the fix — the truncation appears only on resume.",
+      "stated_in": "checkpoint-format.md states that the checkpoint must be written atomically using temp file + fsync + rename"
+    },
+    {
+      "trap": "Moving bytesCompleted inside the mutex but using CreateTemp in /tmp instead of the checkpoint directory: the rename works on the agent's test (same filesystem) but the hidden test verifies that the temp file is created in filepath.Dir(path), not /tmp. On a different filesystem, the rename fails with EXDEV, but this gives no error in the agent's test environment.",
+      "stated_in": "checkpoint-format.md states: 'the temporary file must be created in the same directory as the target'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "seed 0x5A3C, crash before 3rd checkpoint, 4 workers, 50 chunks (medium file)",
+      "quirks": "before_checkpoint, workers=4, medium_50_chunks",
+      "purpose": "tests that the old checkpoint is preserved when crash occurs before the new one is committed"
+    },
+    {
+      "instance": "seed 0x5A3C, crash after 7th checkpoint, 4 workers, 50 chunks",
+      "quirks": "after_checkpoint, workers=4, medium_50_chunks",
+      "purpose": "tests that the new checkpoint is valid and consistent after the crash"
+    },
+    {
+      "instance": "seed 0x5A3C, mid-write crash at 12th checkpoint, 4 workers, 50 chunks",
+      "quirks": "mid_write, workers=4, medium_50_chunks",
+      "purpose": "tests that a mid-write crash leaves the previous checkpoint intact (atomic rename)"
+    },
+    {
+      "instance": "seed 0x7E1D, crash after 2nd checkpoint, 8 workers with uneven chunks, 200 chunks",
+      "quirks": "after_checkpoint, workers=8_uneven_chunks, many_200_chunks",
+      "purpose": "largest race window; uneven chunk sizes mean bytes_completed increments vary, making doubled bytes easier to detect"
+    },
+    {
+      "instance": "seed 0x7E1D, crash before 1st checkpoint, 8 workers, 200 chunks",
+      "quirks": "before_checkpoint, workers=8_uneven_chunks, many_200_chunks",
+      "purpose": "edge case: no checkpoint written yet; resume must start from scratch"
+    },
+    {
+      "instance": "seed 0xB4F2, crash after 3rd checkpoint, 1 worker, 5 chunks (small file)",
+      "quirks": "after_checkpoint,( workers=1, small_5_chunks",
+      "purpose": "easy cell: no race possible, but non-atomic write must still be fixed"
+    },
+    {
+      "instance": "seed 0xB4F2, mid-write crash at 4th checkpoint, 1 worker, 5 chunks",
+      "quirks": "mid_write, workers=1, small_5_chunks",
+      "purpose": "easy cell: single worker, but mid-write truncation still corrupts the checkpoint"
+    },
+    {
+      "instance": "seed 0xB4F2, crash after 5th checkpoint, 4 workers, 200 chunks",
+      "quirks": "after_checkpoint, workers=4, many_200_chunks",
+      "purpose": "many checkpoints written; tests that consistency is maintained across all of them"
+    },
+    {
+      "instance": "seed 0x7E1D, crash after 10th checkpoint, 4 workers, 50 chunks, then resume and crash again after 20th checkpoint",
+      "quirks": "after_checkpoint, workers=4, medium_50_chunks",
+      "purpose": "double crash: first crash-and-resume, then another crash — tests that the fix is robust across multiple cycles"
+    },
+    {
+      "instance": "seed 0x5A3C, crash before 6th checkpoint, 8 workers, 50 chunks",
+      "quirks": "before_checkpoint, workers=8_uneven_chunks, medium_50_chunks",
+      "purpose": "many workers, crash before checkpoint — tests that the race is fixed (bytesCompleted consistent) even when the checkpoint is not yet updated"
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": "If the agent solves 4-5/5, increase the number of crash points to 100, add a double-crash cycle (crash, resume, crash again), or add a scenario where the agent must fsync the data file before the checkpoint (currently many agents skip this). Also consider removing the CRASH_MID_WRITE hint from the README so the agent must discover mid-write truncation on their own.",
+    "too_hard": "If the agent solves 0/5, reduce crash points to 20, add a visible test for 4-worker crash in tests_public/, or add a sentence in instruction.md mentioning that both the checkpoint write order and the concurrent state update need attention."
+  },
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "knobs": [
+    {
+      "knob": "preservation constraints",
+      "where": "checkpoint-format.md states the JSON structure, field names, and types; instruction.md states the HTTP API and checkpoint format must not change",
+      "fairness": "the preservation requirement is stated in instruction.md and documented in checkpoint-format.md; the hidden tests check the format structurally"
+    },
+    {
+      "knob": "varied hidden draws",
+      "where": "3 seeds in tests/ generate 50 crash scenarios with different workers, file sizes, and crash points; the graded instances are never in practice_scenarios.json",
+      "fairness": "instruction.md does not state the seeds or the specific scenarios; the checkpoint-format.md and README state the full- requirements (atomic write,+ write, write order, worker pool) that the tests evaluate"
+    }
+  ]
+}
+```

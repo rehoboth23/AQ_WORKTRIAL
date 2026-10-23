@@ -1,0 +1,17 @@
+Looking at the two solutions, the only difference is that the mutant adds:
+```python
+with open(f"/app/data/duty_calculation_{MONTH}.json", "w") as f:
+    json.dump({"duty_lines": duty_lines, "total_duty": total_duty}, f, indent=2)
+```
+
+This creates a **new** file at `/app/data/duty_calculation_2024-03.json`. The correct solution writes nothing under `/app/data/`.
+
+The provided counterexample says tests check SHA-256 of `/app/data/stock_2024-03.json` — but the mutant writes to a *different* file (`duty_calculation_2024-03.json`), so it does **not** modify `stock_2024-03.json`. That specific test passes, which is why all tests passed with the mutant.
+
+However, the behavioral difference is certain and concrete: after running the mutant, `/app/data/duty_calculation_2024-03.json` exists; after running the correct solution, it does not. The instruction says "Do not modify any file under `/app/data/`" and creating a new file under that directory is a write operation the goal prohibits. The existing test misses this case because it only hashes the specific stock ledger file, not the entire directory.
+
+```json
+{"equivalent": false,
+ "distinguishing_case": "Start services with /app/start_services.sh, then run python3 /app/file_return.py. After completion, check whether /app/data/duty_calculation_2024-03.json exists. With the correct solution, the file does NOT exist. With the mutant, the file IS created containing {\"duty_lines\": ..., \"total_duty\": ...}. The goal prohibits modifying any file under /app/data/, so the mutant's creation of a new file there is wrong.",
+ "reason": "The mutant writes an intermediate JSON file to /app/data/duty_calculation_2024-03.json; the correct solution writes nothing under /app/data/. The existing test only hashes stock_2024-03.json (untouched by the mutant), so it misses this case, but the file's existence after the mutant run is a certain, observable violation of the read-only /app/data/ requirement."}
+```

@@ -509,7 +509,7 @@ th{{color:var(--muted);font-weight:600}} .muted{{color:var(--muted)}}
 
 def main() -> None:
     os.makedirs(JOBS_DIR, exist_ok=True)
-    tmp = OUT + ".tmp"
+    tmp = f"{OUT}.{os.getpid()}.tmp"  # per process: two renderers (the loop and a one-off) must not race on one name
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(render())
     os.replace(tmp, OUT)

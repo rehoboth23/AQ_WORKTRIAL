@@ -1,0 +1,6 @@
+[
+  {"id": "S001", "commodity": "spirits", "site": "WH1", "opening_balance": 1000, "closing_balance": 897},
+  {"id": "S002", "commodity": "tobacco", "site": "WH1", "opening_balance": 200,  "closing_balance": 155},
+  {"id": "S003", "commodity": "beer",    "site": "WH1", "opening_balance": 2000, "closing_balance": 1750},
+  {"id": "S004", "commodity": "wine",    "site": "WH1", "opening_balance": 500,  "closing_balance": 416}
+]

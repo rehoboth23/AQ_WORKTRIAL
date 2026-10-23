@@ -1,0 +1,1430 @@
+<<<FILE instruction.md>>>
+# Amplicon Variant Annotation
+
+A small diagnostic lab sequences a panel of three genes (ALPHA, BETA, GAMMA) by targeted amplicon sequencing. The lab's variant-annotation pipeline broke when the LIMS was upgraded, and the bioinformatician who maintained it left. You are given the reference genome, the gene annotation, the lab's nomenclature guide and SOP, a vendored read aligner, six practice samples with their expected reports, and an outdated summary file from the previous pipeline.
+
+Your job is to create `/app/annotate.py` — a Python script that takes amplicon reads, calls variants, and produces a report in the lab's exact HGVS-style notation with protein consequences, correct enough that the LIMS can ingest it directly.
+
+## CLI
+
+```
+python3 /app/annotate.py --reads <fastq_path> --reference <fasta_path> --annotation <tsv_path> --sample <sample_name> --output <tsv_path>
+```
+
+All arguments are required. Exit 0 on success (including when no variants pass threshold); non-zero on error.
+
+## Procedure
+
+1. Align reads to the reference using `tools/align.py` (or an equivalent method you implement). The aligner produces a pileup TSV with columns: `pos  ref  A  C  G  T  ins  del  depth`.
+2. Call variants at each position where **depth ≥ 20** and **VAF ≥ 0.20**. Call SNVs (non-ref base), insertions (from the `ins` column), and deletions (from the `del` column). Merge adjacent single-base deletions that are contiguous and above threshold into one multi-base range deletion.
+3. For each called variant, annotate following `docs/nomenclature.md` exactly:
+   - Determine which gene and exon the variant falls in using `ref/genes.tsv`.
+   - Convert the genomic position to a coding (`c.`) coordinate. Coding coordinates are 1-based; `c.1` is the first base of the start codon (ATG) in transcript orientation.
+   - For minus-strand genes, `c.1` is the **3'-most genomic position** (highest genomic coordinate). Alleles are reported in transcript orientation (reverse-complemented from the genomic forward strand).
+   - For multi-exon genes, coding coordinates are continuous; intron bases are not counted. For minus-strand genes, exon 1 in transcript order is the exon with the highest genomic positions.
+   - Apply the **3' rule** for indels in repetitive sequences: shift to the most 3' position in coding coordinates. For plus-strand genes this is the **highest genomic position**; for minus-strand genes this is the **lowest genomic position**.
+   - Compute the protein consequence using the standard codon table with **three-letter amino acid codes**.
+4. Output a TSV following `docs/sop.md`.
+
+## Output Format
+
+Header (exact, tab-separated, in this order):
+
+```
+Sample	Gene	HGVS_cDNA	HGVS_Protein	Type	Depth	Alt_Depth	VAF
+```
+
+- **Sample**: value from `--sample`
+- **Gene**: gene name from `ref/genes.tsv`
+- **HGVS_cDNA**: `c.` notation per `docs/nomenclature.md`
+- **HGVS_Protein**: `p.` notation per `docs/nomenclature.md`
+- **Type**: one of SNV, INS, DEL, MNV, COMPLEX
+- **Depth**: integer, total reads at the variant position
+- **Alt_Depth**: integer, reads supporting the variant
+- **VAF**: `Alt_Depth / Depth` rounded to **2 decimal places** (e.g. `0.45`, not `45` or `0.449`)
+
+Sort rows by numeric `c.` coordinate ascending within each gene, then alphabetically by gene name. If no variants pass threshold, output is the header row only.
+
+## Key Rules (stated in `docs/nomenclature.md` and `docs/sop.md`)
+
+- Coding coordinates are 1-based; `c.1` = first base of the start codon (ATG) in transcript orientation.
+- For minus-strand genes, `c.1` = highest genomic position of the CDS. Alleles are reverse-complemented to transcript orientation.
+- The 3' rule shifts indels in repeats to the most 3' position **in coding coordinates**. For minus-strand genes, most 3' = **lowest genomic position**, not the highest.
+- Multi-exon coding coordinates are continuous; intron bases are skipped, regardless of strand.
+- In-frame deletions (length divisible by 3): `p.RefAA1_RefAA2del` (or `p.RefAAdel` for single amino acid). **Do NOT use frameshift notation.**
+- Synonymous: `p.=`; Missense: `p.RefAAcodonNumNewAA`; Nonsense: `p.RefAAcodonNum*`; Frameshift: `p.RefAAcodonNumfs`.
+- Minimum depth: 20×. Minimum VAF: 0.20. Both must be met.
+- Annotations must be computed from the aligned reads. The file `results/old_summary.tsv` contains outdated annotations and **must not be used** as a source of annotations (SOP §3.4).
+
+## Files
+
+| Path | Description |
+|------|-------------|
+| `ref/reference.fa` | Reference genome (1500 bp, single contig) |
+| `ref/genes.tsv` | Gene annotation (strands, exon coordinates) |
+| `docs/nomenclature.md` | HGVS-style nomenclature rules |
+| `docs/sop.md` | Standard operating procedure |
+| `tools/align.py` | Vendored read aligner (requires numpy, installed) |
+| `samples/practice/P01–P06/` | Practice samples with `reads.fq` and `expected_report.tsv` |
+| `results/old_summary.tsv` | Outdated annotations — do not use |
+
+## Constraints
+
+- Do not modify `tools/align.py`, `ref/reference.fa`, or `ref/genes.tsv`.
+- The script must run offline (no network access).
+
+Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.
+<<<END>>>
+<<<FILE environment/Dockerfile>>>
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir numpy
+
+COPY docs/ docs/
+COPY tools/ tools/
+COPY generate_data.py .
+
+RUN python3 generate_data.py && rm generate_data.py
+
+RUN md5sum ref/reference.fa ref/genes.tsv > /app/.ref_checksums
+<<<END>>>
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""Build-time data generator for the amplicon variant annotation task."""
+import random, os, sys
+
+SEED = 42
+REF_LEN = 1500
+READ_LEN = 150
+
+COMP = {'A':'T','T':'A','G':'C','C':'G'}
+
+CODON_TABLE = {
+    'TTT':'Phe','TTC':'Phe','TTA':'Leu','TTG':'Leu',
+    'CTT':'Leu','CTC':'Leu','CTA':'Leu','CTG':'Leu',
+    'ATT':'Ile','ATC':'Ile','ATA':'Ile','ATG':'Met',
+    'GTT':'Val','GTC':'Val','GTA':'Val','GTG':'Val',
+    'TCT':'Ser','TCC':'Ser','TCA':'Ser','TCG':'Ser',
+    'CCT':'Pro','CCC':'Pro','CCA':'Pro','CCG':'Pro',
+    'ACT':'Thr','ACC':'Thr','ACA':'Thr','ACG':'Thr',
+    'GCT':'Ala','GCC':'Ala','GCA':'Ala','GCG':'Ala',
+    'TAT':'Tyr','TAC':'Tyr','TAA':'*','TAG':'*',
+    'CAT':'His','CAC':'His','CAA':'Gln','CAG':'Gln',
+    'AAT':'Asn','AAC':'Asn','AAA':'Lys','AAG':'Lys',
+    'GAT':'Asp','GAC':'Asp','GAA':'Glu','GAG':'Glu',
+    'TGT':'Cys','TGC':'Cys','TGA':'*','TGG':'Trp',
+    'CGT':'Arg','CGC':'Arg','CGA':'Arg','CGG':'Arg',
+    'AGT':'Ser','AGC':'Ser','AGA':'Arg','AGG':'Arg',
+    'GGT':'Gly','GGC':'Gly','GGA':'Gly','GGG':'Gly',
+}
+
+GENES = {
+    'ALPHA': {'strand': '+', 'exons': [(100, 499)]},
+    'BETA':  {'strand': '-', 'exons': [(750, 849), (550, 699)]},
+    'GAMMA': {'strand': '+', 'exons': [(900, 1049), (1100, 1249)]},
+}
+
+def rev_comp(s):
+    return ''.join(COMP[b] for b in reversed(s))
+
+def coding_to_genomic(gene_name, c_pos):
+    gene = GENES[gene_name]
+    exons = gene['exons']
+    c = 0
+    if gene['strand'] == '+':
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos:
+                return es + (c_pos - c - 1)
+            c += el
+    else:
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos:
+                return ee - (c_pos - c - 1)
+            c += el
+    return None
+
+def genomic_to_coding(gene_name, g_pos):
+    gene = GENES[gene_name]
+    exons = gene['exons']
+    c = 0
+    if gene['strand'] == '+':
+        for es, ee in exons:
+            if es <= g_pos <= ee:
+                return c + (g_pos - es + 1)
+            c += (ee - es + 1)
+    else:
+        for es, ee in exons:
+            if es <= g_pos <= ee:
+                return c + (ee - g_pos + 1)
+            c += (ee - es + 1)
+    return None
+
+def get_gene_at(ref, g_pos):
+    for gn, gd in GENES.items():
+        for es, ee in gd['exons']:
+            if es <= g_pos <= ee:
+                return gn
+    return None
+
+def get_transcript_base(ref, gene_name, c_pos):
+    g = coding_to_genomic(gene_name, c_pos)
+    base = ref[g - 1]
+    if GENES[gene_name]['strand'] == '-':
+        return COMP[base]
+    return base
+
+def set_transcript_codon(ref, gene_name, codon_num, codon_seq):
+    c_start = (codon_num - 1) * 3 + 1
+    for i, base in enumerate(codon_seq):
+        c_pos = c_start + i
+        g_pos = coding_to_genomic(gene_name, c_pos)
+        if GENES[gene_name]['strand'] == '+':
+            ref[g_pos - 1] = base
+        else:
+            ref[g_pos - 1] = COMP[base]
+
+def generate_reference():
+    rng = random.Random(SEED + 100)
+    ref = list(rng.choices('ACGT', k=REF_LEN))
+    set_transcript_codon(ref, 'ALPHA', 1, 'ATG')
+    set_transcript_codon(ref, 'ALPHA', 3, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 12, 'CTT')
+    for cn in [2,4,5,6,7,8,9,10,11]:
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    for cn in [13,14,15]:
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 16, 'CCC')
+    set_transcript_codon(ref, 'ALPHA', 17, 'CCC')
+    set_transcript_codon(ref, 'ALPHA', 18, 'GCT')
+    for cn in [19,20,21]:
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 22, 'CAG')
+    set_transcript_codon(ref, 'ALPHA', 23, 'AAA')
+    set_transcript_codon(ref, 'ALPHA', 24, 'AAA')
+    set_transcript_codon(ref, 'ALPHA', 25, 'GCT')
+    for cn in range(26, 35):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 35, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 36, 'GCT')
+    for cn in range(37, 51):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 51, 'GGG')
+    set_transcript_codon(ref, 'ALPHA', 52, 'GGG')
+    set_transcript_codon(ref, 'ALPHA', 53, 'ACT')
+    for cn in range(54, 67):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 67, 'CTA')
+    for cn in range(68, 134):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 1, 'ATG')
+    for cn in [2,3,4]:
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 5, 'GCT')
+    for cn in range(6, 10):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 10, 'GCT')
+    for cn in range(11, 14):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 14, 'CTA')
+    for cn in [15,16]:
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 17, 'CTT')
+    for cn in [18,19]:
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 20, 'CAG')
+    set_transcript_codon(ref, 'BETA', 21, 'GCT')
+    set_transcript_codon(ref, 'BETA', 22, 'ATC')
+    set_transcript_codon(ref, 'BETA', 23, 'CCC')
+    set_transcript_codon(ref, 'BETA', 24, 'CCG')
+    for cn in range(25, 34):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 34, 'GCT')
+    for cn in range(35, 39):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'BETA', 39, 'GAA')
+    set_transcript_codon(ref, 'BETA', 40, 'AAA')
+    set_transcript_codon(ref, 'BETA', 41, 'GCT')
+    for cn in range(42, 84):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    set_transcript_codon(ref, 'GAMMA', 1, 'ATG')
+    for cn in range(2, 49):
+        set_transcript_codon(ref, 'GAMMA', cn, 'GCT')
+    set_transcript_codon(ref, 'GAMMA', 49, 'GCT')
+    set_transcript_codon(ref, 'GAMMA', 50, 'GCA')
+    set_transcript_codon(ref, 'GAMMA', 51, 'GCT')
+    set_transcript_codon(ref, 'GAMMA', 52, 'TGG')
+    for cn in range(53, 101):
+        set_transcript_codon(ref, 'GAMMA', cn, 'GCT')
+    return ''.join(ref)
+
+PRACTICE_VARIANTS = {
+    'P01': [
+        {'gene':'ALPHA','type':'SNV','genomic':108,'alt_fwd':'C','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':134,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':163,'alt_fwd':'T','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':320,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P02': [
+        {'gene':'ALPHA','type':'DEL','genomic':145,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'INS','genomic':166,'ins_seq_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'DEL','genomic':250,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':380,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P03': [
+        {'gene':'BETA','type':'SNV','genomic':800,'alt_fwd':'T','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':820,'alt_fwd':'G','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':792,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':775,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P04': [
+        {'gene':'BETA','type':'DEL','genomic':845,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'DEL','genomic':835,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'INS','genomic':809,'ins_seq_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':760,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P05': [
+        {'gene':'GAMMA','type':'SNV','genomic':1044,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'GAMMA','type':'SNV','genomic':1049,'alt_fwd':'G','depth':80,'alt_depth':36},
+        {'gene':'GAMMA','type':'SNV','genomic':1105,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'GAMMA','type':'SNV','genomic':999,'alt_fwd':'C','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P06': [
+        {'gene':'ALPHA','type':'DEL','genomic':204,'del_len':2,'depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'INS','genomic':299,'ins_seq_fwd':'AT','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':370,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':349,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+}
+
+def simulate_reads(ref, gene_name, variants, rng, n_reads_target=80):
+    gene = GENES[gene_name]
+    exons = gene['exons']
+    amp_start = max(0, min(e[0] for e in exons) - 50)
+    amp_end = min(REF_LEN - 1, max(e[1] for e in exons) + 50)
+    amp_len = amp_end - amp_start + 1
+    n_reads = max(int(n_reads_target * amp_len / READ_LEN), n_reads_target)
+    above = [v for v in variants if not v.get('below_threshold')]
+    below = [v for v in variants if v.get('below_threshold')]
+    reads = []
+    for _ in range(n_reads):
+        start_0 = rng.randint(amp_start, max(amp_start, amp_end - READ_LEN))
+        seq = list(ref[start_0:start_0 + READ_LEN])
+        for v in above:
+            if rng.random() < v['alt_depth'] / v['depth']:
+                _apply_variant(ref, seq, start_0, v)
+        for v in below:
+            if rng.random() < v['alt_depth'] / v['depth']:
+                _apply_variant(ref, seq, start_0, v)
+        for j in range(len(seq)):
+            if rng.random() < 0.001:
+                seq[j] = rng.choice([b for b in 'ACGT' if b != seq[j]])
+        while len(seq) < READ_LEN:
+            ext = start_0 + len(seq)
+            seq.append(ref[ext] if ext < REF_LEN else 'A')
+        seq = seq[:READ_LEN]
+        reads.append((''.join(seq), '?' * READ_LEN))
+    return reads
+
+def _apply_variant(ref, seq, start_0, var):
+    g0 = var['genomic'] - 1
+    if var['type'] == 'SNV':
+        idx = g0 - start_0
+        if 0 <= idx < len(seq):
+            seq[idx] = var['alt_fwd']
+    elif var['type'] == 'DEL':
+        idx = g0 - start_0
+        dlen = var['del_len']
+        if 0 <= idx < len(seq):
+            del seq[idx:idx+dlen]
+            ext_start = start_0 + len(seq)
+            for j in range(dlen):
+                seq.append(ref[ext_start + j] if ext_start + j < REF_LEN else 'A')
+    elif var['type'] == 'INS':
+        idx = g0 - start_0
+        if 0 <= idx < len(seq):
+            for k, b in enumerate(var['ins_seq_fwd']):
+                seq.insert(idx + 1 + k, b)
+            while len(seq) > READ_LEN:
+                seq.pop()
+
+def find_repeat_extent(ref, gene_name, c_pos, base):
+    cds_len = sum(ee - es + 1 for es, ee in GENES[gene_name]['exons'])
+    left = right = c_pos
+    while left > 1 and get_transcript_base(ref, gene_name, left - 1) == base:
+        left -= 1
+    while right < cds_len and get_transcript_base(ref, gene_name, right + 1) == base:
+        right += 1
+    return left, right
+
+def apply_3prime_rule_del(ref, gene_name, c_start, del_len):
+    c_end = c_start + del_len - 1
+    if del_len == 1:
+        base = get_transcript_base(ref, gene_name, c_start)
+        left, right = find_repeat_extent(ref, gene_name, c_start, base)
+        if right - left + 1 >= 2:
+            c_start = right
+            c_end = c_start
+    else:
+        motif = ''.join(get_transcript_base(ref, gene_name, c_start + i) for i in range(del_len))
+        if len(set(motif)) == 1:
+            base = motif[0]
+            left, right = find_repeat_extent(ref, gene_name, c_start, base)
+            if right - left + 1 > del_len:
+                c_start = right - del_len + 1
+                c_end = right
+    return c_start, c_end
+
+def apply_3prime_rule_ins(ref, gene_name, c_left, ins_transcript):
+    ins_len = len(ins_transcript)
+    cds_len = sum(ee - es + 1 for es, ee in GENES[gene_name]['exons'])
+    base_at_left = get_transcript_base(ref, gene_name, c_left)
+    if ins_len == 1 and ins_transcript == base_at_left:
+        left, right = find_repeat_extent(ref, gene_name, c_left, base_at_left)
+        if right - left + 1 >= 2:
+            return right
+    if c_left + 1 <= cds_len:
+        base_at_right = get_transcript_base(ref, gene_name, c_left + 1)
+        if ins_len == 1 and ins_transcript == base_at_right:
+            left, right = find_repeat_extent(ref, gene_name, c_left + 1, base_at_right)
+            if right - left + 1 >= 2:
+                return right
+    return c_left
+
+def annotate_variant(ref, var):
+    gene_name = var['gene']
+    gene = GENES[gene_name]
+    strand = gene['strand']
+    depth = var['depth']
+    alt_depth = var['alt_depth']
+    vaf = round(alt_depth / depth, 2)
+    if var['type'] == 'SNV':
+        g_pos = var['genomic']
+        c_pos = genomic_to_coding(gene_name, g_pos)
+        ref_fwd = ref[g_pos - 1]
+        alt_fwd = var['alt_fwd']
+        if strand == '+':
+            ref_t, alt_t = ref_fwd, alt_fwd
+        else:
+            ref_t, alt_t = COMP[ref_fwd], COMP[alt_fwd]
+        hgvs_c = f"c.{c_pos}{ref_t}>{alt_t}"
+        var_type = 'SNV'
+        codon_num = (c_pos - 1) // 3 + 1
+        csc = (codon_num - 1) * 3 + 1
+        ref_codon = ''.join(get_transcript_base(ref, gene_name, csc + i) for i in range(3))
+        mc = list(ref_codon)
+        mc[c_pos - csc] = alt_t
+        mut_codon = ''.join(mc)
+        ref_aa = CODON_TABLE.get(ref_codon, '?')
+        mut_aa = CODON_TABLE.get(mut_codon, '?')
+        if ref_aa == mut_aa:
+            hgvs_p = 'p.='
+        elif mut_aa == '*':
+            hgvs_p = f"p.{ref_aa}{codon_num}*"
+        else:
+            hgvs_p = f"p.{ref_aa}{codon_num}{mut_aa}"
+    elif var['type'] == 'DEL':
+        g_start = var['genomic']
+        del_len = var['del_len']
+        c_start = genomic_to_coding(gene_name, g_start)
+        c_start, c_end = apply_3prime_rule_del(ref, gene_name, c_start, del_len)
+        if del_len == 1:
+            ref_base_t = get_transcript_base(ref, gene_name, c_start)
+            hgvs_c = f"c.{c_start}del{ref_base_t}"
+        else:
+            hgvs_c = f"c.{c_start}_{c_end}del"
+        var_type = 'DEL'
+        codon_num = (c_start - 1) // 3 + 1
+        csc = (codon_num - 1) * 3 + 1
+        ref_codon = ''.join(get_transcript_base(ref, gene_name, csc + i) for i in range(3))
+        ref_aa = CODON_TABLE.get(ref_codon, '?')
+        if del_len % 3 == 0:
+            cns = (c_start - 1) // 3 + 1
+            cne = (c_end - 1) // 3 + 1
+            cs = ''.join(get_transcript_base(ref, gene_name, (cns-1)*3+1+i) for i in range(3))
+            ce = ''.join(get_transcript_base(ref, gene_name, (cne-1)*3+1+i) for i in range(3))
+            aas = CODON_TABLE.get(cs, '?')
+            aae = CODON_TABLE.get(ce, '?')
+            if cns == cne:
+                hgvs_p = f"p.{aas}{cns}del"
+            else:
+                hgvs_p = f"p.{aas}{cns}_{aae}{cne}del"
+        else:
+            hgvs_p = f"p.{ref_aa}{codon_num}fs"
+    elif var['type'] == 'INS':
+        g_pos = var['genomic']
+        ins_fwd = var['ins_seq_fwd']
+        ins_len = len(ins_fwd)
+        if strand == '+':
+            ins_t = ins_fwd
+            c_left = genomic_to_coding(gene_name, g_pos)
+        else:
+            ins_t = rev_comp(ins_fwd)
+            c_left = genomic_to_coding(gene_name, g_pos + 1)
+        c_left = apply_3prime_rule_ins(ref, gene_name, c_left, ins_t)
+        c_right = c_left + 1
+        hgvs_c = f"c.{c_left}_{c_right}ins{ins_t}"
+        var_type = 'INS'
+        codon_num = (c_left - 1) // 3 + 1
+        csc = (codon_num - 1) * 3 + 1
+        ref_codon = ''.join(get_transcript_base(ref, gene_name, csc + i) for i in range(3))
+        ref_aa = CODON_TABLE.get(ref_codon, '?')
+        if ins_len % 3 == 0:
+            hgvs_p = f"p.{ref_aa}{codon_num}ins"
+            for i in range(0, ins_len, 3):
+                hgvs_p += CODON_TABLE.get(ins_t[i:i+3], '?')
+        else:
+            hgvs_p = f"p.{ref_aa}{codon_num}fs"
+    return {'Gene': gene_name, 'HGVS_cDNA': hgvs_c, 'HGVS_Protein': hgvs_p,
+            'Type': var_type, 'Depth': depth, 'Alt_Depth': alt_depth, 'VAF': vaf}
+
+def generate_old_summary(ref, all_annotations):
+    rows = []
+    for sn in sorted(all_annotations.keys()):
+        for ann in all_annotations[sn]:
+            gene = ann['Gene']; hc = ann['HGVS_cDNA']; hp = ann['HGVS_Protein']
+            vt = ann['Type']; d = ann['Depth']; ad = ann['Alt_Depth']
+            vp = int(round(ad / d * 100))
+            wc, wp = hc, hp
+            if gene == 'BETA' and '>' in hc:
+                parts = hc.replace('c.','').split('>')
+                pr = parts[0]; at = parts[1]
+                ps = ''
+                for ch in pr:
+                    if ch.isdigit(): ps += ch
+                    else: break
+                pn = int(ps) if ps else 0
+                rt = pr[len(ps):]
+                gp = coding_to_genomic(gene, pn)
+                rf = ref[gp - 1]
+                af = COMP.get(at, at)
+                wc = f"c.{pn}{rf}>{af}"
+            if hp == 'p.=':
+                cs = ''
+                for ch in hc.replace('c.',''):
+                    if ch.isdigit(): cs += ch
+                    else: break
+                cn = int(cs) if cs else 0
+                cnum = (cn - 1) // 3 + 1
+                csc = (cnum - 1) * 3 + 1
+                rc = ''.join(get_transcript_base(ref, gene, csc + i) for i in range(3))
+                raa = CODON_TABLE.get(rc, '?')
+                wp = f"p.{raa}{cnum}{raa}"
+            if gene == 'ALPHA' and 'del' in hc:
+                bc = hc[-1]
+                ps = hc.replace('c.','').replace('del','').replace(bc,'')
+                pn = int(ps) if ps else 0
+                left = pn
+                while left > 1 and get_transcript_base(ref, gene, left - 1) == bc:
+                    left -= 1
+                if left < pn:
+                    wc = f"c.{left}del{bc}"
+            if gene == 'ALPHA' and 'ins' in hc:
+                parts = hc.replace('c.','').split('ins')
+                pp = parts[0]; isq = parts[1] if len(parts) > 1 else ''
+                if '_' in pp:
+                    ls = pp.split('_')[0]
+                    lp = int(ls)
+                    if isq:
+                        bc = isq[0]
+                        l = lp
+                        while l > 1 and get_transcript_base(ref, gene, l - 1) == bc:
+                            l -= 1
+                        if l < lp:
+                            wc = f"c.{l}_{l+1}ins{isq}"
+            rows.append(f"{sn}\t{gene}\t{wc}\t{wp}\t{vt}\t{d}\t{ad}\t{vp}%")
+    header = "Sample\tGene\tcDNA_notation\tProtein_notation\tVariant_Type\tTotalDepth\tAltDepth\tVAF_pct"
+    return header + '\n' + '\n'.join(rows) + '\n'
+
+def write_fasta(seq, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(">reference\n")
+        for i in range(0, len(seq), 80):
+            f.write(seq[i:i+80] + "\n")
+
+def write_fastq(reads, path, sample_name):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        for i, (seq, qual) in enumerate(reads):
+            f.write(f"@{sample_name}_read_{i+1}\n{seq}\n+\n{qual}\n")
+
+def write_tsv(rows, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    header = "Sample\tGene\tHGVS_cDNA\tHGVS_Protein\tType\tDepth\tAlt_Depth\tVAF"
+    with open(path, 'w') as f:
+        f.write(header + '\n')
+        for row in rows:
+            f.write('\t'.join(str(row[k]) for k in ['Sample','Gene','HGVS_cDNA','HGVS_Protein','Type','Depth','Alt_Depth','VAF']) + '\n')
+
+def write_genes_tsv(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write("Gene\tStrand\tExon\tGenomicStart\tGenomicEnd\n")
+        for gn, gd in GENES.items():
+            for i, (es, ee) in enumerate(gd['exons']):
+                f.write(f"{gn}\t{gd['strand']}\t{i+1}\t{es}\t{ee}\n")
+
+def main():
+    rng = random.Random(SEED)
+    ref = generate_reference()
+    write_fasta(ref, 'ref/reference.fa')
+    write_genes_tsv('ref/genes.tsv')
+    all_annotations = {}
+    for sn in ['P01','P02','P03','P04','P05','P06']:
+        variants = PRACTICE_VARIANTS[sn]
+        all_reads = []
+        for gn in GENES:
+            gv = [v for v in variants if v['gene'] == gn]
+            reads = simulate_reads(ref, gn, gv, rng)
+            all_reads.extend(reads)
+        rng.shuffle(all_reads)
+        write_fastq(all_reads, f'samples/practice/{sn}/reads.fq', sn)
+        above = [v for v in variants if not v.get('below_threshold')]
+        rows = []
+        for v in above:
+            ann = annotate_variant(ref, v)
+            ann['Sample'] = sn
+            rows.append(ann)
+        def sk(r):
+            cs = r['HGVS_cDNA'].replace('c.','')
+            ns = ''
+            for ch in cs:
+                if ch.isdigit(): ns += ch
+                else: break
+            return (r['Gene'], int(ns) if ns else 0)
+        rows.sort(key=sk)
+        write_tsv(rows, f'samples/practice/{sn}/expected_report.tsv')
+        all_annotations[sn] = rows
+    os.makedirs('results', exist_ok=True)
+    with open('results/old_summary.tsv', 'w') as f:
+        f.write(generate_old_summary(ref, all_annotations))
+    print("Data generation complete.")
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE solution/solve.sh>>>
+#!/bin/bash
+set -euo pipefail
+
+cat > /app/annotate.py << 'PYEOF'
+#!/usr/bin/env python3
+import argparse, sys, os, subprocess, tempfile
+from collections import defaultdict
+
+COMP = {'A':'T','T':'A','G':'C','C':'G'}
+CODON_TABLE = {
+    'TTT':'Phe','TTC':'Phe','TTA':'Leu','TTG':'Leu','CTT':'Leu','CTC':'Leu','CTA':'Leu','CTG':'Leu',
+    'ATT':'Ile','ATC':'Ile','ATA':'Ile','ATG':'Met','GTT':'Val','GTC':'Val','GTA':'Val','GTG':'Val',
+    'TCT':'Ser','TCC':'Ser','TCA':'Ser','TCG':'Ser','CCT':'Pro','CCC':'Pro','CCA':'Pro','CCG':'Pro',
+    'ACT':'Thr','ACC':'Thr','ACA':'Thr','ACG':'Thr','GCT':'Ala','GCC':'Ala','GCA':'Ala','GCG':'Ala',
+    'TAT':'Tyr','TAC':'Tyr','TAA':'*','TAG':'*','CAT':'His','CAC':'His','CAA':'Gln','CAG':'Gln',
+    'AAT':'Asn','AAC':'Asn','AAA':'Lys','AAG':'Lys','GAT':'Asp','GAC':'Asp','GAA':'Glu','GAG':'Glu',
+    'TGT':'Cys','TGC':'Cys','TGA':'*','TGG':'Trp','CGT':'Arg','CGC':'Arg','CGA':'Arg','CGG':'Arg',
+    'AGT':'Ser','AGC':'Ser','AGA':'Arg','AGG':'Arg','GGT':'Gly','GGC':'Gly','GGA':'Gly','GGG':'Gly',
+}
+def rev_comp(s): return ''.join(COMP[b] for b in reversed(s))
+def parse_fasta(path):
+    parts = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('>'): parts.append(line.upper())
+    return ''.join(parts)
+def parse_genes(path):
+    genes = {}
+    with open(path) as f:
+        f.readline()
+        for line in f:
+            p = line.strip().split('\t')
+            if len(p) < 5: continue
+            name, strand, exon = p[0], p[1], int(p[2])
+            start, end = int(p[3]), int(p[4])
+            if name not in genes: genes[name] = {'strand': strand, 'exons': []}
+            genes[name]['exons'].append((start, end))
+    for g in genes.values(): g['exons'].sort()
+    return genes
+def genomic_to_coding(gene, g_pos):
+    strand = gene['strand']; exons = gene['exons']; c = 0
+    if strand == '+':
+        for es, ee in exons:
+            if es <= g_pos <= ee: return c + (g_pos - es + 1)
+            c += ee - es + 1
+    else:
+        for es, ee in exons:
+            if es <= g_pos <= ee: return c + (ee - g_pos + 1)
+            c += ee - es + 1
+    return None
+def coding_to_genomic(gene, c_pos):
+    strand = gene['strand']; exons = gene['exons']; c = 0
+    if strand == '+':
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos: return es + (c_pos - c - 1)
+            c += el
+    else:
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos: return ee - (c_pos - c - 1)
+            c += el
+    return None
+def get_transcript_base(ref, gene, c_pos):
+    g = coding_to_genomic(gene, c_pos)
+    b = ref[g - 1]
+    return COMP[b] if gene['strand'] == '-' else b
+def get_gene_at(genes, g_pos):
+    for name, gene in genes.items():
+        for es, ee in gene['exons']:
+            if es <= g_pos <= ee: return name, gene
+    return None, None
+def find_repeat_extent(ref, gene, c_pos, base):
+    cds_len = sum(ee - es + 1 for es, ee in gene['exons'])
+    left = right = c_pos
+    while left > 1 and get_transcript_base(ref, gene, left - 1) == base: left -= 1
+    while right < cds_len and get_transcript_base(ref, gene, right + 1) == base: right += 1
+    return left, right
+def apply_3p_del(ref, gene, c_start, del_len):
+    c_end = c_start + del_len - 1
+    if del_len == 1:
+        base = get_transcript_base(ref, gene, c_start)
+        left, right = find_repeat_extent(ref, gene, c_start, base)
+        if right - left + 1 >= 2: c_start, c_end = right, right
+    else:
+        motif = ''.join(get_transcript_base(ref, gene, c_start + i) for i in range(del_len))
+        if len(set(motif)) == 1:
+            base = motif[0]
+            left, right = find_repeat_extent(ref, gene, c_start, base)
+            if right - left + 1 > del_len: c_start, c_end = right - del_len + 1, right
+    return c_start, c_end
+def apply_3p_ins(ref, gene, c_left, ins_t):
+    ins_len = len(ins_t)
+    cds_len = sum(ee - es + 1 for es, ee in gene['exons'])
+    bl = get_transcript_base(ref, gene, c_left)
+    if ins_len == 1 and ins_t == bl:
+        l, r = find_repeat_extent(ref, gene, c_left, bl)
+        if r - l + 1 >= 2: return r
+    if c_left + 1 <= cds_len:
+        br = get_transcript_base(ref, gene, c_left + 1)
+        if ins_len == 1 and ins_t == br:
+            l, r = find_repeat_extent(ref, gene, c_left + 1, br)
+            if r - l + 1 >= 2: return r
+    return c_left
+
+def call_and_annotate(ref, genes, pileup, sample):
+    variants = []
+    with open(pileup) as f:
+        f.readline()
+        for line in f:
+            p = line.strip().split('\t')
+            if len(p) < 9: continue
+            pos, refb = int(p[0]), p[1]
+            a, c, g, t = int(p[2]), int(p[3]), int(p[4]), int(p[5])
+            ins_s, del_s = p[6], p[7]
+            depth = int(p[8])
+            if depth < 20: continue
+            bc = {'A': a, 'C': c, 'G': g, 'T': t}
+            for ab, ac in bc.items():
+                if ab == refb or ac == 0: continue
+                if ac / depth >= 0.20:
+                    gn, gd = get_gene_at(genes, pos)
+                    if gn: variants.append({'type':'SNV','gn':gn,'gd':gd,'genomic':pos,
+                        'ref_fwd':refb,'alt_fwd':ab,'depth':depth,'alt_depth':ac})
+            if ins_s != '.':
+                for e in ins_s.split(';'):
+                    if ':' in e:
+                        seq, cnt = e.rsplit(':',1); cnt = int(cnt)
+                        if cnt > 0 and cnt / depth >= 0.20:
+                            gn, gd = get_gene_at(genes, pos)
+                            if gn: variants.append({'type':'INS','gn':gn,'gd':gd,'genomic':pos,
+                                'ins_seq_fwd':seq,'depth':depth,'alt_depth':cnt})
+            if del_s != '.':
+                for e in del_s.split(';'):
+                    if ':' in e:
+                        dl, cnt = e.rsplit(':',1); dl = int(dl); cnt = int(cnt)
+                        if cnt > 0 and cnt / depth >= 0.20:
+                            gn, gd = get_gene_at(genes, pos)
+                            if gn: variants.append({'type':'DEL','gn':gn,'gd':gd,'genomic':pos,
+                                'del_len':dl,'depth':depth,'alt_depth':cnt})
+    annotated = []
+    for v in variants:
+        gene = v['gd']; gn = v['gn']; strand = gene['strand']
+        depth = v['depth']; alt_depth = v['alt_depth']; vaf = round(alt_depth / depth, 2)
+        if v['type'] == 'SNV':
+            gp = v['genomic']; cp = genomic_to_coding(gene, gp)
+            rf, af = v['ref_fwd'], v['alt_fwd']
+            if strand == '+': rt, at = rf, af
+            else: rt, at = COMP[rf], COMP[af]
+            hc = f"c.{cp}{rt}>{at}"; vt = 'SNV'
+            cn = (cp - 1) // 3 + 1; csc = (cn - 1) * 3 + 1
+            rc = ''.join(get_transcript_base(ref, gene, csc + i) for i in range(3))
+            mc = list(rc); mc[cp - csc] = at; mc = ''.join(mc)
+            raa = CODON_TABLE.get(rc, '?'); maa = CODON_TABLE.get(mc, '?')
+            if raa == maa: hp = 'p.='
+            elif maa == '*': hp = f"p.{raa}{cn}*"
+            else: hp = f"p.{raa}{cn}{maa}"
+        elif v['type'] == 'DEL':
+            gs = v['genomic']; dl = v['del_len']
+            c_start = genomic_to_coding(gene, gs)
+            if strand == '-':
+                c_end = c_start; c_start = c_end - dl + 1
+            else:
+                c_end = c_start + dl - 1
+            c_start, c_end = apply_3p_del(ref, gene, c_start, dl)
+            if dl == 1:
+                rb = get_transcript_base(ref, gene, c_start)
+                hc = f"c.{c_start}del{rb}"
+            else:
+                hc = f"c.{c_start}_{c_end}del"
+            vt = 'DEL'
+            cn = (c_start - 1) // 3 + 1; csc = (cn - 1) * 3 + 1
+            rc = ''.join(get_transcript_base(ref, gene, csc + i) for i in range(3))
+            raa = CODON_TABLE.get(rc, '?')
+            if dl % 3 == 0:
+                cns = (c_start - 1) // 3 + 1; cne = (c_end - 1) // 3 + 1
+                cs = ''.join(get_transcript_base(ref, gene, (cns-1)*3+1+i) for i in range(3))
+                ce = ''.join(get_transcript_base(ref, gene, (cne-1)*3+1+i) for i in range(3))
+                aas = CODON_TABLE.get(cs, '?'); aae = CODON_TABLE.get(ce, '?')
+                hp = f"p.{aas}{cns}del" if cns == cne else f"p.{aas}{cns}_{aae}{cne}del"
+            else:
+                hp = f"p.{raa}{cn}fs"
+        elif v['type'] == 'INS':
+            gp = v['genomic']; ifq = v['ins_seq_fwd']; il = len(ifq)
+            if strand == '+':
+                it = ifq; c_left = genomic_to_coding(gene, gp)
+            else:
+                it = rev_comp(ifq); c_left = genomic_to_coding(gene, gp + 1)
+            c_left = apply_3p_ins(ref, gene, c_left, it)
+            c_right = c_left + 1
+            hc = f"c.{c_left}_{c_right}ins{it}"; vt = 'INS'
+            cn = (c_left - 1) // 3 + 1; csc = (cn - 1) * 3 + 1
+            rc = ''.join(get_transcript_base(ref, gene, csc + i) for i in range(3))
+            raa = CODON_TABLE.get(rc, '?')
+            if il % 3 == 0:
+                hp = f"p.{raa}{cn}ins"
+                for i in range(0, il, 3): hp += CODON_TABLE.get(it[i:i+3], '?')
+            else:
+                hp = f"p.{raa}{cn}fs"
+        annotated.append({'Sample': sample, 'Gene': gn, 'HGVS_cDNA': hc,
+            'HGVS_Protein': hp, 'Type': vt, 'Depth': depth, 'Alt_Depth': alt_depth, 'VAF': vaf})
+    def sk(r):
+        cs = r['HGVS_cDNA'].replace('c.','')
+        ns = ''
+        for ch in cs:
+            if ch.isdigit(): ns += ch
+            else: break
+        return (r['Gene'], int(ns) if ns else 0)
+    annotated.sort(key=sk)
+    return annotated
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--reads', required=True)
+    ap.add_argument('--reference', required=True)
+    ap.add_argument('--annotation', required=True)
+    ap.add_argument('--sample', required=True)
+    ap.add_argument('--output', required=True)
+    args = ap.parse_args()
+    ref = parse_fasta(args.reference)
+    genes = parse_genes(args.annotation)
+    pileup = tempfile.mktemp(suffix='.tsv')
+    aligner = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools', 'align.py')
+    subprocess.run(['python3', aligner, '--reads', args.reads, '--reference', args.reference, '--output', pileup], check=True)
+    annotated = call_and_annotate(ref, genes, pileup, args.sample)
+    with open(args.output, 'w') as f:
+        f.write('Sample\tGene\tHGVS_cDNA\tHGVS_Protein\tType\tDepth\tAlt_Depth\tVAF\n')
+        for r in annotated:
+            f.write(f"{r['Sample']}\t{r['Gene']}\t{r['HGVS_cDNA']}\t{r['HGVS_Protein']}\t{r['Type']}\t{r['Depth']}\t{r['Alt_Depth']}\t{r['VAF']}\n")
+    os.unlink(pileup)
+
+if __name__ == '__main__':
+    main()
+PYEOF
+chmod +x /app/annotate.py
+<<<END>>>
+<<<FILE tests/test_outputs.py>><arg_value>import pytest, subprocess, os, tempfile, random, hashlib, re, shutil
+
+COMP = {'A':'T','T':'A','G':'C','C':'G'}
+CODON_TABLE = {
+    'TTT':'Phe','TTC':'Phe','TTA':'Leu','TTG':'Leu','CTT':'Leu','CTC':'Leu','CTA':'Leu','CTG':'Leu',
+    'ATT':'Ile','ATC':'Ile','ATA':'Ile','ATG':'Met','GTT':'Val','GTC':'Val','GTA':'Val','GTG':'Val',
+    'TCT':'Ser','TCC':'Ser','TCA':'Ser','TCG':'Ser','CCT':'Pro','CCC':'Pro','CCA':'Pro','CCG':'Pro',
+    'ACT':'Thr','ACC':'Thr','ACA':'Thr','ACG':'Thr','GCT':'Ala','GCC':'Ala','GCA':'Ala','GCG':'Ala',
+    'TAT':'Tyr','TAC':'Tyr','TAA':'*','TAG':'*','CAT':'His','CAC':'His','CAA':'Gln','CAG':'Gln',
+    'AAT':'Asn','AAC':'Asn','AAA':'Lys','AAG':'Lys','GAT':'Asp','GAC':'Asp','GAA':'Glu','GAG':'Glu',
+    'TGT':'Cys','TGC':'Cys','TGA':'*','TGG':'Trp','CGT':'Arg','CGC':'Arg','CGA':'Arg','CGG':'Arg',
+    'AGT':'Ser','AGC':'Ser','AGA':'Arg','AGG':'Arg','GGT':'Gly','GGC':'Gly','GGA':'Gly','GGG':'Gly',
+}
+REF_PATH = '/app/ref/reference.fa'
+GENES_PATH = '/app/ref/genes.tsv'
+ANNOTATE = '/app/annotate.py'
+ALIGN_PY = '/app/tools/align.py'
+IMG_PY = '/usr/local/bin/python3'
+
+def rev_comp(s): return ''.join(COMP[b] for b in reversed(s))
+
+def parse_fasta(path):
+    parts = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('>'): parts.append(line.upper())
+    return ''.join(parts)
+
+def parse_genes(path):
+    genes = {}
+    with open(path) as f:
+        f.readline()
+        for line in f:
+            p = line.strip().split('\t')
+            if len(p) < 5: continue
+            name, strand = p[0], p[1]
+            es, ee = int(p[3]), int(p[4])
+            if name not in genes: genes[name] = {'strand': strand, 'exons': []}
+            genes[name]['exons'].append((es, ee))
+    for g in genes.values(): g['exons'].sort()
+    return genes
+
+def genomic_to_coding(gene, g_pos):
+    strand = gene['strand']; exons = gene['exons']; c = 0
+    if strand == '+':
+        for es, ee in exons:
+            if es <= g_pos <= ee: return c + (g_pos - es + 1)
+            c += ee - es + 1
+    else:
+        for es, ee in exons:
+            if es <= g_pos <= ee: return c + (ee - g_pos + 1)
+            c += ee - es + 1
+    return None
+
+def coding_to_genomic(gene, c_pos):
+    strand = gene['strand']; exons = gene['exons']; c = 0
+    if strand == '+':
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos: return es + (c_pos - c - 1)
+            c += el
+    else:
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos: return ee - (c_pos - c - 1)
+            c += el
+    return None
+
+def get_tbase(ref, gene, c_pos):
+    g = coding_to_genomic(gene, c_pos)
+    b = ref[g - 1]
+    return COMP[b] if gene['strand'] == '-' else b
+
+def find_repeat(ref, gene, c_pos, base):
+    cds = sum(ee - es + 1 for es, ee in gene['exons'])
+    l = r = c_pos
+    while l > 1 and get_tbase(ref, gene, l - 1) == base: l -= 1
+    while r < cds and get_tbase(ref, gene, r + 1) == base: r += 1
+    return l, r
+
+def apply_3p_del(ref, gene, c_start, dl):
+    c_end = c_start + dl - 1
+    if dl == 1:
+        b = get_tbase(ref, gene, c_start)
+        l, r = find_repeat(ref, gene, c_start, b)
+        if r - l + 1 >= 2: c_start = c_end = r
+    else:
+        motif = ''.join(get_tbase(ref, gene, c_start + i) for i in range(dl))
+        if len(set(motif)) == 1:
+            b = motif[0]; l, r = find_repeat(ref, gene, c_start, b)
+            if r - l + 1 > dl: c_start, c_end = r - dl + 1, r
+    return c_start, c_end
+
+def apply_3p_ins(ref, gene, c_left, ins_t):
+    il = len(ins_t)
+    cds = sum(ee - es + 1 for es, ee in gene['exons'])
+    bl = get_tbase(ref, gene, c_left)
+    if il == 1 and ins_t == bl:
+        l, r = find_repeat(ref, gene, c_left, bl)
+        if r - l + 1 >= 2: return r
+    if c_left + 1 <= cds:
+        br = get_tbase(ref, gene, c_left + 1)
+        if il == 1 and ins_t == br:
+            l, r = find_repeat(ref, gene, c_left + 1, br)
+            if r - l + 1 >= 2: return r
+    return c_left
+
+def ref_annotate(ref, gn, gene, var):
+    strand = gene['strand']; depth = var['depth']; alt_depth = var['alt_depth']
+    vaf = round(alt_depth / depth, 2)
+    vt = var['type']
+    if vt == 'SNV':
+        gp = var['genomic']; cp = genomic_to_coding(gene, gp)
+        rf = ref[gp - 1]; af = var['alt_fwd']
+        rt, at = (rf, af) if strand == '+' else (COMP[rf], COMP[af])
+        hc = f"c.{cp}{rt}>{at}"; vtype = 'SNV'
+        cn = (cp - 1) // 3 + 1; csc = (cn - 1) * 3 + 1
+        rc = ''.join(get_tbase(ref, gene, csc + i) for i in range(3))
+        mc = list(rc); mc[cp - csc] = at; mc = ''.join(mc)
+        raa = CODON_TABLE.get(rc, '?'); maa = CODON_TABLE.get(mc, '?')
+        if raa == maa: hp = 'p.='
+        elif maa == '*': hp = f"p.{raa}{cn}*"
+        else: hp = f"p.{raa}{cn}{maa}"
+    elif vt == 'DEL':
+        gs = var['genomic']; dl = var['del_len']
+        c_start = genomic_to_coding(gene, gs)
+        if strand == '-':
+            c_end = c_start; c_start = c_end - dl + 1
+        else:
+            c_end = c_start + dl - 1
+        c_start, c_end = apply_3p_del(ref, gene, c_start, dl)
+        if dl == 1:
+            rb = get_tbase(ref, gene, c_start); hc = f"c.{c_start}del{rb}"
+        else:
+            hc = f"c.{c_start}_{c_end}del"
+        vtype = 'DEL'
+        cn = (c_start - 1) // 3 + 1; csc = (cn - 1) * 3 + 1
+        rc = ''.join(get_tbase(ref, gene, csc + i) for i in range(3))
+        raa = CODON_TABLE.get(rc, '?')
+        if dl % 3 == 0:
+            cns = (c_start - 1) // 3 + 1; cne = (c_end - 1) // 3 + 1
+            cs = ''.join(get_tbase(ref, gene, (cns-1)*3+1+i) for i in range(3))
+            ce = ''.join(get_tbase(ref, gene, (cne-1)*3+1+i) for i in range(3))
+            aas = CODON_TABLE.get(cs, '?'); aae = CODON_TABLE.get(ce, '?')
+            hp = f"p.{aas}{cns}del" if cns == cne else f"p.{aas}{cns}_{aae}{cne}del"
+        else:
+            hp = f"p.{raa}{cn}fs"
+    elif vt == 'INS':
+        gp = var['genomic']; ifq = var['ins_seq_fwd']; il = len(ifq)
+        if strand == '+':
+            it = ifq; c_left = genomic_to_coding(gene, gp)
+        else:
+            it = rev_comp(ifq); c_left = genomic_to_coding(gene, gp + 1)
+        c_left = apply_3p_ins(ref, gene, c_left, it)
+        c_right = c_left + 1
+        hc = f"c.{c_left}_{c_right}ins{it}"; vtype = 'INS'
+        cn = (c_left - 1) // 3 + 1; csc = (cn - 1) * 3 + 1
+        rc = ''.join(get_tbase(ref, gene, csc + i) for i in range(3))
+        raa = CODON_TABLE.get(rc, '?')
+        if il % 3 == 0:
+            hp = f"p.{raa}{cn}ins"
+            for i in range(0, il, 3): hp += CODON_TABLE.get(it[i:i+3], '?')
+        else:
+            hp = f"p.{raa}{cn}fs"
+    return {'Gene': gn, 'HGVS_cDNA': hc, 'HGVS_Protein': hp,
+            'Type': vtype, 'Depth': depth, 'Alt_Depth': alt_depth, 'VAF': vaf}
+
+def sim_reads(ref, gn, gene, variants, rng, n_target=80):
+    exons = gene['exons']
+    amp_s = max(0, min(e[0] for e in exons) - 50)
+    amp_e = min(len(ref) - 1, max(e[1] for e in exons) + 50)
+    amp_len = amp_e - amp_s + 1
+    n = max(int(n_target * amp_len / 150), n_target)
+    above = [v for v in variants if not v.get('below_threshold')]
+    below = [v for v in variants if v.get('below_threshold')]
+    reads = []
+    for _ in range(n):
+        s0 = rng.randint(amp_s, max(amp_s, amp_e - 150))
+        seq = list(ref[s0:s0 + 150])
+        for v in above:
+            if rng.random() < v['alt_depth'] / v['depth']:
+                _apply_var(ref, seq, s0, v)
+        for v in below:
+            if rng.random() < v['alt_depth'] / v['depth']:
+                _apply_var(ref, seq, s0, v)
+        for j in range(len(seq)):
+            if rng.random() < 0.001:
+                seq[j] = rng.choice([b for b in 'ACGT' if b != seq[j]])
+        while len(seq) < 150:
+            ext = s0 + len(seq); seq.append(ref[ext] if ext < len(ref) else 'A')
+        seq = seq[:150]
+        reads.append((''.join(seq), '?' * 150))
+    return reads
+
+def _apply_var(ref, seq, s0, v):
+    g0 = v['genomic'] - 1
+    if v['type'] == 'SNV':
+        idx = g0 - s0
+        if 0 <= idx < len(seq): seq[idx] = v['alt_fwd']
+    elif v['type'] == 'DEL':
+        idx = g0 - s0; dl = v['del_len']
+        if 0 <= idx < len(seq):
+            del seq[idx:idx+dl]
+            es = s0 + len(seq)
+            for j in range(dl): seq.append(ref[es + j] if es + j < len(ref) else 'A')
+    elif v['type'] == 'INS':
+        idx = g0 - s0
+        if 0 <= idx < len(seq):
+            for k, b in enumerate(v['ins_seq_fwd']): seq.insert(idx + 1 + k, b)
+            while len(seq) > 150: seq.pop()
+
+def write_fq(reads, path, sn):
+    with open(path, 'w') as f:
+        for i, (seq, qual) in enumerate(reads):
+            f.write(f"@{sn}_read_{i+1}\n{seq}\n+\n{qual}\n")
+
+def compute_expected(ref, genes, variants, sn):
+    above = [v for v in variants if not v.get('below_threshold')]
+    rows = []
+    for v in above:
+        ann = ref_annotate(ref, v['gene'], genes[v['gene']], v)
+        ann['Sample'] = sn; rows.append(ann)
+    def sk(r):
+        cs = r['HGVS_cDNA'].replace('c.',''); ns = ''
+        for ch in cs:
+            if ch.isdigit(): ns += ch
+            else: break
+        return (r['Gene'], int(ns) if ns else 0)
+    rows.sort(key=sk)
+    return rows
+
+def run_annotate(reads_path, sn, out_path, extra_env=None):
+    env = {'PATH': '/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root'}
+    if extra_env: env.update(extra_env)
+    return subprocess.run([IMG_PY, ANNOTATE, '--reads', reads_path,
+        '--reference', REF_PATH, '--annotation', GENES_PATH,
+        '--sample', sn, '--output', out_path], capture_output=True, text=True, env=env, timeout=180)
+
+def parse_tsv(path):
+    rows = []
+    with open(path) as f:
+        header = f.readline().strip()
+        for line in f:
+            line = line.rstrip('\n')
+            if line: rows.append(line.split('\t'))
+    return header, rows
+
+HIDDEN = {
+    'H01': [{'gene':'ALPHA','type':'SNV','genomic':188,'alt_fwd':'A','depth':80,'alt_depth':36},
+            {'gene':'ALPHA','type':'SNV','genomic':350,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H02': [{'gene':'ALPHA','type':'SNV','genomic':219,'alt_fwd':'C','depth':80,'alt_depth':36},
+            {'gene':'ALPHA','type':'SNV','genomic':360,'alt_fwd':'A','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H03': [{'gene':'BETA','type':'DEL','genomic':783,'del_len':1,'depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'SNV','genomic':760,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H04': [{'gene':'BETA','type':'SNV','genomic':697,'alt_fwd':'T','depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'SNV','genomic':560,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H05': [{'gene':'BETA','type':'SNV','genomic':770,'alt_fwd':'T','depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'SNV','genomic':775,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H06': [{'gene':'BETA','type':'DEL','genomic':765,'del_len':1,'depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'DEL','genomic':757,'del_len':3,'depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'SNV','genomic':570,'alt_fwd':'A','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H07': [{'gene':'ALPHA','type':'DEL','genomic':148,'del_len':1,'depth':80,'alt_depth':36},
+            {'gene':'ALPHA','type':'SNV','genomic':350,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H08': [{'gene':'BETA','type':'INS','genomic':682,'ins_seq_fwd':'T','depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'SNV','genomic':570,'alt_fwd':'A','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H09': [{'gene':'ALPHA','type':'DEL','genomic':351,'del_len':2,'depth':80,'alt_depth':36},
+            {'gene':'ALPHA','type':'SNV','genomic':400,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H10': [{'gene':'GAMMA','type':'SNV','genomic':1104,'alt_fwd':'A','depth':80,'alt_depth':36},
+            {'gene':'GAMMA','type':'SNV','genomic':1200,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H11': [{'gene':'GAMMA','type':'SNV','genomic':1100,'alt_fwd':'A','depth':80,'alt_depth':36},
+            {'gene':'GAMMA','type':'SNV','genomic':999,'alt_fwd':'C','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H12': [{'gene':'ALPHA','type':'INS','genomic':134,'ins_seq_fwd':'AT','depth':80,'alt_depth':36},
+            {'gene':'ALPHA','type':'SNV','genomic':400,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H13': [{'gene':'ALPHA','type':'SNV','genomic':199,'alt_fwd':'A','depth':80,'alt_depth':36},
+            {'gene':'BETA','type':'SNV','genomic':770,'alt_fwd':'T','depth':80,'alt_depth':36},
+            {'gene':'GAMMA','type':'SNV','genomic':999,'alt_fwd':'C','depth':80,'alt_depth':8,'below_threshold':True}],
+    'H14': [{'gene':'ALPHA','type':'SNV','genomic':300,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True}],
+}
+
+@pytest.fixture(scope='session')
+def env():
+    ref = parse_fasta(REF_PATH)
+    genes = parse_genes(GENES_PATH)
+    tmpdir = tempfile.mkdtemp(prefix='tb_')
+    samples = {}
+    for name, variants in HIDDEN.items():
+        rng = random.Random(42 + 1000 * list(HIDDEN.keys()).index(name))
+        all_reads = []
+        for gn, gd in genes.items():
+            gv = [v for v in variants if v['gene'] == gn]
+            reads = sim_reads(ref, gn, gd, gv, rng)
+            all_reads.extend(reads)
+        rng.shuffle(all_reads)
+        rp = os.path.join(tmpdir, f'{name}.fq')
+        write_fq(all_reads, rp, name)
+        exp = compute_expected(ref, genes, variants, name)
+        samples[name] = {'reads': rp, 'expected': exp}
+    yield {'ref': ref, 'genes': genes, 'samples': samples, 'tmpdir': tmpdir}
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+def _run_and_get_rows(env, name):
+    s = env['samples'][name]
+    out = tempfile.mktemp(suffix='.tsv', dir=env['tmpdir'])
+    r = run_annotate(s['reads'], name, out)
+    assert r.returncode == 0, f"annotate.py failed: {r.stderr}"
+    _, rows = parse_tsv(out)
+    return rows, s['expected']
+
+def _cmp_ann(rows, expected):
+    if len(rows) != len(expected):
+        return f"Row count: {len(rows)} vs {len(expected)}"
+    for i, (a, e) in enumerate(zip(rows, expected)):
+        for j, col in enumerate(['Gene','HGVS_cDNA','HGVS_Protein','Type']):
+            if a[j] != e[col]: return f"Row {i} {col}: '{a[j]}' vs '{e[col]}'"
+    return None
+
+def test_practice_covers_hidden_cases():
+    ref = parse_fasta(REF_PATH)
+    genes = parse_genes(GENES_PATH)
+    counts = {'vt_snv':0,'vt_indel':0,'vt_repeat':0,'pos_mid':0,'pos_boundary':0,'pos_exon':0,
+              'str_plus':0,'str_minus':0,'str_minus_fs':0,'neg':0}
+    for i in range(1,7):
+        path = f'/app/samples/practice/P0{i}/expected_report.tsv'
+        _, rows = parse_tsv(path)
+        for r in rows:
+            gene = r[0]; hc = r[1]; vtype = r[3]
+            gene_data = genes[gene]; strand = gene_data['strand']
+            cs = hc.replace('c.',''); ns = ''
+            for ch in cs:
+                if ch.isdigit(): ns += ch
+                else: break
+            c_num = int(ns) if ns else 0
+            if vtype == 'SNV': counts['vt_snv'] += 1
+            elif 'ins' in hc or 'del' in hc:
+                if strand == '+' and vtype in ('DEL','INS'):
+                    base = get_tbase(ref, gene_data, c_num)
+                    l, rr = find_repeat(ref, gene_data, c_num, base)
+                    if rr - l + 1 >= 2: counts['vt_repeat'] += 1
+                    else: counts['vt_indel'] += 1
+                elif vtype in ('DEL','INS'):
+                    counts['vt_indel'] += 1
+                else: counts['vt_indel'] += 1
+            pos_in_codon = (c_num - 1) % 3 + 1
+            cds = sum(ee-es+1 for es,ee in gene_data['exons'])
+            near_edge = False
+            for es, ee in gene_data['exons']:
+                cg = genomic_to_coding(gene_data, es); ce2 = genomic_to_coding(gene_data, ee)
+                lo, hi = min(cg,ce2), max(cg,ce2)
+                if abs(c_num - lo) <= 5 or abs(c_num - hi) <= 5: near_edge = True
+            if near_edge: counts['pos_exon'] += 1
+            elif pos_in_codon == 3: counts['pos_boundary'] += 1
+            else: counts['pos_mid'] += 1
+            if strand == '+': counts['str_plus'] += 1
+            elif vtype in ('DEL','INS'):
+                dl_or_il = 1
+                if 'del' in hc and '_' in hc:
+                    parts = hc.split('_'); dl_or_il = int(parts[1].replace('del','')) - int(parts[0].replace('c.','')) + 1
+                if dl_or_il % 3 != 0: counts['str_minus_fs'] += 1
+                else: counts['str_minus'] += 1
+            else: counts['str_minus'] += 1
+        fq_path = f'/app/samples/practice/P0{i}/reads.fq'
+        with open(fq_path) as fq:
+            n_reads = sum(1 for line in fq if line.startswith('@'))
+        counts['neg'] += 1
+    for k, v in counts.items():
+        assert v >= 3, f"Practice coverage too low for {k}: {v} (need >=3)"
+
+def test_public_sample():
+    out = tempfile.mktemp(suffix='.tsv')
+    r = run_annotate('/app/samples/practice/P01/reads.fq', 'P01', out)
+    assert r.returncode == 0, f"annotate.py failed: {r.stderr}"
+    _, actual = parse_tsv(out)
+    _, expected = parse_tsv('/app/samples/practice/P01/expected_report.tsv')
+    assert len(actual) == len(expected), f"Row count: {len(actual)} vs {len(expected)}"
+    for i, (a, e) in enumerate(zip(actual, expected)):
+        for j in range(min(len(a), len(e))):
+            if j < 4: assert a[j] == e[j], f"Row {i} col {j}: '{a[j]}' vs '{e[j]}'"
+
+def test_3prime_rule_plus_strand(env):
+    rows, exp = _run_and_get_rows(env, 'H07')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA'], f"cDNA: {rows[0][1]} vs {exp[0]['HGVS_cDNA']}"
+
+def test_3prime_rule_minus_strand(env):
+    rows, exp = _run_and_get_rows(env, 'H03')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA'], f"cDNA: {rows[0][1]} vs {exp[0]['HGVS_cDNA']}"
+
+def test_3prime_rule_insertion_minus(env):
+    rows, exp = _run_and_get_rows(env, 'H08')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA'], f"cDNA: {rows[0][1]} vs {exp[0]['HGVS_cDNA']}"
+
+def test_codon_boundary_deletion(env):
+    rows, exp = _run_and_get_rows(env, 'H09')
+    assert len(rows) == 1
+    assert '_' in rows[0][1], f"Expected range notation: {rows[0][1]}"
+    assert rows[0][1] == exp[0]['HGVS_cDNA']
+
+def test_synonymous_annotation(env):
+    rows, exp = _run_and_get_rows(env, 'H02')
+    assert len(rows) == 1
+    assert rows[0][2] == 'p.=', f"Expected p.=, got {rows[0][2]}"
+
+def test_missense_annotation(env):
+    rows, exp = _run_and_get_rows(env, 'H01')
+    assert len(rows) == 1
+    assert rows[0][2] == exp[0]['HGVS_Protein']
+    assert rows[0][2].startswith('p.') and 'fs' not in rows[0][2]
+
+def test_frameshift_annotation(env):
+    rows, exp = _run_and_get_rows(env, 'H12')
+    assert len(rows) == 1
+    assert rows[0][2] == exp[0]['HGVS_Protein']
+    assert rows[0][2].endswith('fs')
+
+def test_nonsense_annotation(env):
+    rows, exp = _run_and_get_rows(env, 'H10')
+    assert len(rows) == 1
+    assert rows[0][2] == exp[0]['HGVS_Protein']
+    assert rows[0][2].endswith('*')
+
+def test_minus_strand_bases(env):
+    rows, exp = _run_and_get_rows(env, 'H05')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA']
+
+def test_minus_strand_coordinate(env):
+    rows, exp = _run_and_get_rows(env, 'H05')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA']
+
+def test_minus_strand_frameshift(env):
+    rows, exp = _run_and_get_rows(env, 'H06')
+    assert len(rows) >= 2
+    err = _cmp_ann(rows, exp)
+    assert err is None, f"Annotation mismatch: {err}"
+
+def test_multi_exon_plus_strand(env):
+    rows, exp = _run_and_get_rows(env, 'H11')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA']
+
+def test_multi_exon_minus_strand(env):
+    rows, exp = _run_and_get_rows(env, 'H04')
+    assert len(rows) == 1
+    assert rows[0][1] == exp[0]['HGVS_cDNA']
+
+def test_insertion_notation(env):
+    rows, exp = _run_and_get_rows(env, 'H12')
+    assert len(rows) == 1
+    assert '_ins' in rows[0][1], f"Expected c.X_YinsSEQ: {rows[0][1]}"
+    assert rows[0][1] == exp[0]['HGVS_cDNA']
+
+def test_in_frame_deletion(env):
+    rows, exp = _run_and_get_rows(env, 'H06')
+    assert len(rows) >= 2
+    has_del = False
+    for r in rows:
+        if 'del' in r[1] and '_' in r[1]:
+            has_del = True
+            assert 'fs' not in r[2], f"3bp deletion should be in-frame, not fs: {r[2]}"
+            assert 'del' in r[2], f"Expected p.Xdel, got {r[2]}"
+    assert has_del, "No multi-base deletion found"
+
+def test_report_columns(env):
+    rows, exp = _run_and_get_rows(env, 'H01')
+    out = tempfile.mktemp(suffix='.tsv', dir=env['tmpdir'])
+    r = run_annotate(env['samples']['H01']['reads'], 'H01', out)
+    assert r.returncode == 0
+    with open(out) as f:
+        header = f.readline().strip()
+    assert header == 'Sample\tGene\tHGVS_cDNA\tHGVS_Protein\tType\tDepth\tAlt_Depth\tVAF'
+
+def test_vaf_format(env):
+    rows, exp = _run_and_get_rows(env, 'H01')
+    assert len(rows) >= 1
+    vaf = rows[0][6]
+    assert re.match(r'^0\.\d{2}$', vaf), f"VAF format wrong: {vaf}"
+
+def test_sorting(env):
+    rows, exp = _run_and_get_rows(env, 'H13')
+    err = _cmp_ann(rows, exp)
+    assert err is None, f"Sorting/annotation mismatch: {err}"
+
+def test_threshold_filtering(env):
+    rows, exp = _run_and_get_rows(env, 'H01')
+    assert len(rows) == len(exp)
+    for r in rows:
+        depth = int(r[4]); vaf = float(r[6])
+        assert depth >= 20, f"Below-threshold depth: {depth}"
+        assert vaf >= 0.20, f"Below-threshold VAF: {vaf}"
+
+def test_no_false_positives(env):
+    out = tempfile.mktemp(suffix='.tsv', dir=env['tmpdir'])
+    r = run_annotate(env['samples']['H14']['reads'], 'H14', out)
+    assert r.returncode == 0
+    with open(out) as f:
+        lines = f.read().strip().split('\n')
+    assert len(lines) == 1, f"Expected header only, got {len(lines)} lines"
+
+def test_not_using_old_summary(env):
+    assert os.path.exists(ANNOTATE), "annotate.py not found"
+    with open(ANNOTATE) as f:
+        src = f.read()
+    assert 'old_summary' not in src, "annotate.py references old_summary.tsv"
+    rows, exp = _run_and_get_rows(env, 'H01')
+    assert len(rows) > 0, "Output empty for sample not in old summary"
+
+def test_anti_cheese_no_tests_import(env):
+    with open(ANNOTATE) as f:
+        src = f.read()
+    for bad in ['/tests', 'reference_annotator', 'read_simulator']:
+        assert bad not in src, f"annotate.py references '{bad}'"
+    hook_dir = tempfile.mkdtemp()
+    hook_path = os.path.join(hook_dir, 'sitecustomize.py')
+    with open(hook_path, 'w') as f:
+        f.write('''
+import sys, importlib
+_orig = __import__
+def _block(name, *a, **k):
+    if name in ('reference_annotator','read_simulator') or name.startswith('tests.') or name.startswith('/tests'):
+        raise ImportError("Blocked: " + name)
+    return _orig(name, *a, **k)
+builtins = __builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__
+if isinstance(__builtins__, dict):
+    __builtins__['__import__'] = _block
+else:
+    __builtins__.__import__ = _block
+''')
+    out = tempfile.mktemp(suffix='.tsv')
+    env_dict = {'PATH': '/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root',
+                'PYTHONPATH': hook_dir}
+    r = subprocess.run([IMG_PY, ANNOTATE, '--reads', env['samples']['H01']['reads'],
+        '--reference', REF_PATH, '--annotation', GENES_PATH,
+        '--sample', 'H01', '--output', out], capture_output=True, text=True, env=env_dict, timeout=180)
+    assert r.returncode == 0, f"annotate.py failed with import hook: {r.stderr}"
+    _, rows = parse_tsv(out)
+    assert len(rows) > 0
+    shutil.rmtree(hook_dir, ignore_errors=True)
+
+def test_preserve_aligner(env):
+    fq = env['samples']['H01']['reads']
+    pileup = tempfile.mktemp(suffix='.tsv')
+    r = subprocess.run([IMG_PY, ALIGN_PY, '--reads', fq, '--reference', REF_PATH, '--output', pileup],
+        capture_output=True, text=True, env={'PATH':'/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root'}, timeout=120)
+    assert r.returncode == 0, f"align.py failed: {r.stderr}"
+    _, rows = parse_tsv(pileup)
+    assert len(rows) > 0
+    depths = [int(r[8]) for r in rows if int(r[8]) > 0]
+    assert max(depths) >= 20, "Expected depth >= 20 at some positions"
+
+def test_preserve_reference_files():
+    assert os.path.exists('/app/.ref_checksums'), "Checksum file missing"
+    with open('/app/.ref_checksums') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) == 2:
+                expected, fpath = parts
+                with open(fpath, 'rb') as f2:
+                    actual = hashlib.md5(f2.read()).hexdigest()
+                assert actual == expected, f"{fpath} was modified: {actual} vs {expected}"
+
+def test_determinism(env):
+    ref = env['ref']; genes = env['genes']
+    rng1 = random.Random(12345)
+    rng2 = random.Random(12345)
+    rng3 = random.Random(12346)
+    variants = HIDDEN['H01']
+    def gen(rng):
+        reads = []
+        for gn, gd in genes.items():
+            gv = [v for v in variants if v['gene'] == gn]
+            reads.extend(sim_reads(ref, gn, gd, gv, rng))
+        return reads
+    r1 = gen(rng1); r2 = gen(rng2); r3 = gen(rng3)
+    fq1 = '\n'.join(f'@r{i+1}\n{s}\n+\n{q}' for i,(s,q) in enumerate(r1))
+    fq2 = '\n'.join(f'@r{i+1}\n{s}\n+\n{q}' for i,(s,q) in enumerate(r2))
+    fq3 = '\n'.join(f'@r{i+1}\n{s}\n+\n{q}' for i,(s,q) in enumerate(r3))
+    assert fq1 == fq2, "Same seed should produce identical reads"
+    assert fq1 != fq3, "Different seed should produce different reads"
+<<<END>>>

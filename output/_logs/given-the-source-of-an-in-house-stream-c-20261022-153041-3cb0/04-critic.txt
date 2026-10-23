@@ -1,0 +1,422 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads /app/cipher.py (~200 lines). Sees _finalize_state returning state & 0xFFFFF — a 20-bit truncation of the 128-bit key schedule. This is the core weakness: only 2^20 possible seeds.",
+    "Agent reads /app/README.md. Gets message format: 2-byte magic 0x89 0x57, version 0x01, content_type byte, payload, CRC-16/XMODEM. README says 'CRC over message content' — ambiguous about whether nonce is included.",
+    "Agent identifies S-box: a 256-byte _SBOX table applied to each raw LFSR output byte before XOR with the 64-byte _TWEAK table at position % 64.",
+    "Agent spots nonce-mixing: after every 256 keystream bytes, the 4-byte nonce is XORed into LFSR state bits 16-19. This matters for messages >256 bytes.",
+    "Agent sees fallback seed: if seed == 0, _FALLBACK_SEED = 0xAC01 is used instead.",
+    "Agent copies LFSR step function, S-box table, TWEAK table into decrypt.py.",
+    "Agent implements brute force: iterate seed 0..2^20-1, generate 4 keystream bytes (LFSR→SBOX→TWEAK XOR), XOR with ciphertext bytes after nonce, check for header 0x89 0x57 0x01 type∈{1,2,3}.",
+    "Agent tests on known pairs. On first attempt, likely misses one of: S-box, TWEAK, nonce mixing, or nonce-inclusive CRC. Debugging cycle begins.",
+    "Agent discovers CRC must include nonce (by reading cipher source's encrypt function carefully, or by noticing no seed passes CRC check when computed per README). Fixes CRC computation.",
+    "Agent optimizes: precomputes dict mapping (first 4 keystream bytes) → seed for fast lookup, achieving <30s per ciphertext.",
+    "Agent verifies byte-for-byte on all 10 known pairs + challenge_0. Satisfied, submits.",
+    "Hidden tests grade 15 fresh-key ciphertexts. If agent missed nonce mixing for long messages, or got S-box/TWEAK wrong for certain byte values, or didn't handle CRC disambiguation, they fail specific checks."
+  ],
+  "too_easy_because": [
+    "The 20-bit truncation (state & 0xFFFFF) is immediately visible in the source — any agent that reads cipher.py finds it on the first pass.",
+    "The original cipher has only one non-obvious feature (the truncation); everything else (LFSR, byte construction, CRC) is straightforward to copy, giving the agent little to get wrong.",
+    "Self_check_gap is tiny: a solution that works on all 10 known pairs + challenge_0 will almost certainly work on hidden data too, because the attack (2^20 brute force) is key-independent.",
+    "No contradicting-sources knob: the README and cipher source agree on everything important, removing a natural difficulty lever.",
+    "Invisible traps are all clearly visible in the source code (truncation, fallback seed, nonce prefix). A careful reader finds them on first read.",
+    "Several checks overlap: 'binary content handling' and 'raw bytes output' test essentially the same thing; 'short ciphertext' and 'medium ciphertext' differ only in length without a functional difference in the cipher.",
+    "The performance constraint (60s) is generous — even naive 2^20 brute force in Python takes <30s for medium-length messages, so this knob barely activates."
+  ],
+  "spec": {
+    "name": "wobblestream-cipher-crack",
+    "description": "Cryptanalyze an in-house stream cipher from its source and known pairs, then write a general decryptor that works under any key.",
+    "difficulty": "hard",
+    "category": "security",
+    "tags": ["cryptanalysis", "lfsr", "stream-cipher", "brute-force", "python"],
+    "expert_time_estimate_min": 60.0,
+    "junior_time_estimate_min": 150.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "You have been handed the source code of WobbleStream, an in-house stream cipher used for internal messaging, along with several known plaintext/ciphertext pairs. Your job is to write a decryption script that recovers the plaintext of any WobbleStream ciphertext, regardless of what key was used to encrypt it. The known pairs are provided for study and verification, but your script must work on entirely new ciphertexts under fresh keys.",
+    "environment_setup": "The Dockerfile installs python:3.12-slim-bookworm and copies: /app/cipher.py (the ~200-line WobbleStream cipher source, read-only chmod 444), /app/README.md (message format and cipher interface), /app/known_pairs/ (12 pairs: pair_N.bin = nonce+ciphertext, pair_N.plain = plaintext, using 3 different keys across pairs covering short/medium/long lengths and text/mixed/binary content types, including at least 3 pairs with messages >256 bytes and non-zero nonces), /app/challenge/challenge_0.bin and challenge_0.plain (a ciphertext under a fourth key for visible testing), and /app/decrypt.py (a starter script that currently just returns the ciphertext bytes). No network, no extra packages.",
+    "instruction_summary": "Write /app/decrypt.py so that `python3 /app/decrypt.py <file>` reads a WobbleStream ciphertext file (4-byte big-endian nonce + encrypted bytes) and outputs the exact plaintext bytes to stdout. The script must work for any 16-byte key and any 4-byte nonce, completing within 60 seconds per ciphertext on 1 CPU. The message format is documented in /app/README.md: 2-byte magic 0x89 0x57, version byte 0x01, content-type byte (0x01 text / 0x02 binary / 0x03 mixed), payload, and a trailing CRC-16/XMODEM over all preceding bytes in the decrypted output. The cipher source is in /app/cipher.py. In case of conflict between the README and the cipher source, the cipher source is authoritative. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+    "solution_outline": [
+      "Read cipher.py and identify the critical weakness: _finalize_state truncates to 20 bits (state & 0xFFFFF), so only 2^20 effective keys regardless of the 128-bit input key.",
+      "Copy the _lfsr_step function exactly from cipher.py (primitive polynomial x^20 + x^3 + 1, 20-bit state, MSB-first byte construction from 8 steps).",
+      "Copy the 256-byte _SBOX table from cipher.py — it is applied to each raw LFSR output byte.",
+      "Copy the 64-byte _TWEAK table from cipher.py — it is XORed with the S-box output at position % 64.",
+      "Implement the nonce-mixing step: after generating every 256 keystream bytes, XOR each of the 4 nonce bytes into LFSR state bits 16-19 sequentially (nonce[0] into bit 16, nonce[1] into bit 17, etc., each XORed as a single bit: state ^= ((nonce_byte >> (3-i)) & 1) << (16+i)).",
+      "Implement brute-force decryption: for each ciphertext file, extract the 4-byte nonce and encrypted data.",
+      "Precompute a lookup table: for each seed 0..2^20-1, compute the first 4 keystream bytes (LFSR→SBOX→TWEAK XOR at positions 0-3), store as dict mapping those 4 bytes to the seed.",
+      "For each ciphertext, XOR the first 4 encrypted bytes with each possible header pattern and look up in the precomputed table to find candidate seeds.",
+      "On header match, generate the full keystream (with nonce mixing every 256 bytes), decrypt all bytes.",
+      "Verify CRC-16/XMODEM: compute CRC over nonce (4 bytes) + header (4 bytes) + payload, compare with the last 2 plaintext bytes. The nonce IS included in the CRC per the cipher source.",
+      "Handle the zero-seed edge case: cipher.py replaces seed=0 with _FALLBACK_SEED=0xAC01, so seed 0xAC01 must be reachable in the search (and seed 0 never occurs as an effective seed).",
+      "Output the verified plaintext (all bytes including header, payload, and CRC) to stdout as raw bytes with no trailing newline."
+    ],
+    "test_plan": [
+      "test_challenge_visible: decrypt challenge_0.bin and compare byte-for-byte with challenge_0.plain (public baseline)",
+      "test_english_medium_fresh_key: generate fresh random key, encrypt 500-byte English plaintext, decrypt with script, exact match",
+      "test_binary_content_fresh_key: fresh key, 400-byte random-byte payload (type 0x02), exact match",
+      "test_mixed_content_fresh_key: fresh key, 500-byte mixed content (type 0x03), exact match",
+      "test_short_ciphertext_fresh_key: fresh key, 55-byte message (4 header + 49 payload + 2 CRC), exact match",
+      "test_long_ciphertext_fresh_key: fresh key, 2000-byte English message, exact match — also tests nonce mixing at byte 256, 512, 768",
+      "test_large_seed_fresh_key: choose key+nonce that produce a seed > 900000, encrypt, decrypt, exact match",
+      "test_zero_schedule_seed: use a key+nonce pair known to produce effective seed 0 (cipher maps to fallback 0xAC01), encrypt, decrypt, exact match",
+      "test_structured_nonce: fresh key with nonce = struct.pack('>I', 1717200000) (timestamp-like), encrypt 1500-byte message (triggers nonce mixing), decrypt, exact match",
+      "test_performance: time the script on a 1500-byte ciphertext, must complete under 60 seconds",
+      "test_exact_raw_bytes: verify output is raw bytes (not hex string, base64, or with trailing newline) on a binary-content ciphertext",
+      "test_crc_disambiguation: crafted ciphertext where two different seeds produce the same 4 header bytes but different payloads; only CRC verification selects the correct one — CRC must include the nonce",
+      "test_nonce_mixing_correctness: fresh key with non-zero nonce, 600-byte message — verifies keystream bytes 256-599 are correct (nonce mixing applied at byte 256)",
+      "test_sbox_tweak_interaction: fresh key, binary content with many 0x00 and 0xFF bytes in payload, verifying S-box and TWEAK are applied in the correct order",
+      "test_five_ciphertexts: run the script on 5 different fresh-key ciphertexts in sequence, all must match",
+      "test_no_cipher_import: verify the script does not import cipher.py at runtime",
+      "test_practice_covers_hidden_cases: verify every hidden-case dimension (short/medium/long length, text/mixed/binary content, nonce-mixing range) appears ≥3 times in the shipped known pairs"
+    ],
+    "anti_cheat": "All hidden ciphertexts use fresh keys never present in the environment, so hard-coding recovered seeds fails. The 2^128 full-key brute force is infeasible within 60 seconds; only the 2^20 seed-space search works. The test runner removes /app/cipher.py from the Python path during execution (the agent must have internalized the LFSR logic, S-box, and TWEAK table) and checks that the script does not import cipher.py at runtime.",
+    "failure_modes": [
+      "Agent recovers the sample key's 20-bit seed from known pairs and hard-codes it, failing on fresh keys",
+      "Agent mis-copies the LFSR step function (wrong polynomial taps or bit convention), causing no seed to match the header",
+      "Agent omits the S-box lookup, using raw LFSR output as keystream — no seed matches the header",
+      "Agent omits the TWEAK XOR after the S-box — no seed matches the header (TWEAK[0:4] are non-zero)",
+      "Agent applies S-box and TWEAK in the wrong order (TWEAK then S-box instead of S-box then TWEAK) — no seed matches",
+      "Agent misses the nonce-mixing step: keystream is correct for the first 256 bytes but diverges after, causing wrong payload in long messages",
+      "Agent computes CRC over header+payload only (per README), omitting the nonce — CRC verification fails during brute force, correct seed is rejected",
+      "Agent includes the nonce bytes in the keystream XOR (should only XOR starting at byte 4 of the file), corrupting the first 4 plaintext bytes",
+      "Agent assumes all plaintext is ASCII and strips or replaces high bytes, corrupting binary-content messages",
+      "Agent outputs hex-encoded or base64 text instead of raw bytes",
+      "Agent's brute force is too slow for 20-bit search with full S-box+TWEAK computation without precomputation (takes >60s)",
+      "Agent checks only 2 or 3 header bytes instead of 4, leading to false positives on some ciphertexts",
+      "Agent skips CRC verification, so a rare false-positive seed produces wrong output on the CRC-disambiguation test"
+    ],
+    "shape": "cryptanalysis from source; graded on hidden ciphertexts under fresh keys",
+    "hidden_evaluation": "Tests generate 15 hidden ciphertexts using a seeded PRNG in tests/cipher_ref.py. Each hidden ciphertext uses a fresh 16-byte key and 4-byte nonce drawn from the stated parameter space, with plaintexts of varied lengths (55-2500 bytes) and content types (text/mixed/binary). At least 8 of the 15 hidden ciphertexts are >256 bytes long with non-zero nonces, exercising the nonce-mixing path. The script is run on each hidden ciphertext individually; its stdout is compared byte-for-byte against the known plaintext. A different seed produces different keys/nonces, ensuring the attack must generalize.",
+    "checks": [
+      {
+        "requirement": "The cipher source shows _finalize_state returns state & 0xFFFFF, a 20-bit value, making the effective key space 2^20. The agent must implement a 2^20 brute-force search over seeds.",
+        "assumed_instead": "The agent might trust the docstring's '128-bit key' claim and attempt full key recovery, which is infeasible within 60 seconds.",
+        "hidden_test_input": "A ciphertext encrypted under a uniformly random 16-byte key whose 20-bit seed is 731291.",
+        "why_missed": "The agent might not trace data flow through _finalize_state and miss the truncation, attempting an impossible 128-bit search.",
+        "caught_by_tests": ["test_english_medium_fresh_key", "test_large_seed_fresh_key"]
+      },
+      {
+        "requirement": "The cipher source defines a 256-byte _SBOX table applied to each raw LFSR output byte: keystream_byte = _SBOX[raw] ^ _TWEAK[pos % 64].",
+        "assumed_instead": "The agent might use the raw LFSR output directly as keystream, skipping the S-box lookup entirely.",
+        "hidden_test_input": "A ciphertext where the correct seed's raw LFSR output (without S-box) produces no header match, but SBOX[raw] ^ TWEAK does.",
+        "why_missed": "The S-box is defined as a data table mid-source; an agent who skims might miss it, and the resulting brute force finds no matching seed — a silent failure with no error message beyond 'no seed found'.",
+        "caught_by_tests": ["test_sbox_tweak_interaction", "test_english_medium_fresh_key"]
+      },
+      {
+        "requirement": "The cipher source applies the 64-byte _TWEAK table as XOR after the S-box: _SBOX[raw] ^ _TWEAK[pos % 64]. The order is S-box first, then TWEAK XOR.",
+        "assumed_instead": "The agent might apply TWEAK XOR before the S-box: _SBOX[raw ^ _TWEAK[pos % 64]], or omit TWEAK entirely.",
+        "hidden_test_input": "A ciphertext where swapping the order produces different keystream bytes and no header match.",
+        "why_missed": "The two operations are on adjacent lines in the source; the order is easy to misread. A wrong order causes the brute force to find no seed, producing no runtime error beyond an empty result.",
+        "caught_by_tests": ["test_sbox_tweak_interaction"]
+      },
+      {
+        "requirement": "The cipher source shows that after every 256 keystream bytes, the 4-byte nonce is XORed into the LFSR state at bits 16-19 (one nonce bit per state bit). This alters the keystream for bytes 256+.",
+        "assumed_instead": "The agent might assume the LFSR runs independently of the nonce after initialization, skipping the nonce-mixing step.",
+        "hidden_test_input": "A 600-byte ciphertext with non-zero nonce where keystream bytes 256-599 differ from what a no-mixing LFSR would produce.",
+        "why_missed": "The nonce-mixing is in a helper method called conditionally (every 256 bytes); the agent might not trace the call graph far enough. The first 256 bytes decrypt correctly, so the header match succeeds — the error only appears in the payload tail, producing output that looks partially valid.",
+        "caught_by_tests": ["test_nonce_mixing_correctness", "test_long_ciphertext_fresh_key", "test_structured_nonce"]
+      },
+      {
+        "requirement": "The cipher source computes CRC-16/XMODEM over nonce(4 bytes) + header(4 bytes) + payload. The README says only 'CRC over message content'. The instruction states the cipher source is authoritative.",
+        "assumed_instead": "The agent computes CRC over header + payload only (following the README's ambiguous wording), omitting the nonce.",
+        "hidden_test_input": "A ciphertext where CRC(nonce+header+payload) ≠ CRC(header+payload), and the agent's wrong CRC rejects the correct seed during brute force.",
+        "why_missed": "The README's wording is plausible for header+payload only. An agent who implements CRC verification during brute force using the README's description would reject the correct seed, finding no valid decryption. An agent who skips CRC verification might still succeed — but fails the CRC-disambiguation test.",
+        "caught_by_tests": ["test_crc_disambiguation", "test_nonce_mixing_correctness"]
+      },
+      {
+        "requirement": "Short ciphertexts still have the 4-byte known header (magic + version + type) for seed verification, and the full S-box+TWEAK pipeline applies even to short messages.",
+        "assumed_instead": "The agent might rely on longer known-plaintext structures (like words or phrases) or assume short messages skip the S-box/TWEAK.",
+        "hidden_test_input": "A 55-byte ciphertext (4 header + 49 payload + 2 CRC) under a fresh key.",
+        "why_missed": "Testing only on medium/long ciphertexts from known pairs doesn't exercise the minimal-header-verification case where every keystream byte matters.",
+        "caught_by_tests": ["test_short_ciphertext_fresh_key"]
+      },
+      {
+        "requirement": "The cipher source shows the key schedule maps any (key, nonce) pair to a 20-bit seed; the brute force must cover the full range 0..2^20-1 (with 0 mapping to 0xAC01).",
+        "assumed_instead": "The agent might optimize by trying only seeds in the range observed from sample keys (e.g., 1000-5000) and skip high seeds.",
+        "hidden_test_input": "A ciphertext where key+nonce produce seed 918223 (>900000).",
+        "why_missed": "Sample keys happen to produce mid-range seeds; an agent who doesn't test against large seeds won't discover the gap. The brute force simply returns 'no seed found' with no diagnostic.",
+        "caught_by_tests": ["test_large_seed_fresh_key"]
+      },
+      {
+        "requirement": "The cipher source shows _FALLBACK_SEED = 0xAC01 is used when the schedule produces seed=0; the brute force must handle that seed 0 never occurs as an effective seed (0xAC01 is the actual value used).",
+        "assumed_instead": "The agent skips seed=0 because an LFSR at state 0 stays at 0 forever, but doesn't realize the fallback seed 0xAC01 is the actual value used and must be reachable.",
+        "hidden_test_input": "A ciphertext encrypted with a key+nonce that hashes to effective seed 0 (cipher internally uses 0xAC01).",
+        "why_missed": "None of the 12 known pairs produce a zero-hash case; the agent may never encounter it. Missing it means seed 0xAC01 is still searched (it's in the normal range), but an agent who adds special-case handling for 'seed 0' that conflicts with the fallback might break.",
+        "caught_by_tests": ["test_zero_schedule_seed"]
+      },
+      {
+        "requirement": "Instruction states the script outputs the plaintext bytes to stdout as raw bytes with no trailing newline and no encoding.",
+        "assumed_instead": "The agent outputs hex-encoded or base64-encoded text, or appends a trailing newline via print().",
+        "hidden_test_input": "A binary-content ciphertext whose plaintext contains bytes 0x00 and 0xFF.",
+        "why_missed": "Testing only on ASCII text doesn't reveal encoding or newline issues. A hex-encoded output 'looks right' (readable, contains the right data) but is wrong format.",
+        "caught_by_tests": ["test_exact_raw_bytes"]
+      },
+      {
+        "requirement": "The README describes content type 0x02 as binary data with arbitrary byte values; the S-box and TWEAK must be applied correctly for all byte values.",
+        "assumed_instended": "The agent assumes all content is printable ASCII and post-processes the output (e.g., stripping non-ASCII or replacing high bytes).",
+        "hidden_test_input": "A ciphertext with content type 0x02 and payload bytes uniformly drawn from 0x00-0xFF.",
+        "why_missed": "The known pairs include binary content but the agent might not test their output handling carefully for edge byte values like 0x00 and 0xFF.",
+        "caught_by_tests": ["test_binary_content_fresh_key"]
+      },
+      {
+        "requirement": "Instruction states the script must complete within 60 seconds per ciphertext on 1 CPU. With S-box + TWEAK computation for 2^20 seeds, precomputation is essential.",
+        "assumed_instead": "The agent writes a naive O(2^20 * N) brute force without precomputation, which exceeds 60s for long ciphertexts.",
+        "hidden_test_input": "A 1500-byte ciphertext requiring full keystream generation after seed recovery, plus the 2^20 seed search.",
+        "why_missed": "The agent might test only on short ciphertexts where the naive approach is fast enough, not realizing the precomputation is needed.",
+        "caught_by_tests": ["test_performance"]
+      },
+      {
+        "requirement": "For the CRC-disambiguation case, two different seeds produce the same 4 header bytes but different full-message CRCs. The agent must verify CRC (including nonce) to select the correct seed.",
+        "assumed_instead": "The agent checks only the 4-byte header and outputs the first matching seed's decryption, without CRC verification.",
+        "hidden_test_input": "A medium-length ciphertext where, by construction, two seeds produce matching 4-byte headers but only one passes CRC(nonce+header+payload).",
+        "why_missed": "Seed collisions on 4 bytes are rare (~1 in 2^12); the agent is unlikely to encounter one in small-scale testing. Without CRC verification, the output has a valid header and plausible payload — no runtime error signals the wrong choice.",
+        "caught_by_tests": ["test_crc_disambiguation"]
+      }
+    ],
+    "preserved_behaviours": [
+      {
+        "behaviour": "The cipher's encrypt/decrypt symmetry: encrypting the ciphertext with the same key and nonce returns the original plaintext.",
+        "hidden_test_input": "A known plaintext encrypted under a sample key; verify decrypt(encrypt(m)) = m."
+      }
+    ],
+    "ground_truth": "tests/cipher_ref.py is a pristine copy of the WobbleStream cipher including the S-box, TWEAK table, nonce-mixing, and nonce-inclusive CRC. A seeded Python PRNG (random.Random) generates keys, nonces, and plaintexts (with proper message format headers and CRC). For each hidden test, the reference cipher encrypts the known plaintext, the agent's script decrypts the result, and the output is compared byte-for-byte against the original plaintext. The generator is deterministic (same seed produces identical ciphertexts) and different seeds produce different instances.",
+    "verifier_packages": [],
+    "verifier_apt": [],
+    "reference_access": "none",
+    "quirk_evidence": [
+      {
+        "quirk": "Short ciphertext length",
+        "evidence": "known_pairs/pair_1.bin (150 bytes), pair_4.bin (100 bytes), pair_7.bin (80 bytes) — three short examples"
+      },
+      {
+        "quirk": "Long ciphertext length (>256 bytes, triggering nonce mixing)",
+        "evidence": "known_pairs/pair_3.bin (1800 bytes), pair_6.bin (1600 bytes), pair_9.bin (2200 bytes), pair_11.bin (900 bytes), pair_12.bin (700 bytes) — five long examples, all with non-zero nonces"
+      },
+      {
+        "quirk": "Binary-ish plaintext (type 0x02)",
+        "evidence": "known_pairs/pair_5.bin, pair_5.plain (binary content, 300 bytes); pair_7 (binary, 80 bytes); pair_10 (binary, 550 bytes) — three binary examples"
+      },
+      {
+        "quirk": "Mixed plaintext (type 0x03)",
+        "evidence": "known_pairs/pair_4.plain, pair_8.plain, pair_2.plain — three mixed-content examples with high bytes"
+      },
+      {
+        "quirk": "Random key (not sample-like)",
+        "evidence": "known_pairs use KEY_B (random 16-byte key) for pairs 4-6; cipher.py source shows _expand_key processes all 16 key bytes identically"
+      },
+      {
+        "quirk": "Structured IV (timestamp nonce)",
+        "evidence": "known_pairs/pair_8.bin has nonce 0x6647F2A0 (a Unix timestamp); pair_11.bin has nonce 0x66480000; README notes nonces should be unique per message"
+      },
+      {
+        "quirk": "Zero-schedule seed (fallback to 0xAC01)",
+        "evidence": "cipher.py line: `if seed == 0: seed = _FALLBACK_SEED` and `_FALLBACK_SEED = 0xAC01`"
+      },
+      {
+        "quirk": "S-box output filter",
+        "evidence": "cipher.py: `_SBOX` 256-byte array defined at module level, applied in `_keystream_byte` as `return self._SBOX[raw] ^ self._TWEAK[pos % 64]`"
+      },
+      {
+        "quirk": "TWEAK table (position-dependent XOR)",
+        "evidence": "cipher.py: `_TWEAK` 64-byte array defined at module level, applied in `_keystream_byte` after S-box"
+      },
+      {
+        "quirk": "Nonce mixing every 256 bytes",
+        "evidence": "cipher.py: `_mix_nonce` method called from `encrypt` after every 256 keystream bytes, XORs nonce bits into LFSR state bits 16-19"
+      },
+      {
+        "quirk": "CRC includes nonce",
+        "evidence": "cipher.py: `encrypt` method computes `crc = crc16xmodem(nonce + header + payload)`, visible in the CRC computation line; README says only 'CRC over message content'"
+      }
+    ],
+    "answer_source": "stated",
+    "inferred_rules": [],
+    "stated_facts": [
+      {
+        "fact": "The key schedule truncates to 20 bits, making the effective key space 2^20 regardless of the 128-bit nominal key size.",
+        "why": "The known pairs use only 3 keys; from their keystreams alone the agent cannot determine that the schedule collapses the full key space to 20 bits — the source code states this explicitly."
+      },
+      {
+        "fact": "The LFSR uses primitive polynomial x^20 + x^3 + 1, giving maximal-length period 2^20 - 1. Keystream bytes are constructed MSB-first from 8 consecutive LFSR steps.",
+        "why": "The period could be inferred via Berlekamp-Massey from enough keystream bits, but the polynomial taps and bit ordering are most reliably read from the source."
+      },
+      {
+        "fact": "Seed 0 is replaced with fallback 0xAC01; the LFSR is never initialized to zero.",
+        "why": "None of the sample pairs produce a zero-schedule seed, so the fallback value cannot be inferred from data."
+      },
+      {
+        "fact": "The keystream applies S-box then TWEAK XOR in that specific order: byte = _SBOX[raw_lfsr_byte] ^ _TWEAK[position % 64].",
+        "why": "The ordering could be reverse-engineered from enough known-plaintext/ciphertext pairs, but the source states it directly and unambiguously."
+      },
+      {
+        "fact": "The LFSR state is modified every 256 keystream bytes by XORing the nonce into bits 16-19 of the state. This is not a standard LFSR construction and cannot be inferred from short known pairs.",
+        "why": "Short known pairs (<256 bytes) do not exhibit the nonce-mixing behavior. The source code states the mixing step explicitly."
+      },
+      {
+        "fact": "The CRC-16/XMODEM covers the nonce (4 bytes) + header (4 bytes) + payload, not just header + payload as the README's 'message content' wording might suggest.",
+        "why": "The README's wording is ambiguous; the actual CRC scope is only visible in the cipher source's encrypt function."
+      }
+    ],
+    "reference_binary": "",
+    "sample_file": "",
+    "spec_document": "",
+    "knobs": [
+      {
+        "knob": "Varied hidden draws",
+        "where": "tests/cipher_ref.py generates 15 hidden ciphertexts from 3 PRNG seeds, each with a fresh random key and varied plaintext types/lengths, with ≥8 ciphertexts >256 bytes exercising nonce mixing",
+        "fairness": "Keys and nonces are drawn from the stated parameter space (16-byte key, 4-byte nonce) and the message format follows the README specification; all quirk-matrix cells appear ≥3 times in practice data"
+      },
+      {
+        "knob": "Resource ceilings",
+        "where": "The 60-second per-ciphertext time limit and the 2^20 seed search space (with S-box + TWEAK computation per seed) require precomputation or optimization",
+        "fairness": "The instruction explicitly states the 60-second limit; the 20-bit state is visible in cipher.py source; the S-box and TWEAK tables are defined in the source"
+      },
+      {
+        "knob": "Contradicting sources",
+        "where": "README.md says 'CRC over message content' (ambiguous — could mean header+payload only); cipher.py encrypt() computes CRC over nonce+header+payload; instruction.md states cipher source is authoritative",
+        "fairness": "The instruction explicitly states: 'In case of conflict between the README and the cipher source, the cipher source is authoritative.'"
+      }
+    ],
+    "dial": "Number of hidden ciphertexts (15, within fair range 10-30) and their lengths (55-2500 bytes, within fair range 200-2000 extended for short/long edge cases). At least 8 of 15 are >256 bytes with non-zero nonces to exercise the nonce-mixing path. Increasing the count stresses robustness; increasing the share of long ciphertexts stresses nonce-mixing correctness.",
+    "quirk_matrix": {
+      "dimensions": {
+        "ciphertext_length": ["short (50-100 bytes)", "medium (400-600 bytes)", "long (1500-2500 bytes)"],
+        "key": ["sample-like (ASCII-ish keys)", "random (uniform bytes)", "random with structured IV (timestamp nonce)"],
+        "plaintext": ["English text (type 0x01)", "mixed (type 0x03)", "binary-ish (type 0x02)"]
+      },
+      "mix": "30% easy cells (medium length, sample-like key, English text); remaining 70% harder cells spread across other combinations; every cell represented at least once; at least 8 instances with length >256 bytes and non-zero nonce"
+    },
+    "public_tests": "The visible test decrypts /app/challenge/challenge_0.bin (a ciphertext under a fourth key not used in any known pair) and compares against challenge_0.plain. This covers the general-key case at medium length with English text. About 30% of hidden-check coverage. Does not exercise nonce mixing, CRC disambiguation, or binary content.",
+    "anti_cheese": "Hidden ciphertexts use fresh keys never present in the environment (drawn from a seeded PRNG in tests/), so hard-coding recovered seeds fails. The per-ciphertext 60-second timeout makes brute-forcing the 128-bit key space impossible. The test runner removes /app from sys.path and checks the script does not import cipher.py at runtime, forcing the agent to internalize the LFSR logic, S-box, and TWEAK table. A hidden test (test_no_cipher_import) verifies no import of cipher.py occurs.",
+    "graded_instances": "15 hidden ciphertexts generated from 3 different PRNG seeds (5 ciphertexts each). Each seed produces a different set of keys, nonces, and plaintexts covering all quirk-matrix cells. At least 8 ciphertexts are >256 bytes with non-zero nonces. One ciphertext is specifically crafted for CRC disambiguation (two seeds match the 4-byte header). A determinism self-check in tests/ verifies that the same seed always produces the same ciphertexts, and that different seeds produce different instances.",
+    "self_check_gap": "A solution that correctly decrypts all 12 known pairs and challenge_0 can still fail on hidden data because: (1) Nonce mixing: all practice pairs with long messages happen to use a specific nonce pattern, but hidden pairs use diverse nonces that exercise different XOR patterns at the 256-byte boundary — the nonce mixing step is in the source but only affects bytes 256+, and an agent who doesn't trace the call graph carefully might miss it. (2) CRC scope: an agent who computes CRC per the README (without nonce) would find that no seed passes CRC verification during brute force; they might then disable CRC verification and rely on header-only matching, which works on practice data but fails the CRC-disambiguation hidden test. (3) S-box/TWEAK order: swapping the order produces different keystream bytes; the header might still match for a different (wrong) seed if the swap happens to produce the right 4 bytes, giving correct-looking but wrong output. The practice data determines the right answer because correct implementation of ALL features produces zero mismatches, while any single missing feature produces at least one mismatch on the long, non-zero-nonce practice pairs.",
+    "margins": [
+      {
+        "test": "test_performance",
+        "bar": "60 seconds per ciphertext",
+        "oracle_value": "~8-15 seconds (with precomputed lookup table for first 4 bytes)",
+        "baseline": "N/A (absolute time limit)"
+      },
+      {
+        "test": "All decryption tests",
+        "bar": "100% byte-for-byte match (zero errors across all hidden ciphertexts)",
+        "oracle_value": "0 errors",
+        "baseline": "N/A (exact match required)"
+      }
+    ],
+    "contract": [
+      "Entry point: python3 /app/decrypt.py <ciphertext_file>",
+      "Input file: 4-byte nonce (big-endian) followed by encrypted bytes",
+      "Output: raw plaintext bytes to stdout (no trailing newline, no encoding, no extra bytes)",
+      "The plaintext has the WobbleStream message format: bytes 0-1 = 0x89 0x57, byte 2 = 0x01, byte 3 = content type in {0x01, 0x02, 0x03}, then payload, then 2-byte CRC-16/XMODEM (big-endian) over nonce(4 bytes) + header(4 bytes) + payload",
+      "Exit code 0 on success; non-zero on failure",
+      "Must complete within 60 seconds per ciphertext on 1 CPU",
+      "Must work for any 16-byte key and any 4-byte nonce",
+      "In case of conflict between the README and the cipher source, the cipher source is authoritative",
+      "Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task."
+    ],
+    "invisible_traps": [
+      {
+        "trap": "The nonce is included in the CRC computation (cipher source shows crc16xmodem(nonce + header + payload)), but the README says only 'CRC over message content'. An agent who computes CRC per the README (without nonce) will find that CRC verification during brute force rejects the correct seed. If the agent then disables CRC verification to proceed, they will pass practice data (where header-only matching works) but fail the hidden CRC-disambiguation test (where two seeds match the header and only CRC distinguishes them). The wrong seed's output has a valid header and plausible payload — no runtime error signals the mistake.",
+        "stated_in": "cipher.py encrypt() method: `crc = crc16xmodem(nonce + header + payload)`; instruction.md: 'In case of conflict between the README and the cipher source, the cipher source is authoritative.'"
+      },
+      {
+        "trap": "The S-box and TWEAK are applied in a specific order: _SBOX[raw] then ^ _TWEAK[pos%64]. If an agent swaps the order to _SBOX[raw ^ _TWEAK[pos%64]], the keystream differs. For some seeds, the swapped order might produce a header match for a DIFFERENT seed, yielding output with a valid header but wrong payload — no runtime error, just silently incorrect bytes after the header.",
+        "stated_in": "cipher.py _keystream_byte method: `return self._SBOX[raw] ^ self._TWEAK[pos % 64]`"
+      },
+      {
+        "trap": "The nonce-mixing step (XOR nonce bits into LFSR state every 256 bytes) only affects keystream bytes at position ≥256. An agent who misses this step will correctly decrypt short and medium messages (<256 bytes) and the headers of long messages. The payload tail of long messages will be wrong, but if the agent only spot-checks the beginning of long-message decryptions against .plain files, they might not notice the divergence at byte 256+.",
+        "stated_in": "cipher.py _mix_nonce method, called from encrypt() after every 256 keystream bytes"
+      }
+    ],
+    "instance_plan": [
+      {
+        "instance": "Fresh key, English text, medium (500 bytes)",
+        "quirks": "medium length, random key, English text",
+        "purpose": "Basic general-key decryption with S-box+TWEAK"
+      },
+      {
+        "instance": "Fresh key, binary content, medium (400 bytes)",
+        "quirks": "medium length, random key, binary-ish",
+        "purpose": "Binary payload handling with full S-box+TWEAK pipeline"
+      },
+      {
+        "instance": "Fresh key, mixed content, medium (500 bytes)",
+        "quirks": "medium length, random key, mixed",
+        "purpose": "Mixed content handling"
+      },
+      {
+        "instance": "Fresh key, English text, short (55 bytes)",
+        "quirks": "short length, random key, English text",
+        "purpose": "Minimal-header verification with S-box+TWEAK"
+      },
+      {
+        "instance": "Fresh key, English text, long (2000 bytes) — nonce mixing exercised at bytes 256, 512, 768",
+        "quirks": "long length, random key, English text",
+        "purpose": "Full keystream generation with nonce mixing"
+      },
+      {
+        "instance": "Key producing large seed (>900000), English text, medium",
+        "quirks": "medium length, random key (large seed), English text",
+        "purpose": "Full seed-range coverage"
+      },
+      {
+        "instance": "Key+nonce producing zero schedule seed, medium (450 bytes)",
+        "quirks": "medium length, zero-schedule (fallback seed), English text",
+        "purpose": "Fallback-seed edge case"
+      },
+      {
+        "instance": "Random key with timestamp nonce, English text, long (1500 bytes) — nonce mixing with structured nonce",
+        "quirks": "long length, random key, structured IV, English text",
+        "purpose": "Structured nonce + nonce mixing interaction"
+      },
+      {
+        "instance": "Sample-like key, binary content, short (80 bytes)",
+        "quirks": "short length, sample-like key, binary-ish",
+        "purpose": "Sample-like key with binary content"
+      },
+      {
+        "instance": "Random key, mixed content, long (1800 bytes) — nonce mixing with mixed content",
+        "quirks": "long length, random key, mixed",
+        "purpose": "Long mixed-content decryption with nonce mixing"
+      },
+      {
+        "instance": "Random key with structured IV, binary content, medium (550 bytes)",
+        "quirks": "medium length, random key with structured IV, binary-ish",
+        "purpose": "Structured IV + binary content"
+      },
+      {
+        "instance": "Random key, English text, medium (450 bytes) — CRC disambiguation seed",
+        "quirks": "medium length, random key, English text — crafted so two seeds match the 4-byte header",
+        "purpose": "CRC verification necessity (including nonce in CRC)"
+      },
+      {
+        "instance": "Sample-like key, English text, long (2200 bytes) — nonce mixing with sample-like key",
+        "quirks": "long length, sample-like key, English text",
+        "purpose": "Sample-like key with long ciphertext and nonce mixing"
+      },
+      {
+        "instance": "Random key, mixed content, short (90 bytes)",
+        "quirks": "short length, random key, mixed",
+        "purpose": "Short mixed content"
+      },
+      {
+        "instance": "Random key with structured IV, English text, long (1700 bytes) — nonce mixing with structured nonce",
+        "quirks": "long length, structured IV, English text",
+        "purpose": "Long ciphertext with structured IV and nonce mixing"
+      }
+    ],
+    "adjust_rules": {
+      "too_easy": [
+        "Increase LFSR state to 24 bits (2^24 brute force is slower in Python, requires C extension or numpy optimization)",
+        "Add a second S-box applied conditionally based on content type, doubling the lookup table complexity",
+        "Make the nonce mixing apply every 64 bytes instead of every 256, increasing the frequency of the interaction"
+      ],
+      "too_hard": [
+        "Reduce LFSR state to 16 bits (2^16 brute force is instant, no optimization needed)",
+        "Remove the TWEAK table and nonce mixing, leaving only the S-box as additional complexity",
+        "Add a --verify flag that runs the cipher with a known key for self-testing",
+        "Provide more known pairs (20+) across more keys, making the pattern more visible"
+      ]
+  }
+}
+```

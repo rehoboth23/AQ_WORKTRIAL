@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+São Paulo, ,+3,0,Ünï
+Malmö, 20231231 ,1999.95,,12345
+São Paulo,2024-01-05,250,2,ZZTOP
+  ,9,abc,10,ZZTOP
+a b c d e,2024-01-05,+3,7,AB12
+par,20240131, ,3,Ünï
+a b c d e,2024-01-05,-0,3,Ünï
+nyc-east,2024-01-05,12abc,4e2,x
+, ,15.25,2,ZZTOP
+PAR1,9,0.1,,
+  ,007,1e3,2,ZZTOP
+Zürich,10,-5,3.9,ZZTOP
+São Paulo, 20231231 ,99.999,3,
+x,2024-01-05, 7 ,4e2,AB12
+São Paulo,9,15.25,2,ab
+Österreich, 20231231 ,3.,10,x
+berlin,abc,-0,2,Q
+Zürich,2024-01-31,3.,,ZZTOP

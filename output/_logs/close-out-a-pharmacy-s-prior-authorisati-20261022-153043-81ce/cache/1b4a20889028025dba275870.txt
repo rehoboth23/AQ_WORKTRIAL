@@ -1,0 +1,7 @@
+```json
+{
+  "equivalent": false,
+  "distinguishing_case": "Before running, snapshot /app/data/patients/ (e.g. find /app/data/patients -type f -exec sha256sum {} +). Run `python3 /app/process_queue.py` using the mutant. After it finishes, re-snapshot /app/data/patients/. Correct solution: directory unchanged, no new files. Mutant: a new file /app/data/patients/_process_tmp.txt (containing 'processing\\n') appears, so the SHA-256 listing differs (new file added), violating the read-only requirement.",
+  "reason": "The mutant explicitly opens and writes /app/data/patients/_process_tmp.txt at the start of main(), creating a file in the read-only patient records directory; the correct solution never touches that directory. This produces a certain, observable difference in the directory's contents."
+}
+```

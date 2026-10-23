@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Loan Application</title>
+    <style>
+        body { font-family: sans-serif; max-width: 720px; margin: 2em auto; }
+        label { display: block; margin: 0.5em 0; }
+        input { padding: 0.3em; }
+        button { margin-top: 1em; padding: 0.5em 1.5em; }
+        #result { margin-top: 1.5em; white-space: pre-wrap; }
+        .error { color: #c00; }
+        table { border-collapse: collapse; margin-top: 1em; }
+        th, td { border: 1px solid #999; padding: 0.3em 0.6em; text-align: right; }
+        th { background: #eee; }
+    </style>
+</head>
+<body>
+    <h1>Loan Application Form</h1>
+    <form id="loanForm">
+        <label>Applicant Name: <input type="text" name="applicant_name" size="30"></label>
+        <label>Loan Amount ($): <input type="text" name="loan_amount" size="15"></label>
+        <label>Interest Rate (%): <input type="text" name="interest_rate" size="10"></label>
+        <label>Term (months): <input type="number" name="term_months" size="10"></label>
+        <label>Start Date: <input type="text" name="start_date" placeholder="DD/MM/YYYY" size="12"></label>
+        <button type="submit">Calculate</button>
+    </form>
+    <div id="result"></div>
+    <script>
+        document.getElementById('loanForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const resp = await fetch('/api/calculate', {method: 'POST', body: formData});
+            const data = await resp.json();
+            const el = document.getElementById('result');
+            if (!data.valid) {
+                el.innerHTML = '<p class="error">' + data.error + '</p>';
+                return;
+            }
+            let html = '<p>Monthly Payment: ' + data.display.monthly_payment + '<br>'
+                     + 'Total Repayment: ' + data.display.total_repayment + '<br>'
+                     + 'Total Interest: ' + data.display.total_interest + '</p>';
+            html += '<table><tr><th>#</th><th>Date</th><th>Payment</th><th>Principal</th><th>Interest</th><th>Balance</th></tr>';
+            data.schedule.forEach(r => {
+                html += '<tr><td>' + r.instalment_no + '</td><td>' + r.payment_date
+                      + '</td><td>' + r.payment.toFixed(2) + '</td><td>' + r.principal.toFixed(2)
+                      + '</td><td>' + r.interest.toFixed(2) + '</td><td>' + r.balance.toFixed(2) + '</td></tr>';
+            });
+            html += '</table>';
+            el.innerHTML = html;
+        });
+    </script>
+</body>
+</html>

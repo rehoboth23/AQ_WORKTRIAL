@@ -1,0 +1,10 @@
+branch,posted,amount,units,code
+nyc-east,20240105,1e3,10
+São Paulo,007,,0,
+garbage
+london,,-12.345,10
+Zürich,9,.5,abc,Ünï
+Malmö,10,-0, 2 ,12345
+nyc-east,9,12.50,7
+nyc-east,20240105,+3,3.9,x
+nyc-east,20240105,10,1,AB12

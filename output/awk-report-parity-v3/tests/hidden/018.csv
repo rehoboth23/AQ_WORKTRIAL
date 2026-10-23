@@ -1,0 +1,19 @@
+branch,posted,amount,units,code
+london,007,0x1A,10
+a b c d e,,+3,10,ab
+Österreich, 20231231 ,-0.0,
+london,20240105,12.50,7,Q
+x,10,1E2,abc,
+ lon, 20231231 ,0.1,abc
+ lon,10,+3,4e2,ab
+nyc-east,2024/1/5,-0,0,12345
+NYC-West, 20231231 ,2500000000.75,3
+los angeles,9, -3 ,3.9
+a,b
+nyc-east,,12.50,10
+São Paulo,20240131,-0,-2.5
+ lon,,99.999,3
+São Paulo,,1E2,,12345,extra
+,007,12abc,0,Ünï
+london,2024-01-31,250,abc,AB12
+nyc-east,20240105,10,1,AB12

@@ -1,0 +1,12 @@
+branch,posted,amount,units,code
+ lon,abc,2500000000.75,
+ny, 20231231 ,,0,12345
+a b c d e,9,-0,3
+, 20231231 ,99.999,,AB12
+los angeles,abc,1E2,3
+london,007,-12.345,3,ab
+a b c d e,20240105,abc, 2 
+São Paulo,2024-01-05,-0.0, 2 
+berlin,2024/1/5,1000000000, 2 
+nyc-east,007,2500000000.75,abc
+Zürich,20240105,10,1,AB12

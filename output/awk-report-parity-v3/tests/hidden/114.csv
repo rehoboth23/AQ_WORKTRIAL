@@ -1,0 +1,18 @@
+branch,posted,amount,units,code
+  ,9,0.2,,extra
+ny,9,-5,0,ab
+Österreich,007,1e3,7,Q
+a b c d e,10,-5,0,ZZTOP
+Malmö,9,abc,0
+x,2024/1/5,3.,7
+par,20240105,1999.95, 2 ,AB12
+,2024-01-31,99.999,7
+nyc-east, 20231231 ,1E2,-2.5
+Österreich,007,12abc,10,AB12
+NYC-West,9,1E2,3.9
+Zürich,007,-0,7,extra
+x, 20231231 ,1e3,3.9,Q
+berlin,abc,.5,4e2,ab
+ny,9,-12.345,-2.5
+par,10,250,abc
+london,20240105,10,1,AB12

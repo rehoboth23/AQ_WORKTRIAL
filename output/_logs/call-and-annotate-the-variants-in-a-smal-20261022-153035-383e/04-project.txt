@@ -1,0 +1,1188 @@
+<<<MANIFEST>>>
+environment/generate_data.py
+environment/docs/nomenclature.md
+environment/docs/sop.md
+environment/tools/align.py
+<<<END>>>
+<<<FILE environment/generate_data.py>>>
+#!/usr/bin/env python3
+"""Build-time data generator for the amplicon variant annotation task.
+Run once at Docker build time, then delete the script."""
+import random, os, sys
+
+SEED = 42
+REF_LEN = 1500
+READ_LEN = 150
+
+COMP = {'A':'T','T':'A','G':'C','C':'G'}
+
+CODON_TABLE = {
+    'TTT':'Phe','TTC':'Phe','TTA':'Leu','TTG':'Leu',
+    'CTT':'Leu','CTC':'Leu','CTA':'Leu','CTG':'Leu',
+    'ATT':'Ile','ATC':'Ile','ATA':'Ile','ATG':'Met',
+    'GTT':'Val','GTC':'Val','GTA':'Val','GTG':'Val',
+    'TCT':'Ser','TCC':'Ser','TCA':'Ser','TCG':'Ser',
+    'CCT':'Pro','CCC':'Pro','CCA':'Pro','CCG':'Pro',
+    'ACT':'Thr','ACC':'Thr','ACA':'Thr','ACG':'Thr',
+    'GCT':'Ala','GCC':'Ala','GCA':'Ala','GCG':'Ala',
+    'TAT':'Tyr','TAC':'Tyr','TAA':'*','TAG':'*',
+    'CAT':'His','CAC':'His','CAA':'Gln','CAG':'Gln',
+    'AAT':'Asn','AAC':'Asn','AAA':'Lys','AAG':'Lys',
+    'GAT':'Asp','GAC':'Asp','GAA':'Glu','GAG':'Glu',
+    'TGT':'Cys','TGC':'Cys','TGA':'*','TGG':'Trp',
+    'CGT':'Arg','CGC':'Arg','CGA':'Arg','CGG':'Arg',
+    'AGT':'Ser','AGC':'Ser','AGA':'Arg','AGG':'Arg',
+    'GGT':'Gly','GGC':'Gly','GGA':'Gly','GGG':'Gly',
+}
+
+GENES = {
+    'ALPHA': {'strand': '+', 'exons': [(100, 499)]},
+    'BETA':  {'strand': '-', 'exons': [(750, 849), (550, 699)]},
+    'GAMMA': {'strand': '+', 'exons': [(900, 1049), (1100, 1249)]},
+}
+
+def rev_comp(s):
+    return ''.join(COMP[b] for b in reversed(s))
+
+def coding_to_genomic(gene_name, c_pos):
+    """1-based c. coordinate to 1-based genomic position."""
+    gene = GENES[gene_name]
+    exons = gene['exons']
+    c = 0
+    if gene['strand'] == '+':
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos:
+                return es + (c_pos - c - 1)
+            c += el
+    else:
+        for es, ee in exons:
+            el = ee - es + 1
+            if c + el >= c_pos:
+                return ee - (c_pos - c - 1)
+            c += el
+    return None
+
+def genomic_to_coding(gene_name, g_pos):
+    """1-based genomic position to 1-based c. coordinate."""
+    gene = GENES[gene_name]
+    exons = gene['exons']
+    c = 0
+    if gene['strand'] == '+':
+        for es, ee in exons:
+            if es <= g_pos <= ee:
+                return c + (g_pos - es + 1)
+            c += (ee - es + 1)
+    else:
+        for es, ee in exons:
+            if es <= g_pos <= ee:
+                return c + (ee - g_pos + 1)
+            c += (ee - es + 1)
+    return None
+
+def get_gene_at(ref, g_pos):
+    """Return gene name if g_pos falls in a gene CDS, else None."""
+    for gn, gd in GENES.items():
+        for es, ee in gd['exons']:
+            if es <= g_pos <= ee:
+                return gn
+    return None
+
+def get_transcript_base(ref, gene_name, c_pos):
+    g = coding_to_genomic(gene_name, c_pos)
+    base = ref[g - 1]
+    if GENES[gene_name]['strand'] == '-':
+        return COMP[base]
+    return base
+
+def set_transcript_codon(ref, gene_name, codon_num, codon_seq):
+    """Set a codon in the transcript of a gene."""
+    c_start = (codon_num - 1) * 3 + 1
+    for i, base in enumerate(codon_seq):
+        c_pos = c_start + i
+        g_pos = coding_to_genomic(gene_name, c_pos)
+        if GENES[gene_name]['strand'] == '+':
+            ref[g_pos - 1] = base
+        else:
+            ref[g_pos - 1] = COMP[base]
+
+def generate_reference():
+    rng = random.Random(SEED + 100)
+    ref = list(rng.choices('ACGT', k=REF_LEN))
+
+    # ALPHA start codon
+    set_transcript_codon(ref, 'ALPHA', 1, 'ATG')
+    # ALPHA specific codons for P01
+    set_transcript_codon(ref, 'ALPHA', 3, 'GCT')   # c.7-9, synonymous at c.9
+    set_transcript_codon(ref, 'ALPHA', 12, 'CTT')  # c.34-36, missense at c.35
+    # Fill codons 2,4-11 with GCT
+    for cn in [2,4,5,6,7,8,9,10,11]:
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    # Codons 13-15
+    for cn in [13,14,15]:
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    # Codon 16-17: CCC CCC (part of CCCCCCC repeat at c.46-51)
+    set_transcript_codon(ref, 'ALPHA', 16, 'CCC')
+    set_transcript_codon(ref, 'ALPHA', 17, 'CCC')
+    # Codon 18
+    set_transcript_codon(ref, 'ALPHA', 18, 'GCT')
+    # Codons 19-21
+    for cn in [19,20,21]:
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    # Codon 22: CAG for nonsense
+    set_transcript_codon(ref, 'ALPHA', 22, 'CAG')
+    # Codons 23-24: AAA AAA (part of AAAAAA repeat at c.67-72)
+    set_transcript_codon(ref, 'ALPHA', 23, 'AAA')
+    set_transcript_codon(ref, 'ALPHA', 24, 'AAA')
+    # Codon 25
+    set_transcript_codon(ref, 'ALPHA', 25, 'GCT')
+    # Codons 26-34
+    for cn in range(26, 35):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    # Codon 35-36 for P06 2bp deletion
+    set_transcript_codon(ref, 'ALPHA', 35, 'GCT')
+    set_transcript_codon(ref, 'ALPHA', 36, 'GCT')
+    # Codons 37-50
+    for cn in range(37, 51):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    # Codons 51-52: GGG GGG (part of GGGGGG repeat at c.151-156)
+    set_transcript_codon(ref, 'ALPHA', 51, 'GGG')
+    set_transcript_codon(ref, 'ALPHA', 52, 'GGG')
+    # Codon 53: not G to delimit repeat
+    set_transcript_codon(ref, 'ALPHA', 53, 'ACT')
+    # Codons 54-66
+    for cn in range(54, 67):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+    # Codon 67: CTA for P06 insertion (not a repeat context)
+    set_transcript_codon(ref, 'ALPHA', 67, 'CTA')
+    # Codons 68-133
+    for cn in range(68, 134):
+        set_transcript_codon(ref, 'ALPHA', cn, 'GCT')
+
+    # BETA start codon
+    set_transcript_codon(ref, 'BETA', 1, 'ATG')
+    # Codons 2-4
+    for cn in [2,3,4]:
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    # Codon 5: GCT for P04 deletion at c.15
+    set_transcript_codon(ref, 'BETA', 5, 'GCT')
+    # Codons 6-9
+    for cn in range(6, 10):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    # Codon 10: GCT for P03 synonymous at c.30
+    set_transcript_codon(ref, 'BETA', 10, 'GCT')
+    # Codons 11-13
+    for cn in range(11, 14):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    # Codon 14: CTA for P04 insertion at c.40_41
+    set_transcript_codon(ref, 'BETA', 14, 'CTA')
+    # Codons 15-16
+    for cn in [15,16]:
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    # Codon 17: CTT for P03 missense at c.50
+    set_transcript_codon(ref, 'BETA', 17, 'CTT')
+    # Codons 18-19
+    for cn in [18,19]:
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    # Codon 20: CAG for P03 nonsense at c.58
+    set_transcript_codon(ref, 'BETA', 20, 'CAG')
+    # Codon 21: GCT
+    set_transcript_codon(ref, 'BETA', 21, 'GCT')
+    # Codon 22: ATC (Ile) - c.66=C starts CCCCCC repeat
+    set_transcript_codon(ref, 'BETA', 22, 'ATC')
+    # Codons 23-24: CCC CCG (repeat c.66-71 = CCCCCC)
+    set_transcript_codon(ref, 'BETA', 23, 'CCC')
+    set_transcript_codon(ref, 'BETA', 24, 'CCG')
+    # Codons 25-33
+    for cn in range(25, 34):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+
+    # BETA exon 2
+    # Codon 34: GCT
+    set_transcript_codon(ref, 'BETA', 34, 'GCT')
+    # Codons 35-38
+    for cn in range(35, 39):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+    # Codon 39: GAA (c.116=A starts AAAAA repeat at c.116-120)
+    set_transcript_codon(ref, 'BETA', 39, 'GAA')
+    # Codon 40: AAA
+    set_transcript_codon(ref, 'BETA', 40, 'AAA')
+    # Codon 41: start with G to delimit repeat (c.121=G)
+    set_transcript_codon(ref, 'BETA', 41, 'GCT')
+    # Codons 42-83
+    for cn in range(42, 84):
+        set_transcript_codon(ref, 'BETA', cn, 'GCT')
+
+    # GAMMA start codon
+    set_transcript_codon(ref, 'GAMMA', 1, 'ATG')
+    # Codons 2-48
+    for cn in range(2, 49):
+        set_transcript_codon(ref, 'GAMMA', cn, 'GCT')
+    # Codon 49: GCT for P05 missense at c.145
+    set_transcript_codon(ref, 'GAMMA', 49, 'GCT')
+    # Codon 50: GCA for P05 synonymous at c.150
+    set_transcript_codon(ref, 'GAMMA', 50, 'GCA')
+    # Codon 51: GCT
+    set_transcript_codon(ref, 'GAMMA', 51, 'GCT')
+    # Codon 52: TGG for P05 nonsense at c.156
+    set_transcript_codon(ref, 'GAMMA', 52, 'TGG')
+    # Codons 53-100
+    for cn in range(53, 101):
+        set_transcript_codon(ref, 'GAMMA', cn, 'GCT')
+
+    return ''.join(ref)
+
+# Variant definitions
+# Each variant: gene, type, genomic (1-based), and type-specific fields
+# For SNV: alt_fwd (alt base on forward strand)
+# For DEL: del_len
+# For INS: ins_seq_fwd (inserted bases on forward strand, between genomic and genomic+1)
+# depth, alt_depth, below_threshold flag
+
+PRACTICE_VARIANTS = {
+    'P01': [
+        {'gene':'ALPHA','type':'SNV','genomic':108,'alt_fwd':'C','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':134,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':163,'alt_fwd':'T','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':320,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P02': [
+        {'gene':'ALPHA','type':'DEL','genomic':145,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'INS','genomic':166,'ins_seq_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'DEL','genomic':250,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':380,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P03': [
+        {'gene':'BETA','type':'SNV','genomic':800,'alt_fwd':'T','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':820,'alt_fwd':'G','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':792,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':775,'alt_fwd':'T','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P04': [
+        {'gene':'BETA','type':'DEL','genomic':835,'del_len':1,'depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'INS','genomic':809,'ins_seq_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'BETA','type':'SNV','genomic':760,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P05': [
+        {'gene':'GAMMA','type':'SNV','genomic':1044,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'GAMMA','type':'SNV','genomic':1049,'alt_fwd':'G','depth':80,'alt_depth':36},
+        {'gene':'GAMMA','type':'SNV','genomic':1105,'alt_fwd':'A','depth':80,'alt_depth':36},
+        {'gene':'GAMMA','type':'SNV','genomic':999,'alt_fwd':'C','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+    'P06': [
+        {'gene':'ALPHA','type':'DEL','genomic':204,'del_len':2,'depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'INS','genomic':299,'ins_seq_fwd':'AT','depth':80,'alt_depth':36},
+        {'gene':'ALPHA','type':'SNV','genomic':349,'alt_fwd':'G','depth':80,'alt_depth':8,'below_threshold':True},
+    ],
+}
+
+def simulate_reads(ref, gene_name, variants, rng, n_reads_target=80):
+    """Simulate reads for a gene region with variants. Returns list of (sequence, quality) tuples."""
+    gene = GENES[gene_name]
+    exons = gene['exons']
+    # Amplicon boundaries
+    amp_start = max(0, exons[0][0] - 50)
+    amp_end = min(REF_LEN - 1, exons[-1][1] + 50)
+    amp_len = amp_end - amp_start + 1
+
+    n_reads = max(int(n_reads_target * amp_len / READ_LEN), n_reads_target)
+
+    # Separate variants into above/below threshold
+    above = [v for v in variants if not v.get('below_threshold')]
+    below = [v for v in variants if v.get('below_threshold')]
+
+    reads = []
+    for rid in range(n_reads):
+        start_0 = rng.randint(amp_start, max(amp_start, amp_end - READ_LEN))
+        # Build read
+        seq = list(ref[start_0:start_0 + READ_LEN])
+        # Determine which above-threshold variants this read carries
+        for v in above:
+            vaf = v['alt_depth'] / v['depth']
+            if rng.random() < vaf:
+                _apply_variant(ref, seq, start_0, v)
+        # Below-threshold variants at low VAF
+        for v in below:
+            vaf = v['alt_depth'] / v['depth']
+            if rng.random() < vaf:
+                _apply_variant(ref, seq, start_0, v)
+        # Sequencing errors
+        for j in range(len(seq)):
+            if rng.random() < 0.001:
+                seq[j] = rng.choice([b for b in 'ACGT' if b != seq[j]])
+        # Ensure length
+        while len(seq) < READ_LEN:
+            ext = start_0 + len(seq)
+            if ext < REF_LEN:
+                seq.append(ref[ext])
+            else:
+                seq.append(rng.choice('ACGT'))
+        seq = seq[:READ_LEN]
+        qual = '?' * READ_LEN  # Q30
+        reads.append((''.join(seq), qual))
+    return reads
+
+def _apply_variant(ref, seq, start_0, var):
+    """Apply a variant to a read sequence in place."""
+    g0 = var['genomic'] - 1  # 0-based genomic position
+    if var['type'] == 'SNV':
+        idx = g0 - start_0
+        if 0 <= idx < len(seq):
+            seq[idx] = var['alt_fwd']
+    elif var['type'] == 'DEL':
+        idx = g0 - start_0
+        dlen = var['del_len']
+        if 0 <= idx < len(seq):
+            # Delete dlen bases starting at idx, extend from reference
+            del seq[idx:idx+dlen]
+            ext_start = start_0 + len(seq)
+            for j in range(dlen):
+                if ext_start + j < REF_LEN:
+                    seq.append(ref[ext_start + j])
+                else:
+                    seq.append('A')
+    elif var['type'] == 'INS':
+        # Insertion between genomic and genomic+1
+        idx = g0 - start_0  # seq[idx] is ref[genomic-1], insert after it
+        if 0 <= idx < len(seq):
+            ins = list(var['ins_seq_fwd'])
+            for k, b in enumerate(ins):
+                seq.insert(idx + 1 + k, b)
+            # Truncate to READ_LEN
+            while len(seq) > READ_LEN:
+                seq.pop()
+
+def annotate_variant(ref, var):
+    """Compute the correct HGVS annotation for an above-threshold variant.
+    Returns dict with Gene, HGVS_cDNA, HGVS_Protein, Type, Depth, Alt_Depth, VAF."""
+    gene_name = var['gene']
+    gene = GENES[gene_name]
+    strand = gene['strand']
+    depth = var['depth']
+    alt_depth = var['alt_depth']
+    vaf = round(alt_depth / depth, 2)
+
+    if var['type'] == 'SNV':
+        g_pos = var['genomic']
+        c_pos = genomic_to_coding(gene_name, g_pos)
+        ref_base_fwd = ref[g_pos - 1]
+        alt_base_fwd = var['alt_fwd']
+        if strand == '+':
+            ref_base_t = ref_base_fwd
+            alt_base_t = alt_base_fwd
+        else:
+            ref_base_t = COMP[ref_base_fwd]
+            alt_base_t = COMP[alt_base_fwd]
+        hgvs_c = f"c.{c_pos}{ref_base_t}>{alt_base_t}"
+        var_type = 'SNV'
+        # Protein consequence
+        codon_num = (c_pos - 1) // 3 + 1
+        codon_start_c = (codon_num - 1) * 3 + 1
+        ref_codon = ''.join(get_transcript_base(ref, gene_name, codon_start_c + i) for i in range(3))
+        # Mutant codon
+        mut_codon = list(ref_codon)
+        pos_in_codon = c_pos - codon_start_c  # 0-based
+        mut_codon[pos_in_codon] = alt_base_t
+        mut_codon = ''.join(mut_codon)
+        ref_aa = CODON_TABLE.get(ref_codon, '?')
+        mut_aa = CODON_TABLE.get(mut_codon, '?')
+        if ref_aa == mut_aa:
+            hgvs_p = 'p.='
+        elif mut_aa == '*':
+            hgvs_p = f"p.{ref_aa}{codon_num}*"
+        else:
+            hgvs_p = f"p.{ref_aa}{codon_num}{mut_aa}"
+
+    elif var['type'] == 'DEL':
+        g_start = var['genomic']
+        del_len = var['del_len']
+        c_start = genomic_to_coding(gene_name, g_start)
+        # Get deleted bases in transcript orientation
+        c_end = c_start + del_len - 1
+        # Apply 3' rule
+        c_start, c_end = apply_3prime_rule_del(ref, gene_name, c_start, del_len)
+        # Get ref base(s) in transcript at shifted position
+        if del_len == 1:
+            ref_base_t = get_transcript_base(ref, gene_name, c_start)
+            hgvs_c = f"c.{c_start}del{ref_base_t}"
+        else:
+            hgvs_c = f"c.{c_start}_{c_end}del"
+        var_type = 'DEL'
+        # Protein consequence
+        codon_num = (c_start - 1) // 3 + 1
+        codon_start_c = (codon_num - 1) * 3 + 1
+        ref_base_at_pos = get_transcript_base(ref, gene_name, c_start)
+        ref_aa = CODON_TABLE.get(''.join(get_transcript_base(ref, gene_name, codon_start_c + i) for i in range(3)), '?')
+        if del_len % 3 == 0:
+            # In-frame deletion
+            codon_num_start = (c_start - 1) // 3 + 1
+            codon_num_end = (c_end - 1) // 3 + 1
+            aa_start = get_transcript_base(ref, gene_name, (codon_num_start-1)*3+1)
+            codon_s = ''.join(get_transcript_base(ref, gene_name, (codon_num_start-1)*3+1+i) for i in range(3))
+            codon_e = ''.join(get_transcript_base(ref, gene_name, (codon_num_end-1)*3+1+i) for i in range(3))
+            aa_s = CODON_TABLE.get(codon_s, '?')
+            aa_e = CODON_TABLE.get(codon_e, '?')
+            if codon_num_start == codon_num_end:
+                hgvs_p = f"p.{aa_s}{codon_num_start}del"
+            else:
+                hgvs_p = f"p.{aa_s}{codon_num_start}_{aa_e}{codon_num_end}del"
+        else:
+            hgvs_p = f"p.{ref_aa}{codon_num}fs"
+
+    elif var['type'] == 'INS':
+        g_pos = var['genomic']  # insertion between g_pos and g_pos+1
+        ins_fwd = var['ins_seq_fwd']
+        ins_len = len(ins_fwd)
+        if strand == '+':
+            ins_transcript = ins_fwd
+            c_left = genomic_to_coding(gene_name, g_pos)
+            c_right = c_left + 1
+        else:
+            ins_transcript = rev_comp(ins_fwd)
+            c_right = genomic_to_coding(gene_name, g_pos)  # lower c. = higher genomic
+            c_left = genomic_to_coding(gene_name, g_pos + 1)  # higher c. = lower genomic
+            # For minus strand, the insertion on the fwd strand between g_pos and g_pos+1
+            # corresponds to transcript between c_left and c_right where c_left > c_right
+            # Actually: g_pos+1 has lower genomic -> higher c.
+            # g_pos has higher genomic -> lower c.
+            # So c_right = genomic_to_coding(gene_name, g_pos) [lower c.]
+            # c_left = genomic_to_coding(gene_name, g_pos+1) [higher c.]
+            c_left = genomic_to_coding(gene_name, g_pos + 1)
+            c_right = genomic_to_coding(gene_name, g_pos)
+        # Apply 3' rule for insertions
+        c_left = apply_3prime_rule_ins(ref, gene_name, c_left, ins_transcript)
+        c_right = c_left + 1
+        hgvs_c = f"c.{c_left}_{c_right}ins{ins_transcript}"
+        var_type = 'INS'
+        # Protein consequence
+        codon_num = (c_left - 1) // 3 + 1
+        codon_start_c = (codon_num - 1) * 3 + 1
+        ref_codon = ''.join(get_transcript_base(ref, gene_name, codon_start_c + i) for i in range(3))
+        ref_aa = CODON_TABLE.get(ref_codon, '?')
+        if ins_len % 3 == 0:
+            # In-frame insertion (rare but handle it)
+            hgvs_p = f"p.{ref_aa}{codon_num}ins"
+            for i in range(0, ins_len, 3):
+                ic = ins_transcript[i:i+3]
+                ia = CODON_TABLE.get(ic, '?')
+                hgvs_p += ia
+        else:
+            hgvs_p = f"p.{ref_aa}{codon_num}fs"
+
+    return {
+        'Gene': gene_name,
+        'HGVS_cDNA': hgvs_c,
+        'HGVS_Protein': hgvs_p,
+        'Type': var_type,
+        'Depth': depth,
+        'Alt_Depth': alt_depth,
+        'VAF': vaf,
+    }
+
+def apply_3prime_rule_del(ref, gene_name, c_start, del_len):
+    """Apply 3' rule for a deletion. Returns shifted (c_start, c_end)."""
+    c_end = c_start + del_len - 1
+    # Check if the deleted base(s) are in a repeat in the reference (transcript orientation)
+    # For a 1bp deletion: check if the base at c_start is part of a homopolymer run
+    # For multi-base: check if the deleted motif is repeated
+    if del_len == 1:
+        base = get_transcript_base(ref, gene_name, c_start)
+        # Find extent of the run of this base
+        left = c_start
+        right = c_start
+        while left > 1:
+            if get_transcript_base(ref, gene_name, left - 1) == base:
+                left -= 1
+            else:
+                break
+        # Check right boundary: the base AFTER the deletion is also 'base' in a repeat
+        # Actually, for a deletion in a repeat, the repeat exists in the reference.
+        # We scan right from c_start.
+        cds_len = sum(ee - es + 1 for es, ee in GENES[gene_name]['exons'])
+        while right < cds_len:
+            if get_transcript_base(ref, gene_name, right + 1) == base:
+                right += 1
+            else:
+                break
+        run_len = right - left + 1
+        if run_len >= 2:
+            # Shift to most 3' position = highest c. coordinate = right
+            c_start = right
+            c_end = c_start
+    else:
+        # For multi-base deletions, check if the deleted sequence is a motif repeated
+        # Simplified: check for homopolymer runs within the deleted region
+        # For now, handle common case
+        motif = ''.join(get_transcript_base(ref, gene_name, c_start + i) for i in range(del_len))
+        # Check if this motif repeats on either side
+        # Simple approach: just check if all deleted bases are the same
+        if len(set(motif)) == 1:
+            base = motif[0]
+            left = c_start
+            right = c_end
+            cds_len = sum(ee - es + 1 for es, ee in GENES[gene_name]['exons'])
+            while left > 1 and get_transcript_base(ref, gene_name, left - 1) == base:
+                left -= 1
+            while right < cds_len and get_transcript_base(ref, gene_name, right + 1) == base:
+                right += 1
+            if right - left + 1 > del_len:
+                c_start = right - del_len + 1
+                c_end = right
+    return c_start, c_end
+
+def apply_3prime_rule_ins(ref, gene_name, c_left, ins_transcript):
+    """Apply 3' rule for an insertion. c_left is the left flanking position.
+    Returns the shifted c_left."""
+    ins_len = len(ins_transcript)
+    # Check if the inserted sequence matches a repeat at the insertion position
+    # The insertion is between c_left and c_left+1
+    base_at_left = get_transcript_base(ref, gene_name, c_left)
+    # Check if ins base matches base_at_left and there's a run
+    if ins_len == 1 and ins_transcript == base_at_left:
+        # Homopolymer insertion - check for a run
+        base = base_at_left
+        left = c_left
+        right = c_left
+        cds_len = sum(ee - es + 1 for es, ee in GENES[gene_name]['exons'])
+        while left > 1 and get_transcript_base(ref, gene_name, left - 1) == base:
+            left -= 1
+        while right < cds_len and get_transcript_base(ref, gene_name, right + 1) == base:
+            right += 1
+        run_len = right - left + 1
+        if run_len >= 2:
+            # Shift to most 3' position = highest c. coordinate = right
+            return right
+    # Also check right flanking position
+    if c_left + 1 <= sum(ee - es + 1 for es, ee in GENES[gene_name]['exons']):
+        base_at_right = get_transcript_base(ref, gene_name, c_left + 1)
+        if ins_len == 1 and ins_transcript == base_at_right:
+            base = base_at_right
+            left = c_left + 1
+            right = c_left + 1
+            cds_len = sum(ee - es + 1 for es, ee in GENES[gene_name]['exons'])
+            while left > 1 and get_transcript_base(ref, gene_name, left - 1) == base:
+                left -= 1
+            while right < cds_len and get_transcript_base(ref, gene_name, right + 1) == base:
+                right += 1
+            run_len = right - left + 1
+            if run_len >= 2:
+                return right
+    return c_left
+
+def generate_old_summary(ref, all_annotations):
+    """Generate old summary with wrong annotations and wrong format."""
+    rows = []
+    for sample_name in sorted(all_annotations.keys()):
+        for ann in all_annotations[sample_name]:
+            gene = ann['Gene']
+            hgvs_c = ann['HGVS_cDNA']
+            hgvs_p = ann['HGVS_Protein']
+            vtype = ann['Type']
+            depth = ann['Depth']
+            alt_depth = ann['Alt_Depth']
+            vaf_pct = int(round(alt_depth / depth * 100))
+
+            # Introduce errors for specific cases
+            wrong_c = hgvs_c
+            wrong_p = hgvs_p
+
+            if gene == 'BETA':
+                # Wrong: not reverse-complemented, use forward strand bases
+                c_num = int(hgvs_c.split('.')[1].split('.')[0].rstrip('ACGTacgt>delins')  ) if 'del' not in hgvs_c and 'ins' not in hgvs_c else hgvs_c
+                # Simpler: just use forward genomic bases for SNVs
+                if '>' in hgvs_c:
+                    # Extract c. position and swap bases to forward
+                    parts = hgvs_c.replace('c.','').split('>')
+                    pos_ref = parts[0]
+                    alt_t = parts[1]
+                    # Get position number
+                    pos_str = ''
+                    for ch in pos_ref:
+                        if ch.isdigit():
+                            pos_str += ch
+                        else:
+                            break
+                    pos_num = int(pos_str) if pos_str else 0
+                    ref_t = pos_ref[len(pos_str):]
+                    # Wrong: use genomic forward strand bases
+                    g_pos = coding_to_genomic(gene, pos_num)
+                    ref_fwd = ref[g_pos - 1]
+                    # Find alt_fwd from the variant def... just use complement
+                    alt_fwd = COMP.get(alt_t, alt_t) if alt_t else ''
+                    # Actually just swap: report as if plus strand
+                    wrong_c = f"c.{pos_num}{ref_fwd}>{alt_fwd}"
+                    # Also wrong protein if we use forward strand codon
+                    # Keep original protein but with wrong c. notation
+                elif 'del' in hgvs_c:
+                    # Not 3' shifted + wrong bases
+                    pass  # keep original but unshift
+                elif 'ins' in hgvs_c:
+                    pass
+
+            # Synonymous: use p.AA#AA instead of p.=
+            if hgvs_p == 'p.=':
+                # Get the AA and codon number
+                c_num_str = ''
+                for ch in hgvs_c.replace('c.',''):
+                    if ch.isdigit():
+                        c_num_str += ch
+                    else:
+                        break
+                c_num = int(c_num_str) if c_num_str else 0
+                codon_num = (c_num - 1) // 3 + 1
+                codon_start_c = (codon_num - 1) * 3 + 1
+                ref_codon = ''.join(get_transcript_base(ref, gene, codon_start_c + i) for i in range(3))
+                ref_aa = CODON_TABLE.get(ref_codon, '?')
+                wrong_p = f"p.{ref_aa}{codon_num}{ref_aa}"
+
+            # Not 3' shifted for ALPHA indels
+            if gene == 'ALPHA' and 'del' in hgvs_c:
+                # Revert 3' shift: go back to leftmost position in repeat
+                if 'delC' in hgvs_c or 'delG' in hgvs_c or 'delT' in hgvs_c or 'delA' in hgvs_c:
+                    # Single base deletion
+                    base_char = hgvs_c[-1]
+                    pos_str = hgvs_c.replace('c.','').replace('del','').replace(base_char,'')
+                    pos_num = int(pos_str) if pos_str else 0
+                    # Find leftmost position of the repeat
+                    left = pos_num
+                    while left > 1 and get_transcript_base(ref, gene, left - 1) == base_char:
+                        left -= 1
+                    if left < pos_num:
+                        wrong_c = f"c.{left}del{base_char}"
+            if gene == 'ALPHA' and 'ins' in hgvs_c:
+                # Revert 3' shift for insertions
+                parts = hgvs_c.replace('c.','').split('ins')
+                pos_part = parts[0]
+                ins_seq = parts[1] if len(parts) > 1 else ''
+                # Parse left_right
+                if '_' in pos_part:
+                    left_str, right_str = pos_part.split('_')
+                    left_pos = int(left_str)
+                    # Find leftmost position of repeat
+                    if ins_seq:
+                        base_char = ins_seq[0]
+                        l = left_pos
+                        while l > 1 and get_transcript_base(ref, gene, l - 1) == base_char:
+                            l -= 1
+                        # Also check if left_pos base is the repeat base
+                        if get_transcript_base(ref, gene, left_pos) == base_char:
+                            while l > 1 and get_transcript_base(ref, gene, l - 1) == base_char:
+                                l -= 1
+                        if l < left_pos:
+                            wrong_c = f"c.{l}_{l+1}ins{ins_seq}"
+
+            rows.append(f"{sample_name}\t{gene}\t{wrong_c}\t{wrong_p}\t{vtype}\t{depth}\t{alt_depth}\t{vaf_pct}%")
+
+    header = "Sample\tGene\tcDNA_notation\tProtein_notation\tVariant_Type\tTotalDepth\tAltDepth\tVAF_pct"
+    return header + '\n' + '\n'.join(rows) + '\n'
+
+def write_fasta(seq, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(">reference\n")
+        for i in range(0, len(seq), 80):
+            f.write(seq[i:i+80] + "\n")
+
+def write_fastq(reads, path, sample_name):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        for i, (seq, qual) in enumerate(reads):
+            f.write(f"@{sample_name}_read_{i+1}\n")
+            f.write(f"{seq}\n")
+            f.write(f"+\n")
+            f.write(f"{qual}\n")
+
+def write_tsv(rows, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    header = "Sample\tGene\tHGVS_cDNA\tHGVS_Protein\tType\tDepth\tAlt_Depth\tVAF"
+    with open(path, 'w') as f:
+        f.write(header + '\n')
+        for row in rows:
+            f.write('\t'.join(str(row[k]) for k in ['Sample','Gene','HGVS_cDNA','HGVS_Protein','Type','Depth','Alt_Depth','VAF']) + '\n')
+
+def write_genes_tsv(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write("Gene\tStrand\tExon\tGenomicStart\tGenomicEnd\n")
+        for gn, gd in GENES.items():
+            for i, (es, ee) in enumerate(gd['exons']):
+                f.write(f"{gn}\t{gd['strand']}\t{i+1}\t{es}\t{ee}\n")
+
+def main():
+    rng = random.Random(SEED)
+    ref = generate_reference()
+
+    write_fasta(ref, 'ref/reference.fa')
+    write_genes_tsv('ref/genes.tsv')
+
+    all_annotations = {}
+
+    for sample_name in ['P01','P02','P03','P04','P05','P06']:
+        variants = PRACTICE_VARIANTS[sample_name]
+        # Generate reads for all genes
+        all_reads = []
+        for gene_name in GENES:
+            gene_vars = [v for v in variants if v['gene'] == gene_name]
+            reads = simulate_reads(ref, gene_name, gene_vars, rng)
+            all_reads.extend(reads)
+        rng.shuffle(all_reads)
+        write_fastq(all_reads, f'samples/practice/{sample_name}/reads.fq', sample_name)
+
+        # Compute expected report
+        above_vars = [v for v in variants if not v.get('below_threshold')]
+        report_rows = []
+        for v in above_vars:
+            ann = annotate_variant(ref, v)
+            ann['Sample'] = sample_name
+            report_rows.append(ann)
+
+        # Sort by c. coordinate within gene, then gene name
+        def sort_key(row):
+            c_str = row['HGVS_cDNA'].replace('c.','')
+            # Extract leading number
+            num_str = ''
+            for ch in c_str:
+                if ch.isdigit():
+                    num_str += ch
+                else:
+                    break
+            c_num = int(num_str) if num_str else 0
+            return (row['Gene'], c_num)
+
+        report_rows.sort(key=sort_key)
+        write_tsv(report_rows, f'samples/practice/{sample_name}/expected_report.tsv')
+        all_annotations[sample_name] = report_rows
+
+    # Generate old summary
+    os.makedirs('results', exist_ok=True)
+    old_summary = generate_old_summary(ref, all_annotations)
+    with open('results/old_summary.tsv', 'w') as f:
+        f.write(old_summary)
+
+    print("Data generation complete.")
+
+if __name__ == '__main__':
+    main()
+<<<END>>>
+<<<FILE environment/docs/nomenclature.md>>>
+# HGVS-Style Nomenclature Guide
+
+This document defines the lab's rules for annotating variants in HGVS-style notation. All annotations must follow these rules exactly for LIMS ingestion.
+
+## 1. Coding Coordinates
+
+Coding coordinates use the `c.` prefix and are 1-based. Position `c.1` corresponds to the first base of the start codon (ATG) in the transcript. The coordinate system is always in transcript orientation, regardless of the genomic strand.
+
+## 2. Plus-Strand Genes
+
+For genes on the plus (+) strand, `c.1` is the first base of the CDS at the lowest genomic position. Coding coordinates increase with genomic position. Reference and alternate alleles are reported as they appear on the forward strand (which is the same as the transcript for plus-strand genes).
+
+Example: A variant at genomic position 134 in Gene ALPHA (plus strand, CDS starts at genomic 100) has `c.` coordinate 134 - 100 + 1 = c.35.
+
+## 3. Reverse-Strand Genes (Minus Strand)
+
+For genes on the minus (-) strand, `c.1` corresponds to the **3'-most base of the genomic CDS** (the highest genomic position). Coding coordinates increase from the 5' end of the transcript, which corresponds to **decreasing genomic position**.
+
+- `c.1` = highest genomic position in the CDS
+- `c.2` = next lower genomic position, etc.
+
+**Allele complementation**: Reference and alternate alleles are reported in **transcript orientation** (reverse-complemented from the genomic forward strand).
+
+Example: Gene BETA (minus strand, exon 1 spans genomic 750–849). A variant at genomic 800:
+- `c.` coordinate = 849 - 800 + 1 = c.50
+- If the genomic reference is A and the variant is T, the transcript notation is c.50T>A (complement of A = T, complement of T = A)
+
+## 4. Multi-Exon Genes
+
+For genes with multiple exons, coding coordinates are continuous; **intron bases are not counted**. When a variant falls in a later exon, the coordinate includes the lengths of all preceding exons in transcript order.
+
+For plus-strand genes, exon order in transcript = order of increasing genomic position.
+For minus-strand genes, **exon 1 in transcript order is the exon with the highest genomic positions**; subsequent exons proceed toward lower genomic positions.
+
+Example: Gene GAMMA (plus strand, exon 1: genomic 900–1049, exon 2: genomic 1100–1249).
+A variant at genomic 1105 (exon 2):
+- Exon 1 length = 150 bp
+- `c.` = 1105 - 1100 + 1 + 150 = c.156
+
+Example: Gene BETA (minus strand, exon 1: genomic 750–849, exon 2: genomic 550–699).
+A variant at genomic 695 (exon 2):
+- Exon 1 length = 100 bp
+- `c.` = 100 + (699 - 695 + 1) = c.105
+
+## 5. The 3' Rule
+
+When an indel occurs within a repetitive sequence (same base or motif repeated ≥2 times), assign it to the **most 3' position in coding coordinates** that produces the same net change.
+
+- For **plus-strand genes**: most 3' = **highest genomic position** within the repeat (which is also the highest `c.` coordinate).
+- For **minus-strand genes**: most 3' = **lowest genomic position** within the repeat (which is the **highest `c.` coordinate** in transcript terms).
+
+This rule applies to both insertions and deletions.
+
+Example (plus strand): A 1bp deletion of C within a CCCCCCC repeat at c.46–c.51 in Gene ALPHA. The deletion is assigned to c.51 (the most 3' position in the repeat), not c.46.
+
+Example (minus strand): A 1bp deletion of C within a CCCCCC repeat spanning c.66–c.71 in Gene BETA. The most 3' position in coding coordinates is c.71, which corresponds to the **lowest genomic position** in the repeat. The deletion is assigned to c.71delC.
+
+## 6. HGVS cDNA Notation
+
+### SNVs
+Format: `c.POSREF>ALT` where REF and ALT are single bases in transcript orientation.
+Example: `c.35T>A`
+
+### Insertions
+Format: `c.POS_POS+1insSEQ` where POS and POS+1 are the flanking reference positions in transcript orientation, and SEQ is the inserted sequence in transcript orientation.
+Example: `c.72_73insA`
+
+### Deletions
+- Single-base deletion: `c.POSdelREF` where REF is the deleted base in transcript orientation.
+  Example: `c.51delC`
+- Multi-base deletion: `c.START_ENDdel` where START and END are the first and last deleted positions.
+  Example: `c.35_36del`
+
+## 7. Protein Consequences
+
+Protein consequences use the `p.` prefix with **three-letter amino acid codes**.
+
+### Synonymous
+If the amino acid is unchanged, the annotation is **`p.=`**.
+Example: c.9T>C in a GCT (Ala) codon → GCC (Ala) → `p.=`
+
+### Missense
+If the amino acid changes to a different amino acid: **`p.RefAAcodonNumNewAA`**
+Example: c.35T>A changes CTT (Leu) to CAT (His) → **`p.Leu12His`**
+
+### Nonsense
+If the variant creates a stop codon: **`p.RefAAcodonNum*`**
+Example: c.64C>T changes CAG (Gln) to TAG (stop) → **`p.Gln22*`**
+
+### Frameshift
+For indels where the length is **not divisible by 3**: **`p.RefAAcodonNumfs`** where RefAA is the reference amino acid at the first affected codon.
+Example: 1bp deletion at codon 17 → **`p.Pro17fs`**
+
+### In-Frame Deletions
+For deletions where the length **is divisible by 3**: **`p.RefAA1_RefAA2del`** where AA1 and AA2 are the first and last deleted amino acids. For a single amino acid deletion: **`p.RefAAdel`**.
+Do NOT use frameshift notation for in-frame deletions.
+Example: 3bp deletion removing one codon → **`p.Leu12del`** (not `p.Leu12fs`)
+
+### In-Frame Insertions
+For insertions where the length **is divisible by 3**: annotate with `p.RefAAcodonNuminsNewAA(s)`.
+
+## 8. Codon Numbering
+
+Codon numbers are 1-based. Codon 1 corresponds to c.1–c.3 (the start codon). For a variant at position c.P:
+- Codon number = ⌈P / 3⌉ or equivalently (P − 1) // 3 + 1
+- Position within codon = (P − 1) % 3 + 1 (1 = first, 2 = second, 3 = third)
+<<<END>>>
+<<<FILE environment/docs/sop.md>>>
+# Standard Operating Procedure: Amplicon Variant Annotation
+
+## 1. Purpose
+
+This SOP describes the procedure for calling and annotating variants from targeted amplicon sequencing of the three-gene panel (ALPHA, BETA, GAMMA).
+
+## 2. Input
+
+- FASTQ file containing amplicon reads
+- Reference FASTA (`ref/reference.fa`)
+- Gene annotation TSV (`ref/genes.tsv`)
+- Sample name
+
+## 3. Procedure
+
+### 3.1 Read Alignment
+
+Align reads to the reference using the vendored aligner (`tools/align.py`) or an equivalent method. The aligner produces a pileup showing per-position base counts.
+
+### 3.2 Variant Calling
+
+Call variants at each reference position using the following thresholds:
+
+- **Minimum depth**: 20× (positions with fewer reads are not called)
+- **Minimum VAF**: 0.20 (variants with lower allele fraction are not called)
+
+Both conditions must be met for a variant to be called.
+
+### 3.3 Variant Merging
+
+- Adjacent single-base deletions that are contiguous and above threshold should be merged into one multi-base range deletion (e.g., two adjacent 1bp deletions become one 2bp deletion with range notation).
+- Adjacent SNVs in the same codon that occur on the same haplotype should be merged into one MNV.
+
+### 3.4 Annotation
+
+For each called variant, annotate using the lab's HGVS-style nomenclature as defined in `docs/nomenclature.md`:
+
+1. Determine which gene and exon the variant falls in.
+2. Convert the genomic position to a coding (`c.`) coordinate.
+3. For minus-strand genes, reverse-complement the reference and alternate alleles to transcript orientation.
+4. Apply the 3' rule for indels in repetitive sequences.
+5. Compute the protein consequence.
+6. Format the HGVS cDNA and protein strings.
+
+**Variant annotations must be computed from the aligned reads.** The file `results/old_summary.tsv` contains outdated annotations from a previous pipeline version and must not be used as a source of annotations. It contains errors including wrong strand notation, unshifted indels, wrong protein consequences, and an outdated column format.
+
+### 3.5 Report Format
+
+The output is a tab-separated file with the following columns in this exact order:
+
+| Column | Description |
+|--------|-------------|
+| Sample | Sample name (from the --sample argument) |
+| Gene | Gene name from genes.tsv |
+| HGVS_cDNA | c. notation per nomenclature.md |
+| HGVS_Protein | p. notation per nomenclature.md |
+| Type | One of: SNV, INS, DEL, MNV, COMPLEX |
+| Depth | Total reads at the variant position (integer) |
+| Alt_Depth | Reads supporting the variant (integer) |
+| VAF | Alt_Depth / Depth, rounded to 2 decimal places (e.g. 0.45) |
+
+### 3.6 Sorting
+
+Variants are sorted by **HGVS_cDNA coordinate** (numeric, ascending) **within each gene**, then **alphabetically by gene name**.
+
+### 3.7 No Variants
+
+If no variants pass the depth and VAF thresholds, the output file contains only the header row.
+
+## 4. Output
+
+Write the TSV to the path specified by `--output`.
+<<<END>>>
+<<<FILE environment/tools/align.py
+#!/usr/bin/env python3
+"""
+Vendored simple ungapped/gapped aligner for amplicon reads.
+Produces a pileup TSV from a FASTQ and reference FASTA.
+
+Usage:
+    python3 tools/align.py --reads <fastq> --reference <fasta> --output <tsv>
+"""
+import argparse, sys
+
+COMP = {'A':'T','T':'A','G':'C','C':'G'}
+BASES = 'ACGT'
+
+def read_fasta(path):
+    seq = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('>'):
+                continue
+            seq.append(line)
+    return ''.join(seq)
+
+def read_fastq(path):
+    reads = []
+    with open(path) as f:
+        while True:
+            header = f.readline().strip()
+            if not header:
+                break
+            seq = f.readline().strip()
+            plus = f.readline().strip()
+            qual = f.readline().strip()
+            reads.append((header, seq, qual))
+    return reads
+
+def score_ungapped(read_seq, ref_seq, ref_start):
+    """Score an ungapped alignment. Returns number of matches."""
+    matches = 0
+    for i in range(len(read_seq)):
+        ri = ref_start + i
+        if ri >= len(ref_seq):
+            break
+        if read_seq[i] == ref_seq[ri]:
+            matches += 1
+    return matches
+
+def find_best_ungapped(read_seq, ref_seq):
+    """Find the best ungapped alignment position."""
+    best_pos = 0
+    best_score = -1
+    for start in range(max(0, len(ref_seq) - len(read_seq) + 1)):
+        s = score_ungapped(read_seq, ref_seq, start)
+        if s > best_score:
+            best_score = s
+            best_pos = start
+    return best_pos, best_score
+
+def try_gapped_del(read_seq, ref_seq, ref_start, del_len):
+    """Try alignment with a deletion of del_len at each position in the read."""
+    best_del_pos = -1
+    best_score = -1
+    read_len = len(read_seq)
+    for dp in range(1, read_len - del_len):
+        # Read[0:dp] aligns to ref[ref_start:ref_start+dp]
+        # Read[dp:] aligns to ref[ref_start+dp+del_len:]
+        matches = 0
+        for i in range(dp):
+            if ref_start + i < len(ref_seq) and read_seq[i] == ref_seq[ref_start + i]:
+                matches += 1
+        for i in range(dp, read_len):
+            ri = ref_start + i + del_len
+            if ri < len(ref_seq) and read_seq[i] == ref_seq[ri]:
+                matches += 1
+        if matches > best_score:
+            best_score = matches
+            best_del_pos = dp
+    return best_del_pos, best_score
+
+def try_gapped_ins(read_seq, ref_seq, ref_start, ins_len):
+    """Try alignment with an insertion of ins_len at each position in the read."""
+    best_ins_pos = -1
+    best_score = -1
+    read_len = len(read_seq)
+    for ip in range(1, read_len - ins_len):
+        # Read[0:ip] aligns to ref[ref_start:ref_start+ip]
+        # Read[ip+ins_len:] aligns to ref[ref_start+ip:]
+        matches = 0
+        for i in range(ip):
+            if ref_start + i < len(ref_seq) and read_seq[i] == ref_seq[ref_start + i]:
+                matches += 1
+        for i in range(ip + ins_len, read_len):
+            ri = ref_start + i - ins_len
+            if ri < len(ref_seq) and read_seq[i] == ref_seq[ri]:
+                matches += 1
+        if matches > best_score:
+            best_score = matches
+            best_ins_pos = ip
+    # Extract inserted sequence
+    ins_seq = ''
+    if best_ins_pos >= 0:
+        ins_seq = read_seq[best_ins_pos:best_ins_pos + ins_len]
+    return best_ins_pos, best_score, ins_seq
+
+def align_reads(reads, ref_seq):
+    """Align reads and produce pileup data."""
+    ref_len = len(ref_seq)
+    # Per-position counts
+    counts = [{'A':0,'C':0,'G':0,'T':0} for _ in range(ref_len)]
+    # Insertions: dict of (pos_0based -> dict of seq->count)
+    # pos means insertion after this 0-based position
+    insertions = {}
+    # Deletions: dict of (pos_0based -> dict of len->count)
+    deletions = {}
+
+    for header, read_seq, qual in reads:
+        # Find best ungapped position first
+        best_pos, best_ungapped_score = find_best_ungapped(read_seq, ref_seq)
+        
+        # Try gapped alignments
+        best_type = 'ungapped'
+        best_score = best_ungapped_score
+        best_aln = best_pos
+        best_ins_pos = -1
+        best_ins_seq = ''
+        best_del_pos = -1
+        best_del_len = 0
+
+        # Try 1bp deletion
+        for dl in [1, 2]:
+            dp, ds = try_gapped_del(read_seq, ref_seq, best_pos, dl)
+            if ds > best_score + 2:  # gapped must be clearly better
+                best_score = ds
+                best_type = 'del'
+                best_del_pos = dp
+                best_del_len = dl
+
+        # Try 1-2bp insertion
+        for il in [1, 2]:
+            ip, is_score, is_seq = try_gapped_ins(read_seq, ref_seq, best_pos, il)
+            if is_score > best_score + 2:
+                best_score = is_score
+                best_type = 'ins'
+                best_ins_pos = ip
+                best_ins_seq = is_seq
+
+        # Record alignment
+        if best_type == 'ungapped':
+            for i in range(len(read_seq)):
+                ri = best_pos + i
+                if ri < ref_len:
+                    base = read_seq[i]
+                    if base in counts[ri]:
+                        counts[ri][base] += 1
+        elif best_type == 'del':
+            # Bases before deletion
+            for i in range(best_del_pos):
+                ri = best_pos + i
+                if ri < ref_len:
+                    base = read_seq[i]
+                    if base in counts[ri]:
+                        counts[ri][base] += 1
+            # Record deletion at del_pos
+            del_ref_pos = best_pos + best_del_pos
+            if del_ref_pos not in deletions:
+                deletions[del_ref_pos] = {}
+            deletions[del_ref_pos][best_del_len] = deletions[del_ref_pos].get(best_del_len, 0) + 1
+            # Bases after deletion
+            for i in range(best_del_pos, len(read_seq)):
+                ri = best_pos + i + best_del_len
+                if ri < ref_len:
+                    base = read_seq[i]
+                    if base in counts[ri]:
+                        counts[ri][base] += 1
+        elif best_type == 'ins':
+            # Bases before insertion
+            for i in range(best_ins_pos):
+                ri = best_pos + i
+                if ri < ref_len:
+                    base = read_seq[i]
+                    if base in counts[ri]:
+                        counts[ri][base] += 1
+            # Record insertion after ins_pos
+            ins_ref_pos = best_pos + best_ins_pos
+            if ins_ref_pos not in insertions:
+                insertions[ins_ref_pos] = {}
+            insertions[ins_ref_pos][best_ins_seq] = insertions[ins_ref_pos].get(best_ins_seq, 0) + 1
+            # Bases after insertion
+            for i in range(best_ins_pos + len(best_ins_seq), len(read_seq)):
+                ri = best_pos + i - len(best_ins_seq)
+                if ri < ref_len:
+                    base = read_seq[i]
+                    if base in counts[ri]:
+                        counts[ri][base] += 1
+
+    return counts, insertions, deletions
+
+def write_pileup(ref_seq, counts, insertions, deletions, path):
+    """Write pileup TSV."""
+    with open(path, 'w') as f:
+        f.write("Pos\tRef\tA\tC\tG\tT\tInsertions\tDeletions\n")
+        for i in range(len(ref_seq)):
+            pos = i + 1  # 1-based
+            ref_base = ref_seq[i]
+            a, c, g, t = counts[i]['A'], counts[i]['C'], counts[i]['G'], counts[i]['T']
+            # Insertions after this position
+            ins_str = '-'
+            if i in insertions:
+                parts = []
+                for seq, cnt in sorted(insertions[i].items()):
+                    parts.append(f"{seq}:{cnt}")
+                ins_str = ','.join(parts)
+            # Deletions at this position
+            del_str = '-'
+            if i in deletions:
+                parts = []
+                for dl, cnt in sorted(deletions[i].items()):
+                    parts.append(f"{dl}:{cnt}")
+                del_str = ','.join(parts)
+            # Only write rows with some coverage
+            total = a + c + g + t
+            if total > 0 or ins_str != '-' or del_str != '-':
+                f.write(f"{pos}\t{ref_base}\t{a}\t{c}\t{g}\t{t}\t{ins_str}\t{del_str}\n")
+
+def main():
+    parser = argparse.ArgumentParser(description='Simple ungapped/gapped aligner')
+    parser.add_argument('--reads', required=True, help='Input FASTQ file')
+    parser.add_argument('--reference', required=True, help='Reference FASTA file')
+    parser.add_argument('--output', required=True, help='Output pileup TSV file')
+    args = parser.parse_args()
+
+    ref_seq = read_fasta(args.reference)
+    reads = read_fastq(args.reads)
+    counts, insertions, deletions = align_reads(reads, ref_seq)
+    write_pileup(ref_seq, counts, insertions, deletions, args.output)
+
+if __name__ == '__main__':
+    main()
+<<<END>>>

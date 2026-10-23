@@ -1,0 +1,933 @@
+<<<MANIFEST>>>
+environment/route.h
+environment/route.c
+environment/main.c
+environment/Makefile
+environment/README.md
+environment/run_tests.sh
+environment/scripts/gen_benchmark.py
+environment/scripts/ref_route.c
+environment/scripts/generate.sh
+<<<END>>>
+<<<FILE environment/route.h>>>
+#ifndef ROUTE_H
+#define ROUTE_H
+
+/*
+ * SpeedyDeliver Route Library — Public API
+ *
+ * This library computes shortest routes in a directed graph with
+ * non-negative integer edge weights (including zero).
+ *
+ * Tie-breaking rule
+ * -----------------
+ * Among equal-cost routes, the one whose node-id sequence is
+ * lexicographically smallest is returned.  Comparison is element-by-
+ * element from the source; a shorter sequence that is a prefix of a
+ * longer one is considered smaller.
+ *
+ *   Example: path [0, 1, 3]  vs  path [0, 1, 2, 3]
+ *     At position 2 the first has 3, the second has 2; 2 < 3,
+ *     so [0, 1, 2, 3] is lexicographically smaller.
+ *
+ * Relaxation counter
+ * ------------------
+ * route_relaxations() returns the number of *distance-value*
+ * comparisons performed during the most recent route_find() call.
+ *
+ * A distance-value comparison is any comparison where at least one
+ * operand is a node's current shortest-path distance estimate.
+ * Comparisons of node identifiers, array indices, or path arrays
+ * for tie-breaking are NOT counted.
+ *
+ *   Examples of counted comparisons:
+ *     - dist[i] < current_min   (scan in O(V²) Dijkstra)
+ *     - dist[u] + w < dist[v]   (edge relaxation)
+ *     - dist[u] + w == dist[v]  (equal-cost edge check)
+ *     - heap-key comparisons where the key is a distance value
+ *       (sift-up / sift-down in a binary-heap Dijkstra)
+ *
+ *   Examples of NOT counted comparisons:
+ *     - node-id tie-breaking in the heap key
+ *     - lexicographic path comparisons for tie-breaking
+ *     - array-index bounds checks
+ */
+
+typedef struct RouteGraph RouteGraph;
+
+/* Load a graph from a text file.
+ * Format: first line "V E", then E lines "u v w".
+ * Node ids are 0 .. V-1.  Weights are non-negative integers.
+ * Returns NULL on error. */
+RouteGraph* route_load(const char* filename);
+
+/* Free a graph loaded by route_load. */
+void route_free(RouteGraph* g);
+
+/* Find the shortest path from src to dst.
+ *
+ * On success returns 0; *out_path is set to a malloc'd array of
+ * node ids and *out_len to its length.  Caller must free *out_path.
+ *
+ * If dst is unreachable from src, returns -1 and sets *out_path to
+ * NULL and *out_len to 0.
+ *
+ * Among equal-cost routes the lexicographically smallest node-id
+ * sequence is returned (see above). */
+int route_find(RouteGraph* g, int src, int dst,
+               int** out_path, int* out_len);
+
+/* Return the number of distance-value comparisons from the most
+ * recent route_find() call (see definition above). */
+long route_relaxations(void);
+
+/* Return the total cost of the most recent successful route_find()
+ * call.  Value is undefined after an unsuccessful call. */
+long route_last_cost(void);
+
+#endif /* ROUTE_H */
+<<<END>>>
+<<<FILE environment/route.c>>>
+#include "route.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
+/* ------------------------------------------------------------------ */
+/*  Internal edge representation (singly-linked adjacency list)        */
+/* ------------------------------------------------------------------ */
+
+typedef struct Edge {
+    int          to;
+    long         weight;
+    struct Edge* next;
+} Edge;
+
+/* ------------------------------------------------------------------ */
+/*  RouteGraph definition                                             */
+/* ------------------------------------------------------------------ */
+
+struct RouteGraph {
+    int    num_nodes;
+    Edge** adj;          /* adj[u] -> linked list of edges from u       */
+};
+
+/* ------------------------------------------------------------------ */
+/*  Module-level state for the counter / last-cost                     */
+/* ------------------------------------------------------------------ */
+
+static long g_relaxations = 0;
+static long g_last_cost   = 0;
+
+/* ------------------------------------------------------------------ */
+/*  route_load                                                         */
+/* ------------------------------------------------------------------ */
+
+RouteGraph* route_load(const char* filename)
+{
+    FILE* f = fopen(filename, "r");
+    if (!f) return NULL;
+
+    int V, E;
+    if (fscanf(f, "%d %d", &V, &E) != 2) { fclose(f); return NULL; }
+    if (V < 0 || E < 0) { fclose(f); return NULL; }
+
+    RouteGraph* g = (RouteGraph*)malloc(sizeof(RouteGraph));
+    if (!g) { fclose(f); return NULL; }
+    g->num_nodes = V;
+    g->adj = (Edge**)calloc((size_t)V, sizeof(Edge*));
+    if (!g->adj) { free(g); fclose(f); return NULL; }
+
+    for (int i = 0; i < E; i++) {
+        int u, v;
+        long w;
+        if (fscanf(f, "%d %d %ld", &u, &v, &w) != 3) break;
+        if (u < 0 || u >= V || v < 0 || v >= V || w < 0) continue;
+
+        Edge* e = (Edge*)malloc(sizeof(Edge));
+        if (!e) break;
+        e->to     = v;
+        e->weight = w;
+        e->next   = g->adj[u];
+        g->adj[u] = e;
+    }
+
+    fclose(f);
+    return g;
+}
+
+/* ------------------------------------------------------------------ */
+/*  route_free                                                         */
+/* ------------------------------------------------------------------ */
+
+void route_free(RouteGraph* g)
+{
+    if (!g) return;
+    for (int i = 0; i < g->num_nodes; i++) {
+        Edge* e = g->adj[i];
+        while (e) {
+            Edge* nxt = e->next;
+            free(e);
+            e = nxt;
+        }
+    }
+    free(g->adj);
+    free(g);
+}
+
+/* ------------------------------------------------------------------ */
+/*  route_find  (STUB — to be implemented)                            */
+/*                                                                     */
+/*  The original O(V²) Dijkstra was removed for performance work.      */
+/*  Replace this stub with a fast implementation that:                 */
+/*    • uses a binary min-heap (or better) keyed by distance           */
+/*    • among equal-cost routes returns the lexicographically smallest */
+/*      node-id sequence  (see route.h for the full rule)              */
+/*    • does NOT terminate early when dst is extracted — zero-weight   */
+/*      edges from later-processed nodes can yield a lex-smaller       */
+/*      equal-cost path                                                */
+/*    • counts only distance-value comparisons (route.h)               */
+/* ------------------------------------------------------------------ */
+
+int route_find(RouteGraph* g, int src, int dst,
+               int** out_path, int* out_len)
+{
+    (void)g; (void)src; (void)dst;
+    g_relaxations = 0;
+    g_last_cost   = 0;
+
+    *out_path = NULL;
+    *out_len  = 0;
+    return -1;   /* always "unreachable" until implemented */
+}
+
+/* ------------------------------------------------------------------ */
+/*  route_relaxations / route_last_cost                                */
+/* ------------------------------------------------------------------ */
+
+long route_relaxations(void) { return g_relaxations; }
+long route_last_cost(void)   { return g_last_cost;   }
+<<<END>>>
+<<<FILE environment/main.c>>>
+#include "route.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char** argv)
+{
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s GRAPH_FILE SRC DST\n", argv[0]);
+        return 2;
+    }
+
+    RouteGraph* g = route_load(argv[1]);
+    if (!g) {
+        fprintf(stderr, "Failed to load graph: %s\n", argv[1]);
+        return 2;
+    }
+
+    int src = atoi(argv[2]);
+    int dst = atoi(argv[3]);
+
+    int* path    = NULL;
+    int  path_len = 0;
+
+    int result = route_find(g, src, dst, &path, &path_len);
+
+    if (result != 0) {
+        printf("unreachable\n");
+        free(path);
+        route_free(g);
+        return 1;
+    }
+
+    for (int i = 0; i < path_len; i++) {
+        if (i > 0) printf(" ");
+        printf("%d", path[i]);
+    }
+    printf(" %ld\n", route_last_cost());
+
+    free(path);
+    route_free(g);
+    return 0;
+}
+<<<END>>>
+<<<FILE environment/Makefile>>>
+CC      = gcc
+CFLAGS  = -O2 -Wall -Wextra -std=c11
+LDFLAGS =
+
+route: main.o route.o
+	$(CC) $(LDFLAGS) -o $@ $^
+
+main.o: main.c route.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+route.o: route.c route.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f *.o route
+
+.PHONY: clean
+<<<END>>>
+<<<FILE environment/README.md>>>
+# SpeedyDeliver Route Library
+
+A C library for computing shortest routes in directed graphs with
+non-negative integer edge weights (including zero).
+
+## Building
+
+```sh
+make
+```
+
+This produces the `route` executable.
+
+## Usage
+
+```sh
+./route GRAPH_FILE SRC DST
+```
+
+- `GRAPH_FILE`: path to a graph text file
+- `SRC`: source node id (integer, 0-based)
+- `DST`: destination node id (integer, 0-based)
+
+### Output
+
+- **Reachable**: the node ids of the shortest route, space-separated,
+  followed by a single space and the total cost as a decimal integer,
+  followed by a newline.  Exit code 0.
+
+  Example: `0 1 3 7` followed by a space, the cost, and a newline.
+
+- **Unreachable**: the exact string `unreachable` followed by a newline.
+  Exit code 1.
+
+## Graph File Format
+
+```
+V E
+u1 v1 w1
+u2 v2 w2
+...
+```
+
+- `V` — number of vertices (ids 0 … V−1)
+- `E` — number of directed edges
+- Each edge line: source `u`, target `v`, non-negative weight `w`
+
+## C API
+
+See `route.h` for full documentation.  Summary:
+
+| Function | Description |
+|---|---|
+| `route_load(filename)` | Load a graph from file |
+| `route_free(g)` | Free a loaded graph |
+| `route_find(g, src, dst, &path, &len)` | Find shortest path; returns 0 on success, −1 if unreachable |
+| `route_relaxations()` | Distance-value comparison count from last `route_find` |
+| `route_last_cost()` | Total cost from last successful `route_find` |
+
+## Tie-breaking
+
+Among equal-cost routes, the one whose **node-id sequence is
+lexicographically smallest** is returned.  See `route.h` for the
+complete rule, including the prefix convention for paths of different
+lengths.
+
+## Relaxation counter
+
+`route_relaxations()` counts **distance-value comparisons only** —
+any comparison where at least one operand is a node's current
+shortest-path distance estimate.  See `route.h` for the precise
+definition and examples of what is and is not counted.
+
+## Benchmark
+
+Benchmark graphs and expected outputs live under `benchmark/`.
+
+- `benchmark/graph_XX.txt` — graph files (seeds 0–4)
+- `benchmark/expected/graph_XX.out` — expected output for each graph's queries
+- `benchmark/baseline_relaxations.txt` — O(V²) relaxation counts per graph
+
+## Running public tests
+
+```sh
+bash run_tests.sh
+```
+
+This checks output against the frozen expected files and verifies the
+10× relaxation-count target on each benchmark graph.
+<<<END>>>
+<<<FILE environment/run_tests.sh>>>
+#!/bin/bash
+# Public test script — checks output against frozen expected files
+# and verifies the 10× relaxation-count target.
+set -euo pipefail
+
+cd /app
+
+echo "=== Building ==="
+make clean >/dev/null 2>&1
+make >/dev/null 2>&1
+
+PASS=0
+FAIL=0
+
+check() {
+    local label="$1"
+    if [ "$2" = "0" ]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        echo "  FAIL: $label"
+    fi
+}
+
+# ---- 1. Output correctness on benchmark graphs ----------------------
+
+echo "=== Checking output against frozen expected files ==="
+
+for gfile in benchmark/graph_*.txt; do
+    name=$(basename "$gfile" .txt)
+    expected="benchmark/expected/${name}.out"
+
+    if [ ! -f "$expected" ]; then
+        echo "  SKIP: no expected file for $name"
+        continue
+    fi
+
+    # Read queries from expected file by replaying the same queries.
+    # We store queries in a sidecar; if missing, skip.
+    qfile="benchmark/${name}.queries"
+    if [ ! -f "$qfile" ]; then
+        echo "  SKIP: no query file for $name"
+        continue
+    fi
+
+    actual_tmp=$(mktemp)
+    while IFS=' ' read -r src dst; do
+        ./route "$gfile" "$src" "$dst" >> "$actual_tmp" 2>/dev/null || true
+    done < "$qfile"
+
+    if diff -q "$actual_tmp" "$expected" >/dev/null 2>&1; then
+        check "$name output" 0
+    else
+        check "$name output" 1
+        diff "$actual_tmp" "$expected" | head -5
+    fi
+    rm -f "$actual_tmp"
+done
+
+# ---- 2. Relaxation count ≤ baseline / 10 ----------------------------
+
+echo "=== Checking relaxation counts ==="
+
+if [ -f benchmark/baseline_relaxations.txt ]; then
+    while IFS=' ' read -r name baseline; do
+        gfile="benchmark/${name}.txt"
+        qfile="benchmark/${name}.queries"
+
+        if [ ! -f "$qfile" ]; then
+            echo "  SKIP: no query file for $name"
+            continue
+        fi
+
+        # Use first query for the relaxation-count check
+        first_query=$(head -1 "$qfile")
+        src=$(echo "$first_query" | cut -d' ' -f1)
+        dst=$(echo "$first_query" | cut -d' ' -f2)
+
+        # Run route; capture exit code
+        set +e
+        output=$(./route "$gfile" "$src" "$dst" 2>&1)
+        rc=$?
+        set -e
+
+        # We need route_relaxations — call a tiny helper if the binary
+        # supports it.  Since the CLI does not expose the counter,
+        # we compile a small test program.
+        cat > /tmp/test_relax.c <<'CEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include "route.h"
+int main(int argc, char** argv) {
+    if (argc < 4) return 2;
+    RouteGraph* g = route_load(argv[1]);
+    if (!g) return 2;
+    int src = atoi(argv[2]), dst = atoi(argv[3]);
+    int* path = NULL; int plen = 0;
+    route_find(g, src, dst, &path, &plen);
+    printf("%ld\n", route_relaxations());
+    free(path);
+    route_free(g);
+    return 0;
+}
+CEOF
+        gcc -O2 -o /tmp/test_relax /tmp/test_relax.c route.o -I. 2>/dev/null
+        if [ -x /tmp/test_relax ]; then
+            agent_count=$(/tmp/test_relax "$gfile" "$src" "$dst" 2>/dev/null || echo "999999999")
+        else
+            agent_count="999999999"
+        fi
+
+        threshold=$((baseline / 10))
+        if [ "$threshold" -le 0 ]; then threshold=1; fi
+        if [ "$agent_count" -le "$threshold" ]; then
+            check "$name relaxations ($agent_count <= $threshold)" 0
+        else
+            check "$name relaxations ($agent_count > $threshold)" 1
+        fi
+    done < benchmark/baseline_relaxations.txt
+fi
+
+# ---- Summary --------------------------------------------------------
+
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed ==="
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+exit 0
+<<<END>>>
+<<<FILE environment/scripts/gen_benchmark.py>>>
+#!/usr/bin/env python3
+"""Generate benchmark graphs for the SpeedyDeliver route library.
+
+Creates 5 directed graphs (seeds 0–4) under the given output directory,
+plus a queries file listing src–dst pairs for each graph.
+"""
+
+import os
+import random
+import sys
+
+
+def write_graph(path, V, edges):
+    with open(path, "w") as f:
+        f.write(f"{V} {len(edges)}\n")
+        for u, v, w in edges:
+            f.write(f"{u} {v} {w}\n")
+
+
+def gen_sparse_random(rng, V, e_factor=3, zero_prob=0.0, wmax=10):
+    """Sparse random directed graph; guaranteed weakly connected."""
+    E_target = V * e_factor
+    edges = []
+    seen = set()
+
+    def _add(u, v, w):
+        if (u, v) not in seen and u != v:
+            seen.add((u, v))
+            edges.append((u, v, w))
+            return True
+        return False
+
+    # spanning tree for connectivity
+    order = list(range(V))
+    rng.shuffle(order)
+    for i in range(1, V):
+        parent = order[rng.randint(0, i - 1)]
+        child = order[i]
+        w = 0 if rng.random() < zero_prob else rng.randint(1, wmax)
+        _add(parent, child, w)
+        # add reverse to make it strongly connected
+        rw = 0 if rng.random() < zero_prob else rng.randint(1, wmax)
+        _add(child, parent, rw)
+
+    # extra random edges
+    tries = 0
+    while len(edges) < E_target and tries < E_target * 20:
+        u = rng.randint(0, V - 1)
+        v = rng.randint(0, V - 1)
+        w = 0 if rng.random() < zero_prob else rng.randint(1, wmax)
+        _add(u, v, w)
+        tries += 1
+
+    return V, edges
+
+
+def gen_grid(rng, rows, cols, wrange=(1, 1)):
+    """Bidirectional grid graph."""
+    V = rows * cols
+    edges = []
+    for r in range(rows):
+        for c in range(cols):
+            n = r * cols + c
+            if c + 1 < cols:
+                w = rng.randint(wrange[0], wrange[1])
+                edges.append((n, n + 1, w))
+                edges.append((n + 1, n, w))
+            if r + 1 < rows:
+                w = rng.randint(wrange[0], wrange[1])
+                edges.append((n, n + cols, w))
+                edges.append((n + cols, n, w))
+    return V, edges
+
+
+def gen_disconnected(rng, specs):
+    """Multiple disconnected components."""
+    all_edges = []
+    offset = 0
+    comp_ranges = []
+    for cV, cseed, cef in specs:
+        crng = random.Random(cseed)
+        V, edges = gen_sparse_random(crng, cV, e_factor=cef)
+        all_edges.extend((u + offset, v + offset, w) for u, v, w in edges)
+        comp_ranges.append((offset, offset + cV))
+        offset += cV
+    return offset, all_edges, comp_ranges
+
+
+def main():
+    out = sys.argv[1] if len(sys.argv) > 1 else "."
+    os.makedirs(out, exist_ok=True)
+    os.makedirs(os.path.join(out, "expected"), exist_ok=True)
+
+    graphs = {}  # name -> (V, edges, queries)
+
+    # graph_00 — sparse random, ~200 nodes
+    V0, E0 = gen_sparse_random(random.Random(0), 200, e_factor=3)
+    graphs["graph_00"] = (V0, E0, [(0, 199), (0, 100), (50, 150)])
+
+    # graph_01 — sparse random, ~350 nodes
+    V1, E1 = gen_sparse_random(random.Random(1), 350, e_factor=3)
+    graphs["graph_01"] = (V1, E1, [(0, 349), (0, 175), (100, 250)])
+
+    # graph_02 — 20×20 grid, unit weights  →  many equal-cost routes
+    V2, E2 = gen_grid(random.Random(2), 20, 20, wrange=(1, 1))
+    graphs["graph_02"] = (V2, E2, [(0, 399), (0, 209), (10, 389)])
+
+    # graph_03 — sparse random with zero-weight edges, ~400 nodes
+    V3, E3 = gen_sparse_random(random.Random(3), 400, e_factor=3,
+                               zero_prob=0.15)
+    graphs["graph_03"] = (V3, E3, [(0, 399), (0, 200), (100, 300)])
+
+    # graph_04 — disconnected (3 components)
+    V4, E4, cr = gen_disconnected(random.Random(4), [
+        (300, 40, 3),
+        (150, 41, 3),
+        (150, 42, 3),
+    ])
+    graphs["graph_04"] = (V4, E4, [
+        (0, 299),       # reachable  (component 1)
+        (0, 300),       # unreachable (comp1 → comp2)
+        (300, 449),     # reachable  (component 2)
+        (450, 599),     # reachable  (component 3)
+    ])
+
+    # write graph files
+    for name, (V, edges, _) in graphs.items():
+        write_graph(os.path.join(out, f"{name}.txt"), V, edges)
+
+    # write per-graph query files
+    for name, (_, _, queries) in graphs.items():
+        with open(os.path.join(out, f"{name}.queries"), "w") as f:
+            for s, d in queries:
+                f.write(f"{s} {d}\n")
+
+    # write master queries list (for the generate.sh script)
+    with open(os.path.join(out, "queries.txt"), "w") as f:
+        for name, (_, _, queries) in graphs.items():
+            for s, d in queries:
+                f.write(f"{name} {s} {d}\n")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+<<<FILE environment/scripts/ref_route.c>>`
+/* ref_route.c — Reference implementation used ONLY at build time
+ *               to produce frozen expected outputs and baseline
+ *               relaxation counts.
+ *
+ * Algorithm:
+ *   1. O(V²) forward Dijkstra from src  (distance comparisons counted)
+ *   2. O(V²) reverse Dijkstra from dst  (not counted — tie-breaking only)
+ *   3. Greedy DFS on the shortest-path DAG for the lex-smallest path
+ *
+ * This file is deleted from the image after benchmark generation.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
+/* ---------- graph structures ---------------------------------------- */
+
+typedef struct RefEdge {
+    int          to;
+    long         weight;
+    struct RefEdge* next;
+} RefEdge;
+
+typedef struct {
+    int       V;
+    RefEdge** adj;     /* forward adjacency */
+    RefEdge** radj;    /* reverse adjacency  */
+} RefGraph;
+
+/* ---------- load / free -------------------------------------------- */
+
+static RefGraph* ref_load(const char* fn)
+{
+    FILE* f = fopen(fn, "r");
+    if (!f) return NULL;
+    int V, E;
+    if (fscanf(f, "%d %d", &V, &E) != 2) { fclose(f); return NULL; }
+    RefGraph* g = (RefGraph*)calloc(1, sizeof(RefGraph));
+    g->V    = V;
+    g->adj  = (RefEdge**)calloc(V, sizeof(RefEdge*));
+    g->radj = (RefEdge**)calloc(V, sizeof(RefEdge*));
+    for (int i = 0; i < E; i++) {
+        int u, v; long w;
+        if (fscanf(f, "%d %d %ld", &u, &v, &w) != 3) break;
+        RefEdge* e1 = (RefEdge*)malloc(sizeof(RefEdge));
+        e1->to = v; e1->weight = w; e1->next = g->adj[u]; g->adj[u] = e1;
+        RefEdge* e2 = (RefEdge*)malloc(sizeof(RefEdge));
+        e2->to = u; e2->weight = w; e2->next = g->radj[v]; g->radj[v] = e2;
+    }
+    fclose(f);
+    return g;
+}
+
+static void ref_free(RefGraph* g)
+{
+    if (!g) return;
+    for (int i = 0; i < g->V; i++) {
+        for (RefEdge* e = g->adj[i]; e; )  { RefEdge* n = e->next; free(e); e = n; }
+        for (RefEdge* e = g->radj[i]; e; ) { RefEdge* n = e->next; free(e); e = n; }
+    }
+    free(g->adj); free(g->radj); free(g);
+}
+
+/* ---------- O(V²) Dijkstra ----------------------------------------- */
+
+static void dijkstra_v2(RefEdge** adj, int V, int src,
+                        long* dist, long* relax_count)
+{
+    int* vis = (int*)calloc(V, sizeof(int));
+    *relax_count = 0;
+    for (int i = 0; i < V; i++) dist[i] = LONG_MAX;
+    dist[src] = 0;
+
+    for (int iter = 0; iter < V; iter++) {
+        int  u  = -1;
+        long md = LONG_MAX;
+        /* Scan ALL V nodes — dist[i] < md is always a distance comparison
+         * (even for visited nodes).  This matches the baseline counting. */
+        for (int i = 0; i < V; i++) {
+            (*relax_count)++;                    /* dist[i] < md  */
+            if (dist[i] < md && !vis[i]) {
+                md = dist[i];
+                u  = i;
+            }
+        }
+        if (u == -1 || md == LONG_MAX) break;
+        vis[u] = 1;
+
+        for (RefEdge* e = adj[u]; e; e = e->next) {
+            long nd = dist[u] + e->weight;
+            (*relax_count)++;                    /* nd < dist[v]  */
+            if (nd < dist[e->to]) {
+                dist[e->to] = nd;
+            }
+            /* We do NOT count the == check here because the original
+             * O(V²) baseline only counted < comparisons for edges.
+             * Tie-breaking is handled separately (steps 2-3). */
+        }
+    }
+    free(vis);
+}
+
+/* ---------- Lex-smallest path via greedy DFS ----------------------- */
+
+/* Iterative DFS that always picks the smallest-id next node on a
+ * shortest path.  Backtracks on dead-ends (zero-weight cycles).
+ * Returns path length, or -1 on failure. */
+
+static int lex_path(RefGraph* g, long* dist, long* rdist,
+                    long target, int src, int dst,
+                    int* out_path)
+{
+    int* on_path = (int*)calloc(g->V, sizeof(int));
+    /* stack of (node, next_edge_to_try) */
+    typedef struct { int node; RefEdge* edge; } Frame;
+    Frame* stk = (Frame*)malloc((size_t)g->V * 2 * sizeof(Frame));
+    int    top = 0;
+    int    plen = 0;
+
+    out_path[plen++] = src;
+    on_path[src] = 1;
+    stk[top].node = src;
+    stk[top].edge = g->adj[src];
+    top++;
+
+    while (top > 0) {
+        int cur = stk[top - 1].node;
+        if (cur == dst) break;          /* found */
+
+        /* Find smallest-id unvisited next node on a shortest path */
+        int best = -1;
+        RefEdge* best_edge = NULL;
+        RefEdge* start = stk[top - 1].edge;
+        for (RefEdge* e = start; e; e = e->next) {
+            int v = e->to;
+            if (!on_path[v] &&
+                rdist[v] != LONG_MAX &&
+                dist[cur] + e->weight + rdist[v] == target)
+            {
+                if (best == -1 || v < best) {
+                    best = v;
+                    best_edge = e;
+                }
+            }
+        }
+
+        if (best == -1) {
+            /* dead end — backtrack */
+            top--;
+            on_path[cur] = 0;
+            plen--;
+            continue;
+        }
+
+        /* Advance past the edge we're about to take, so on backtrack
+         * we try edges after it.  We record the edge AFTER best_edge
+         * as the resume point. */
+        /* Find the edge after best_edge in the list starting from
+         * stk[top-1].edge, so that backtracking can resume correctly.
+         * Simpler approach: on backtrack, re-scan from the next edge
+         * after best_edge. */
+        RefEdge* resume = stk[top - 1].edge;
+        /* skip up to and including best_edge */
+        while (resume && resume != best_edge) resume = resume->next;
+        if (resume) resume = resume->next;
+        stk[top - 1].edge = resume;     /* update resume point */
+
+        /* Push new node if we haven't exhausted this level yet */
+        if (best != -1) {
+            on_path[best] = 1;
+            out_path[plen++] = best;
+            stk[top].node = best;
+            stk[top].edge = g->adj[best];
+            top++;
+        }
+    }
+
+    free(stk);
+    free(on_path);
+
+    if (top > 0 && out_path[plen - 1] == dst)
+        return plen;
+    return -1;
+}
+
+/* ---------- main --------------------------------------------------- */
+
+int main(int argc, char** argv)
+{
+    if (argc < 4) {
+        fprintf(stderr, "Usage: ref_route GRAPH SRC DST\n");
+        return 2;
+    }
+    RefGraph* g = ref_load(argv[1]);
+    if (!g) { fprintf(stderr, "load failed\n"); return 2; }
+    int src = atoi(argv[2]);
+    int dst = atoi(argv[3]);
+
+    /* 1. Forward Dijkstra */
+    long* dist = (long*)malloc(g->V * sizeof(long));
+    long  fwd_relax;
+    dijkstra_v2(g->adj, g->V, src, dist, &fwd_relax);
+
+    if (dist[dst] == LONG_MAX) {
+        printf("unreachable\n");
+        fprintf(stderr, "%ld\n", fwd_relax);
+        ref_free(g); free(dist);
+        return 1;
+    }
+
+    /* 2. Reverse Dijkstra from dst */
+    long* rdist = (long*)malloc(g->V * sizeof(long));
+    long  rev_relax;
+    dijkstra_v2(g->radj, g->V, dst, rdist, &rev_relax);
+
+    /* 3. Lex-smallest path via DFS */
+    long target = dist[dst];
+    int* path = (int*)malloc(g->V * sizeof(int));
+    int  plen = lex_path(g, dist, rdist, target, src, dst, path);
+
+    if (plen < 0) {
+        /* should not happen if dst is reachable */
+        printf("unreachable\n");
+        fprintf(stderr, "%ld\n", fwd_relax);
+        ref_free(g); free(dist); free(rdist); free(path);
+        return 1;
+    }
+
+    for (int i = 0; i < plen; i++) {
+        if (i > 0) printf(" ");
+        printf("%d", path[i]);
+    }
+    printf(" %ld\n", dist[dst]);
+
+    /* relaxation count to stderr */
+    fprintf(stderr, "%ld\n", fwd_relax);
+
+    ref_free(g); free(dist); free(rdist); free(path);
+    return 0;
+}
+<<<END>>>
+<<<FILE environment/scripts/generate.sh>>>
+#!/bin/bash
+# Run at Docker build time to create benchmark data.
+# Deletes itself and the reference implementation afterwards.
+set -euo pipefail
+
+cd /app
+
+echo ">>> Generating benchmark graphs"
+python3 scripts/gen_benchmark.py benchmark
+
+echo ">>> Compiling reference implementation"
+gcc -O2 -o ref_route scripts/ref_route.c -lm
+
+echo ">>> Running reference to produce expected outputs"
+mkdir -p benchmark/expected
+> benchmark/baseline_relaxations.txt
+
+prev_graph=""
+while IFS=' ' read -r graph_name src dst; do
+    graph_file="benchmark/${graph_name}.txt"
+    expected_file="benchmark/expected/${graph_name}.out"
+
+    # Run reference; stdout → path output, stderr → relax count
+    path_out=$(./ref_route "$graph_file" "$src" "$dst" 2>/tmp/ref_err) || true
+    relax=$(cat /tmp/ref_err)
+
+    # Append to per-graph expected file
+    echo "$path_out" >> "$expected_file"
+
+    # Record baseline relaxation count for the first query of each graph
+    if [ "$graph_name" != "$prev_graph" ]; then
+        echo "${graph_name} ${relax}" >> benchmark/baseline_relaxations.txt
+        prev_graph="$graph_name"
+    fi
+done < benchmark/queries.txt
+
+echo ">>> Baseline relaxation counts:"
+cat benchmark/baseline_relaxations.txt
+
+echo ">>> Cleaning up reference and generator"
+rm -f ref_route /tmp/ref_err
+rm -f scripts/ref_route.c scripts/gen_benchmark.py scripts/generate.sh
+rm -f benchmark/queries.txt
+
+echo ">>> Benchmark generation complete"
+<<<END>>>

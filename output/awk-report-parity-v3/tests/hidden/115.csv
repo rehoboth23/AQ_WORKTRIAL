@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+NYC-West,007,0.2,-2.5,
+a b c d e,,0.2,abc,x
+ny,,-0,0,ab
+berlin,007,-0,7
+NYC-West,9,12.50, 2 ,AB12
+,abc,-0.0,3,
+São Paulo,,0.1,10,
+a b c d e,2024-01-05,-0.0,4e2
+ lon,10,1000000000,abc,ZZTOP
+x,007,12.50,-2.5
+a b c d e,20240105,-0,4e2,12345
+x,,1000000000,10,x
+x,20240131,abc,-2.5
+,10,1E2,
+
+london,20240105,10,1,AB12

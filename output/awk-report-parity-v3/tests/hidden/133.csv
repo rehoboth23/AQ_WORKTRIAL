@@ -1,0 +1,16 @@
+branch,posted,amount,units,code
+london,2024-01-31,0x1A,
+garbage
+x,2024-01-31,-0,3,x
+x,007,,abc,AB12,extra
+São Paulo, 20231231 , -3 ,abc,x
+los angeles,abc, -3 ,4e2,extra
+NYC-West,2024-01-31,,,x
+PAR1,20240131,0.1,abc,Q
+  ,20240105,1e3,3.9
+ lon,,1E2,abc,x
+  ,abc,-12.345,3
+ lon,9,+3,7,ZZTOP
+berlin,10,1E2,10
+ny, 20231231 ,12abc,
+Zürich,20240105,10,1,AB12

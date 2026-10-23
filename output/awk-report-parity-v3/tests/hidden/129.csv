@@ -1,0 +1,25 @@
+branch,posted,amount,units,code
+
+nyc-east,9,0x1A,0
+los angeles,2024/1/5,-5,3,,extra
+NYC-West,2024-01-31,-12.345,3.9,
+ lon,10,abc,3,12345
+a b c d e,2024-01-31,+3,,extra
+berlin,2024-01-05,abc,4e2,
+london,20240131,1e3,-2.5,AB12
+NYC-West,2024/1/5,-12.345,4e2
+london,abc,1000000000,10
+london,2024-01-05,abc, 2 ,Ünï
+london,2024/1/5,-0,7,
+NYC-West,20240105,,
+ny,20240131, 7 ,abc,x
+los angeles,2024/1/5,250,3.9
+par,2024-01-05,-5,,AB12
+NYC-West,20240131,-12.345,4e2,12345
+ny,20240105,abc,10
+x,2024-01-31,2500000000.75,0,ab
+nyc-east,9,abc,3.9,extra
+ , , 
+x, 20231231 ,12.50,
+Malmö,9,12.50,4e2,12345
+london,20240105,10,1,AB12

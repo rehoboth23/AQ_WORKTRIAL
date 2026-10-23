@@ -1,0 +1,25 @@
+branch,posted,amount,units,code
+ny,20240105,99.999, 2 ,AB12
+los angeles,9,1999.95,10
+los angeles,20240131,1E2,4e2,12345
+par,20240105,1999.95,0,ZZTOP
+los angeles,007,12.50,10
+Malmö,007,1999.95,3.9,Ünï
+london,9,1e3,10,Ünï
+
+nyc-east,2024-01-05,2500000000.75,,ZZTOP
+PAR1,2024/1/5,abc,abc,12345
+berlin,9,-5,,12345
+a b c d e,,1E2,
+Zürich,9,-5,3,
+São Paulo,abc, 7 ,0
+los angeles,20240105,0x1A,3.9
+par,10,-12.345,4e2
+Malmö,2024-01-05, 7 , 2 
+par,007,abc,-2.5,12345
+  ,9,,abc,ab
+london,9,.5,3.9,ab
+berlin, 20231231 ,-5,7
+nyc-east,2024/1/5,2500000000.75,-2.5,ZZTOP
+a,b,c
+nyc-east,20240105,10,1,AB12

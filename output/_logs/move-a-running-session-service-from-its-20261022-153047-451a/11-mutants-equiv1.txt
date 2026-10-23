@@ -1,0 +1,5 @@
+```json
+{"equivalent": true,
+ "distinguishing_case": "",
+ "reason": "The 'copy window' is fully serialized: _migrate holds _db_lock for the entire copy, and every read/write path also acquires _db_lock, so no concurrent dual-written update can ever interleave with the copy. The copy therefore always snapshots the freshest committed SQLite data, and every post-migration write uses time.time(), which is strictly greater than the mutant's copy ts (= migration start time) just as it is greater than the correct solution's copy ts (= older updated_at). Hence the 'highest ts wins' lookup never resolves differently — no read can return stale data. The only observable difference is the literal ts value recorded in session_log.jsonl (and preserved by compaction), which no API response, status code, or read/write/delete/compact behavior depends on; the requirement's guard exists to prevent a race that this fully-lock-serialized design makes unreachable."}
+```

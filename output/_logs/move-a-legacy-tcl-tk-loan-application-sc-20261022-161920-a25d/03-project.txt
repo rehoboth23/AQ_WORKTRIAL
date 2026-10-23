@@ -1,0 +1,1198 @@
+<<<MANIFEST>>>
+environment/loanapp.tcl
+environment/schema.sql
+environment/webapp.py
+environment/templates/index.html
+environment/generate_transcripts.py
+environment/init_db.py
+environment/tests_public/test_basic.py
+environment/tests_public/test_validation.py
+environment/requirements.txt
+<<<END>>>
+<<<FILE environment/loanapp.tcl>>>
+# loanapp.tcl - Legacy Tcl/Tk Loan Application Screen
+# Regional Credit Union - Originally deployed 2004
+#
+# Defines validation, repayment calculation, and database helpers.
+# Sourced by the test driver to compute reference values.
+
+# ---------------------------------------------------------------------------
+# Utility procedures
+# ---------------------------------------------------------------------------
+
+proc last_day_of_month {month year} {
+    set days_in_month {31 28 31 30 31 30 31 31 30 31 30 31 31}
+    set d [lindex $days_in_month [expr {$month - 1}]]
+    if {$month == 2} {
+        if {($year % 4 == 0 && $year % 100 != 0) || ($year % 400 == 0)} {
+            set d 29
+        }
+    }
+    return $d
+}
+
+proc add_months {date n} {
+    set day   [scan [string range $date 0 1] %d]
+    set month [scan [string range $date 3 4] %d]
+    set year  [scan [string range $date 6 9] %d]
+
+    set new_month [expr {$month + $n}]
+    set new_year  $year
+    while {$new_month > 12} {
+        set new_month [expr {$new_month - 12}]
+        incr new_year
+    }
+    while {$new_month < 1} {
+        set new_month [expr {$new_month + 12}]
+        incr new_year -1
+    }
+
+    set last [last_day_of_month $new_month $new_year]
+    if {$day > $last} {
+        set day $last
+    }
+
+    return [format "%02d/%02d/%04d" $day $new_month $new_year]
+}
+
+proc format_currency {amount} {
+    set formatted [format "%.2f" $amount]
+    set parts [split $formatted "."]
+    set int_part [lindex $parts 0]
+    set dec_part [lindex $parts 1]
+
+    set negative 0
+    if {[string index $int_part 0] == "-"} {
+        set negative 1
+        set int_part [string range $int_part 1 end]
+    }
+
+    set result ""
+    set len [string length $int_part]
+    set pos 0
+    while {$pos < $len} {
+        if {$pos > 0 && ($len - $pos) % 3 == 0} {
+            append result ","
+        }
+        append result [string index $int_part $pos]
+        incr pos
+    }
+
+    if {$negative} {
+        set result "-$result"
+    }
+
+    return "\$$result.$dec_part"
+}
+
+proc format_rate {rate} {
+    return [format "%.2f%%" $rate]
+}
+
+# ---------------------------------------------------------------------------
+# Validation procedure
+# Field priority: applicant_name -> loan_amount -> interest_rate
+#                 -> term_months -> start_date
+# Within each field, rules are checked in source order.
+# Returns the first error message (with trailing period), or "" if valid.
+# ---------------------------------------------------------------------------
+
+proc validate {name amount rate term start_date} {
+    # --- Applicant name ---
+    if {$name eq ""} {
+        return "Applicant name is required."
+    }
+    if {[string length $name] < 2} {
+        return "Applicant name must be at least 2 characters."
+    }
+    if {![regexp {^[A-Za-z][A-Za-z \-']*$} $name]} {
+        return "Applicant name contains invalid characters."
+    }
+
+    # --- Loan amount ---
+    if {$amount eq ""} {
+        return "Loan amount is required."
+    }
+    if {![string is double $amount]} {
+        return "Loan amount must be a positive number."
+    }
+    set amt [expr {double($amount)}]
+    if {$amt <= 0} {
+        return "Loan amount must be a positive number."
+    }
+    if {$amt < 500} {
+        return "Loan amount must be at least \$500."
+    }
+    if {$amt > 500000} {
+        return "Loan amount must not exceed \$500,000."
+    }
+
+    # --- Interest rate ---
+    if {$rate eq ""} {
+        return "Interest rate is required."
+    }
+    if {![string is double $rate]} {
+        return "Interest rate must be a number between 0 and 30."
+    }
+    set rt [expr {double($rate)}]
+    if {$rt <= 0 || $rt >= 30} {
+        return "Interest rate must be a number between 0 and 30."
+    }
+
+    # --- Term months ---
+    if {$term eq ""} {
+        return "Loan term is required."
+    }
+    if {![regexp {^[0-9]+$} $term]} {
+        return "Loan term must be a whole number of months."
+    }
+    set tm [expr {int($term)}]
+    if {$tm < 6 || $tm > 360} {
+        return "Loan term must be between 6 and 360 months."
+    }
+
+    # --- Start date ---
+    if {$start_date eq ""} {
+        return "Start date is required."
+    }
+    if {![regexp {^[0-9]{2}/[0-9]{2}/[0-9]{4}$} $start_date]} {
+        return "Start date must be in DD/MM/YYYY format."
+    }
+    set day   [scan [string range $start_date 0 1] %d]
+    set month [scan [string range $start_date 3 4] %d]
+    set year  [scan [string range $start_date 6 9] %d]
+
+    if {$month < 1 || $month > 12} {
+        return "Start date must be in DD/MM/YYYY format."
+    }
+    set last [last_day_of_month $month $year]
+    if {$day < 1 || $day > $last} {
+        return "Start date must be in DD/MM/YYYY format."
+    }
+
+    # Minimum start date: 01/01/2025
+    if {$year < 2025} {
+        return "Start date must be on or after 01/01/2025."
+    }
+
+    return ""
+}
+
+# ---------------------------------------------------------------------------
+# Repayment calculation procedure
+# Per-step rounding with format("%.2f") on every intermediate value.
+# Last instalment: principal = remaining balance, payment recalculated.
+# Returns a dict with monthly_payment, total_repayment, total_interest,
+# and schedule (list of dicts).
+# ---------------------------------------------------------------------------
+
+proc calculate_repayment {amount rate term start_date} {
+    set principal    [expr {double($amount)}]
+    set annual_rate  [expr {double($rate)}]
+    set monthly_rate [expr {$annual_rate / 100.0 / 12.0}]
+
+    set monthly_payment [format "%.2f" [expr {$principal * $monthly_rate / (1 - pow(1 + $monthly_rate, -$term))}]]
+
+    set balance $principal
+    set schedule {}
+    set total_payment 0.0
+    set total_interest 0.0
+
+    for {set i 1} {$i <= $term} {incr i} {
+        set interest [format "%.2f" [expr {$balance * $monthly_rate}]]
+
+        if {$i == $term} {
+            set principal_part $balance
+            set payment [format "%.2f" [expr {$principal_part + $interest}]]
+        } else {
+            set principal_part [format "%.2f" [expr {$monthly_payment - $interest}]]
+            set payment $monthly_payment
+        }
+
+        set balance [format "%.2f" [expr {$balance - $principal_part}]]
+
+        set payment_date [add_months $start_date $i]
+
+        lappend schedule [dict create \
+            instalment_no $i \
+            payment_date  $payment_date \
+            payment       $payment \
+            principal     $principal_part \
+            interest      $interest \
+            balance       $balance]
+
+        set total_payment  [expr {$total_payment + $payment}]
+        set total_interest [expr {$total_interest + $interest}]
+    }
+
+    set total_repayment [format "%.2f" $total_payment]
+    set total_interest  [format "%.2f" $total_interest]
+
+    return [dict create \
+        monthly_payment  $monthly_payment \
+        total_repayment  $total_repayment \
+        total_interest   $total_interest \
+        schedule         $schedule]
+}
+
+# ---------------------------------------------------------------------------
+# Database format helper
+# ---------------------------------------------------------------------------
+
+proc compute_db_format {amount rate start_date} {
+    set cents [expr {int(round($amount * 100))}]
+    set bps   [expr {int(round($rate * 100))}]
+    return [dict create \
+        loan_amount_cents  $cents \
+        interest_rate_bps  $bps \
+        start_date         $start_date]
+}
+<<<END>>>
+<<<FILE environment/schema.sql>>>
+-- Canonical SQLite schema for the loan application system.
+-- Do not modify this file.
+
+CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    applicant_name TEXT NOT NULL,
+    loan_amount_cents INTEGER NOT NULL,
+    interest_rate_bps INTEGER NOT NULL,
+    term_months INTEGER NOT NULL,
+    start_date TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS schedule_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id INTEGER NOT NULL,
+    instalment_no INTEGER NOT NULL,
+    payment_date TEXT NOT NULL,
+    payment REAL NOT NULL,
+    principal REAL NOT NULL,
+    interest REAL NOT NULL,
+    balance REAL NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES applications(id)
+);
+<<<END>>>
+<<<FILE environment/webapp.py>>`
+#!/usr/bin/env python3
+"""Flask web app for loan applications.
+Starter version — contains bugs that deviate from the Tcl source.
+Read /app/loanapp.tcl and fix the deviations.
+"""
+from flask import Flask, request, jsonify, render_template
+import sqlite3
+import os
+import re
+from datetime import datetime, timedelta
+import calendar
+
+app = Flask(__name__)
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'loans.db')
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# BUG: No comma separators in currency
+def format_currency(amount):
+    return "${:.2f}".format(amount)
+
+
+# BUG: Omits trailing zeros in rate
+def format_rate(rate):
+    return str(rate) + "%"
+
+
+# BUG: Returns ISO format instead of DD/MM/YYYY
+def format_date(date_str):
+    try:
+        dt = datetime.strptime(date_str, "%d/%m/%Y")
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return date_str
+
+
+# BUG: Returns ALL errors instead of first-only; wrong within-field rule order
+def validate(data):
+    errors = []
+
+    name = data.get('applicant_name', '')
+    amount = data.get('loan_amount', '')
+    rate = data.get('interest_rate', '')
+    term = data.get('term_months', '')
+    start_date = data.get('start_date', '')
+
+    # Name validation — if/if/if, wrong order (invalid-chars before min-length)
+    if not name:
+        errors.append("Applicant name is required.")
+    if not re.match(r"^[A-Za-z][A-Za-z \-']*$", name):
+        errors.append("Applicant name contains invalid characters.")
+    if len(name) < 2:
+        errors.append("Applicant name must be at least 2 characters.")
+
+    # Amount validation — if/if/if, checks all rules
+    if not amount:
+        errors.append("Loan amount is required.")
+    if amount:
+        try:
+            amt = float(amount)
+            if amt <= 0:
+                errors.append("Loan amount must be a positive number.")
+            if amt < 500:
+                errors.append("Loan amount must be at least $500.")
+            if amt > 500000:
+                errors.append("Loan amount must not exceed $500,000.")
+        except ValueError:
+            errors.append("Loan amount must be a positive number.")
+
+    # Rate validation — if/if
+    if not rate:
+        errors.append("Interest rate is required.")
+    if rate:
+        try:
+            rt = float(rate)
+            if rt <= 0 or rt >= 30:
+                errors.append("Interest rate must be a number between 0 and 30.")
+        except ValueError:
+            errors.append("Interest rate must be a number between 0 and 30.")
+
+    # Term validation — if/if
+    if not term:
+        errors.append("Loan term is required.")
+    if term:
+        if not re.match(r"^[0-9]+$", term):
+            errors.append("Loan term must be a whole number of months.")
+        else:
+            tm = int(term)
+            if tm < 6 or tm > 360:
+                errors.append("Loan term must be between 6 and 360 months.")
+
+    # Date validation — BUG: no minimum date check (01/01/2025)
+    if not start_date:
+        errors.append("Start date is required.")
+    if start_date:
+        if not re.match(r"^\d{2}/\d{2}/\d{4}$", start_date):
+            errors.append("Start date must be in DD/MM/YYYY format.")
+        else:
+            day = int(start_date[0:2])
+            month = int(start_date[3:5])
+            year = int(start_date[6:10])
+            try:
+                last_day = calendar.monthrange(year, month)[1]
+                if day < 1 or day > last_day:
+                    errors.append("Start date must be in DD/MM/YYYY format.")
+            except (ValueError, IndexError):
+                errors.append("Start date must be in DD/MM/YYYY format.")
+            # Missing: minimum date check
+
+    return errors
+
+
+# BUG: Uses round() without per-step format rounding; no last-instalment adjustment
+def calculate_repayment(amount, rate, term, start_date):
+    principal = float(amount)
+    annual_rate = float(rate)
+    monthly_rate = annual_rate / 100 / 12
+
+    monthly_payment = round(principal * monthly_rate / (1 - (1 + monthly_rate) ** (-term)), 2)
+
+    balance = principal
+    schedule = []
+    total_payment = 0
+    total_interest = 0
+
+    for i in range(1, term + 1):
+        interest = round(balance * monthly_rate, 2)
+        principal_part = round(monthly_payment - interest, 2)
+        payment = monthly_payment
+        # BUG: No last-instalment adjustment
+        balance = round(balance - principal_part, 2)
+
+        schedule.append({
+            'instalment_no': i,
+            'payment_date': add_months(start_date, i),
+            'payment': payment,
+            'principal': principal_part,
+            'interest': interest,
+            'balance': balance
+        })
+        total_payment += payment
+        total_interest += interest
+
+    return {
+        'monthly_payment': monthly_payment,
+        'total_repayment': round(total_payment, 2),
+        'total_interest': round(total_interest, 2),
+        'schedule': schedule
+    }
+
+
+# BUG: Uses timedelta(days=30*n) instead of calendar month arithmetic
+def add_months(date_str, n):
+    dt = datetime.strptime(date_str, "%d/%m/%Y")
+    new_dt = dt + timedelta(days=30 * n)
+    return new_dt.strftime("%d/%m/%Y")
+
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+@app.route('/api/calculate', methods=['POST'])
+def api_calculate():
+    data = request.form.to_dict()
+    errors = validate(data)
+    if errors:
+        # BUG: Returns all errors joined instead of first only
+        return jsonify({'valid': False, 'error': ' '.join(errors)})
+
+    result = calculate_repayment(
+        data['loan_amount'],
+        data['interest_rate'],
+        int(data['term_months']),
+        data['start_date']
+    )
+
+    result['display'] = {
+        'monthly_payment': format_currency(result['monthly_payment']),
+        'total_repayment': format_currency(result['total_repayment']),
+        'total_interest': format_currency(result['total_interest']),
+        'interest_rate': format_rate(float(data['interest_rate'])),
+        'start_date': format_date(data['start_date'])
+    }
+
+    return jsonify({'valid': True, **result})
+
+
+# BUG: Saves amounts as floats and dates as ISO; no schedule entries
+@app.route('/api/save', methods=['POST'])
+def api_save():
+    data = request.form.to_dict()
+    errors = validate(data)
+    if errors:
+        return jsonify({'valid': False, 'error': ' '.join(errors)})
+
+    result = calculate_repayment(
+        data['loan_amount'],
+        data['interest_rate'],
+        int(data['term_months']),
+        data['start_date']
+    )
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # BUG: Stores as float (dollars) and ISO date instead of cents/bps/DD-MM-YYYY
+    if 'id' in data and data['id']:
+        app_id = int(data['id'])
+        cursor.execute(
+            'UPDATE applications SET applicant_name=?, loan_amount_cents=?, '
+            'interest_rate_bps=?, term_months=?, start_date=? WHERE id=?',
+            (data['applicant_name'], float(data['loan_amount']),
+             float(data['interest_rate']), int(data['term_months']),
+             format_date(data['start_date']), app_id)
+        )
+        # BUG: Does not delete old schedule entries
+    else:
+        cursor.execute(
+            'INSERT INTO applications (applicant_name, loan_amount_cents, '
+            'interest_rate_bps, term_months, start_date) VALUES (?, ?, ?, ?, ?)',
+            (data['applicant_name'], float(data['loan_amount']),
+             float(data['interest_rate']), int(data['term_months']),
+             format_date(data['start_date']))
+        )
+        app_id = cursor.lastrowid
+
+    # BUG: Does not insert schedule entries at all
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({'valid': True, 'id': app_id})
+
+
+# BUG: No cascade or confirmation
+@app.route('/api/delete/<int:app_id>', methods=['POST'])
+def api_delete(app_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    # BUG: Deletes immediately without confirmation, no cascade
+    cursor.execute('DELETE FROM applications WHERE id=?', (app_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'message': f'Application #{app_id} deleted.'})
+
+
+@app.route('/api/application/<int:app_id>')
+def api_application(app_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        'SELECT * FROM applications WHERE id=?', (app_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Application not found.'}), 404
+
+    entries = cursor.execute(
+        'SELECT * FROM schedule_entries WHERE application_id=? ORDER BY instalment_no',
+        (app_id,)
+    ).fetchall()
+    conn.close()
+
+    return jsonify({
+        'id': row['id'],
+        'applicant_name': row['applicant_name'],
+        'loan_amount_cents': row['loan_amount_cents'],
+        'interest_rate_bps': row['interest_rate_bps'],
+        'term_months': row['term_months'],
+        'start_date': row['start_date'],
+        'schedule': [dict(e) for e in entries]
+    })
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
+<<<END>>>
+<<<FILE environment/templates/index.html>>>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Loan Application</title>
+    <style>
+        body { font-family: sans-serif; max-width: 720px; margin: 2em auto; }
+        label { display: block; margin: 0.5em 0; }
+        input { padding: 0.3em; }
+        button { margin-top: 1em; padding: 0.5em 1.5em; }
+        #result { margin-top: 1.5em; white-space: pre-wrap; }
+        .error { color: #c00; }
+        table { border-collapse: collapse; margin-top: 1em; }
+        th, td { border: 1px solid #999; padding: 0.3em 0.6em; text-align: right; }
+        th { background: #eee; }
+    </style>
+</head>
+<body>
+    <h1>Loan Application Form</h1>
+    <form id="loanForm">
+        <label>Applicant Name: <input type="text" name="applicant_name" size="30"></label>
+        <label>Loan Amount ($): <input type="text" name="loan_amount" size="15"></label>
+        <label>Interest Rate (%): <input type="text" name="interest_rate" size="10"></label>
+        <label>Term (months): <input type="number" name="term_months" size="10"></label>
+        <label>Start Date: <input type="text" name="start_date" placeholder="DD/MM/YYYY" size="12"></label>
+        <button type="submit">Calculate</button>
+    </form>
+    <div id="result"></div>
+    <script>
+        document.getElementById('loanForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const resp = await fetch('/api/calculate', {method: 'POST', body: formData});
+            const data = await resp.json();
+            const el = document.getElementById('result');
+            if (!data.valid) {
+                el.innerHTML = '<p class="error">' + data.error + '</p>';
+                return;
+            }
+            let html = '<p>Monthly Payment: ' + data.display.monthly_payment + '<br>'
+                     + 'Total Repayment: ' + data.display.total_repayment + '<br>'
+                     + 'Total Interest: ' + data.display.total_interest + '</p>';
+            html += '<table><tr><th>#</th><th>Date</th><th>Payment</th><th>Principal</th><th>Interest</th><th>Balance</th></tr>';
+            data.schedule.forEach(r => {
+                html += '<tr><td>' + r.instalment_no + '</td><td>' + r.payment_date
+                      + '</td><td>' + r.payment.toFixed(2) + '</td><td>' + r.principal.toFixed(2)
+                      + '</td><td>' + r.interest.toFixed(2) + '</td><td>' + r.balance.toFixed(2) + '</td></tr>';
+            });
+            html += '</table>';
+            el.innerHTML = html;
+        });
+    </script>
+</body>
+</html>
+<<<END>>>
+<<<FILE environment/generate_transcripts.py>>>
+#!/usr/bin/env python3
+"""Generate practice transcript JSON files.
+Run at build time; the Dockerfile deletes this script afterwards.
+"""
+import json
+import os
+import calendar
+
+TRANSCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'transcripts')
+
+
+# ---------------------------------------------------------------------------
+# Python replication of the Tcl logic (must match loanapp.tcl exactly)
+# ---------------------------------------------------------------------------
+
+def fmt2(value):
+    """Round to 2 decimals using C snprintf, matching Tcl format("%.2f", x)."""
+    return float("%.2f" % value)
+
+
+def last_day_of_month(month, year):
+    return calendar.monthrange(year, month)[1]
+
+
+def add_months(date_str, n):
+    day = int(date_str[0:2])
+    month = int(date_str[3:5])
+    year = int(date_str[6:10])
+    new_month = month + n
+    new_year = year
+    while new_month > 12:
+        new_month -= 12
+        new_year += 1
+    while new_month < 1:
+        new_month += 12
+        new_year -= 1
+    last = last_day_of_month(new_month, new_year)
+    if day > last:
+        day = last
+    return f"{day:02d}/{new_month:02d}/{new_year:04d}"
+
+
+def format_currency(amount):
+    return "${:,.2f}".format(amount)
+
+
+def format_rate(rate):
+    return "{:.2f}%".format(rate)
+
+
+def validate(name, amount, rate, term, start_date):
+    if name == "":
+        return "Applicant name is required."
+    if len(name) < 2:
+        return "Applicant name must be at least 2 characters."
+    if not re_match(r"^[A-Za-z][A-Za-z \-']*$", name):
+        return "Applicant name contains invalid characters."
+    if amount == "":
+        return "Loan amount is required."
+    if not is_double(amount):
+        return "Loan amount must be a positive number."
+    amt = float(amount)
+    if amt <= 0:
+        return "Loan amount must be a positive number."
+    if amt < 500:
+        return "Loan amount must be at least $500."
+    if amt > 500000:
+        return "Loan amount must not exceed $500,000."
+    if rate == "":
+        return "Interest rate is required."
+    if not is_double(rate):
+        return "Interest rate must be a number between 0 and 30."
+    rt = float(rate)
+    if rt <= 0 or rt >= 30:
+        return "Interest rate must be a number between 0 and 30."
+    if term == "":
+        return "Loan term is required."
+    if not re_match(r"^[0-9]+$", term):
+        return "Loan term must be a whole number of months."
+    tm = int(term)
+    if tm < 6 or tm > 360:
+        return "Loan term must be between 6 and 360 months."
+    if start_date == "":
+        return "Start date is required."
+    if not re_match(r"^[0-9]{2}/[0-9]{2}/[0-9]{4}$", start_date):
+        return "Start date must be in DD/MM/YYYY format."
+    day = int(start_date[0:2])
+    month = int(start_date[3:5])
+    year = int(start_date[6:10])
+    if month < 1 or month > 12:
+        return "Start date must be in DD/MM/YYYY format."
+    last = last_day_of_month(month, year)
+    if day < 1 or day > last:
+        return "Start date must be in DD/MM/YYYY format."
+    if year < 2025:
+        return "Start date must be on or after 01/01/2025."
+    return ""
+
+
+def re_match(pattern, string):
+    import re
+    return bool(re.match(pattern, string))
+
+
+def is_double(s):
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def calculate_repayment(amount, rate, term, start_date):
+    principal = float(amount)
+    annual_rate = float(rate)
+    monthly_rate = annual_rate / 100.0 / 12.0
+
+    monthly_payment = fmt2(principal * monthly_rate / (1 - (1 + monthly_rate) ** (-term)))
+
+    balance = principal
+    schedule = []
+    total_payment = 0.0
+    total_interest = 0.0
+
+    for i in range(1, term + 1):
+        interest = fmt2(balance * monthly_rate)
+        if i == term:
+            principal_part = balance
+            payment = fmt2(principal_part + interest)
+        else:
+            principal_part = fmt2(monthly_payment - interest)
+            payment = monthly_payment
+        balance = fmt2(balance - principal_part)
+        payment_date = add_months(start_date, i)
+        schedule.append({
+            'instalment_no': i,
+            'payment_date': payment_date,
+            'payment': payment,
+            'principal': principal_part,
+            'interest': interest,
+            'balance': balance
+        })
+        total_payment += payment
+        total_interest += interest
+
+    return {
+        'monthly_payment': monthly_payment,
+        'total_repayment': fmt2(total_payment),
+        'total_interest': fmt2(total_interest),
+        'schedule': schedule
+    }
+
+
+def compute_db_format(amount, rate, start_date):
+    return {
+        'loan_amount_cents': int(round(float(amount) * 100)),
+        'interest_rate_bps': int(round(float(rate) * 100)),
+        'start_date': start_date
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scenario definitions — 28 transcripts covering every quirk-dimension level
+# at least 3 times.
+# ---------------------------------------------------------------------------
+
+SCENARIOS = [
+    # 1-5: one_field × round × save
+    {"id": 1, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save"},
+     "desc": "Valid app $10,000 at 5% for 12 months",
+     "input": {"applicant_name": "John Smith", "loan_amount": "10000", "interest_rate": "5",
+               "term_months": "12", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 2, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save"},
+     "desc": "Valid app $25,000 at 7.5% for 24 months",
+     "input": {"applicant_name": "Mary Johnson", "loan_amount": "25000", "interest_rate": "7.5",
+               "term_months": "24", "start_date": "01/03/2025"}, "action": "calculate"},
+
+    {"id": 3, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save"},
+     "desc": "Valid app $50,000 at 3.25% for 60 months",
+     "input": {"applicant_name": "Robert Brown", "loan_amount": "50000", "interest_rate": "3.25",
+               "term_months": "60", "start_date": "15/06/2025"}, "action": "calculate"},
+
+    {"id": 4, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save"},
+     "desc": "Valid app $5,000 at 10% for 6 months",
+     "input": {"applicant_name": "Jane Doe", "loan_amount": "5000", "interest_rate": "10",
+               "term_months": "6", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 5, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save"},
+     "desc": "Valid app $100,000 at 4.25% for 120 months",
+     "input": {"applicant_name": "William Davis", "loan_amount": "100000", "interest_rate": "4.25",
+               "term_months": "120", "start_date": "01/09/2025"}, "action": "calculate"},
+
+    # 6-8: two_fields × round × save
+    {"id": 6, "tags": {"errors_at_once": "two_fields", "amounts": "round", "actions": "save"},
+     "desc": "Empty name + amount below minimum",
+     "input": {"applicant_name": "", "loan_amount": "100", "interest_rate": "5",
+               "term_months": "12", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 7, "tags": {"errors_at_once": "two_fields", "amounts": "round", "actions": "save"},
+     "desc": "Name too short/invalid + rate at boundary 30",
+     "input": {"applicant_name": "1", "loan_amount": "10000", "interest_rate": "30",
+               "term_months": "12", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 8, "tags": {"errors_at_once": "two_fields", "amounts": "round", "actions": "save"},
+     "desc": "Amount zero + term below minimum",
+     "input": {"applicant_name": "Alice Green", "loan_amount": "0", "interest_rate": "5",
+               "term_months": "3", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    # 9-11: three_with_precedence × round × save
+    {"id": 9, "tags": {"errors_at_once": "three_with_precedence", "amounts": "round", "actions": "save"},
+     "desc": "Empty name + low amount + rate at boundary",
+     "input": {"applicant_name": "", "loan_amount": "100", "interest_rate": "30",
+               "term_months": "12", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 10, "tags": {"errors_at_once": "three_with_precedence", "amounts": "round", "actions": "save"},
+     "desc": "Name invalid chars + amount zero + rate at boundary",
+     "input": {"applicant_name": "A1", "loan_amount": "0", "interest_rate": "30",
+               "term_months": "12", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 11, "tags": {"errors_at_once": "three_with_precedence", "amounts": "round", "actions": "save"},
+     "desc": "Name too short + amount zero + rate boundary + term too short",
+     "input": {"applicant_name": "1", "loan_amount": "0", "interest_rate": "30",
+               "term_months": "3", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    # 12-14: one_field × round × save_then_edit
+    {"id": 12, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save_then_edit"},
+     "desc": "Save $10,000 then edit amount to $15,000",
+     "input": {"applicant_name": "John Smith", "loan_amount": "10000", "interest_rate": "5",
+               "term_months": "12", "start_date": "01/01/2025"},
+     "edit_input": {"applicant_name": "John Smith", "loan_amount": "15000", "interest_rate": "5",
+                    "term_months": "12", "start_date": "01/01/2025"}, "action": "save_then_edit"},
+
+    {"id": 13, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save_then_edit"},
+     "desc": "Save $10,000 then edit rate to 7.5%",
+     "input": {"applicant_name": "Mary Johnson", "loan_amount": "10000", "interest_rate": "5",
+               "term_months": "12", "start_date": "01/01/2025"},
+     "edit_input": {"applicant_name": "Mary Johnson", "loan_amount": "10000", "interest_rate": "7.5",
+                    "term_months": "12", "start_date": "01/01/2025"}, "action": "save_then_edit"},
+
+    {"id": 14, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "save_then_edit"},
+     "desc": "Save $10,000 then edit term to 24 months",
+     "input": {"applicant_name": "Robert Brown", "loan_amount": "10000", "interest_rate": "5",
+               "term_months": "12", "start_date": "01/01/2025"},
+     "edit_input": {"applicant_name": "Robert Brown", "loan_amount": "10000", "interest_rate": "5",
+                    "term_months": "24", "start_date": "01/01/2025"}, "action": "save_then_edit"},
+
+    # 15-17: one_field × cents × save
+    {"id": 15, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "save"},
+     "desc": "Valid app $15,333.50 at 4.75% for 24 months",
+     "input": {"applicant_name": "Sarah O'Brien", "loan_amount": "15333.50", "interest_rate": "4.75",
+               "term_months": "24", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 16, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "save"},
+     "desc": "Valid app $7,250.25 at 6.5% for 18 months",
+     "input": {"applicant_name": "Thomas Lee", "loan_amount": "7250.25", "interest_rate": "6.5",
+               "term_months": "18", "start_date": "15/02/2025"}, "action": "calculate"},
+
+    {"id": 17, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "save"},
+     "desc": "Valid app $3,999.99 at 8.25% for 12 months",
+     "input": {"applicant_name": "Emily White", "loan_amount": "3999.99", "interest_rate": "8.25",
+               "term_months": "12", "start_date": "01/04/2025"}, "action": "calculate"},
+
+    # 18-20: one_field × rounding_boundary × save
+    {"id": 18, "tags": {"errors_at_once": "one_field", "amounts": "rounding_boundary", "actions": "save"},
+     "desc": "Valid app $12,345 at 3.75% for 36 months",
+     "input": {"applicant_name": "David Wilson", "loan_amount": "12345", "interest_rate": "3.75",
+               "term_months": "36", "start_date": "01/01/2025"}, "action": "calculate"},
+
+    {"id": 19, "tags": {"errors_at_once": "one_field", "amounts": "rounding_boundary", "actions": "save"},
+     "desc": "Valid app $9,876.50 at 5.5% for 48 months",
+     "input": {"applicant_name": "Patricia King", "loan_amount": "9876.50", "interest_rate": "5.5",
+               "term_months": "48", "start_date": "01/03/2025"}, "action": "calculate"},
+
+    {"id": 20, "tags": {"errors_at_once": "one_field", "amounts": "rounding_boundary", "actions": "save"},
+     "desc": "Valid app $25,000 at 4.5% for 30 months",
+     "input": {"applicant_name": "Michael Scott", "loan_amount": "25000", "interest_rate": "4.5",
+               "term_months": "30", "start_date": "01/06/2025"}, "action": "calculate"},
+
+    # 21-23: one_field × round × delete_with_dependents
+    {"id": 21, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "delete_with_dependents"},
+     "desc": "Save $10,000 app then delete with schedule entries",
+     "input": {"applicant_name": "John Smith", "loan_amount": "10000", "interest_rate": "5",
+               "term_months": "12", "start_date": "01/01/2025"}, "action": "save_then_delete"},
+
+    {"id": 22, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "delete_with_dependents"},
+     "desc": "Save $25,000 app then delete with schedule entries",
+     "input": {"applicant_name": "Mary Johnson", "loan_amount": "25000", "interest_rate": "7.5",
+               "term_months": "24", "start_date": "01/03/2025"}, "action": "save_then_delete"},
+
+    {"id": 23, "tags": {"errors_at_once": "one_field", "amounts": "round", "actions": "delete_with_dependents"},
+     "desc": "Save $5,000 app then delete with schedule entries",
+     "input": {"applicant_name": "Jane Doe", "loan_amount": "5000", "interest_rate": "10",
+               "term_months": "6", "start_date": "01/01/2025"}, "action": "save_then_delete"},
+
+    # 24-26: one_field × cents × save_then_edit
+    {"id": 24, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "save_then_edit"},
+     "desc": "Save $15,333.50 then edit amount to $20,000",
+     "input": {"applicant_name": "Sarah O'Brien", "loan_amount": "15333.50", "interest_rate": "4.75",
+               "term_months": "24", "start_date": "01/01/2025"},
+     "edit_input": {"applicant_name": "Sarah O'Brien", "loan_amount": "20000", "interest_rate": "4.75",
+                    "term_months": "24", "start_date": "01/01/2025"}, "action": "save_then_edit"},
+
+    {"id": 25, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "save_then_edit"},
+     "desc": "Save $7,250.25 then edit rate to 6%",
+     "input": {"applicant_name": "Thomas Lee", "loan_amount": "7250.25", "interest_rate": "6.5",
+               "term_months": "18", "start_date": "15/02/2025"},
+     "edit_input": {"applicant_name": "Thomas Lee", "loan_amount": "7250.25", "interest_rate": "6",
+                    "term_months": "18", "start_date": "15/02/2025"}, "action": "save_then_edit"},
+
+    {"id": 26, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "save_then_edit"},
+     "desc": "Save $3,999.99 then edit term to 24 months",
+     "input": {"applicant_name": "Emily White", "loan_amount": "3999.99", "interest_rate": "8.25",
+               "term_months": "12", "start_date": "01/04/2025"},
+     "edit_input": {"applicant_name": "Emily White", "loan_amount": "3999.99", "interest_rate": "8.25",
+                    "term_months": "24", "start_date": "01/04/2025"}, "action": "save_then_edit"},
+
+    # 27-28: delete_with_dependents with cents/boundary amounts
+    {"id": 27, "tags": {"errors_at_once": "one_field", "amounts": "cents", "actions": "delete_with_dependents"},
+     "desc": "Save $15,333.50 app then delete with schedule entries",
+     "input": {"applicant_name": "Sarah O'Brien", "loan_amount": "15333.50", "interest_rate": "4.75",
+               "term_months": "24", "start_date": "01/01/2025"}, "action": "save_then_delete"},
+
+    {"id": 28, "tags": {"errors_at_once": "one_field", "amounts": "rounding_boundary", "actions": "delete_with_dependents"},
+     "desc": "Save $12,345 app then delete with schedule entries",
+     "input": {"applicant_name": "David Wilson", "loan_amount": "12345", "interest_rate": "3.75",
+               "term_months": "36", "start_date": "01/01/2025"}, "action": "save_then_delete"},
+]
+
+
+def build_expected(inp):
+    """Compute expected output for a given input dict."""
+    err = validate(
+        inp.get('applicant_name', ''),
+        inp.get('loan_amount', ''),
+        inp.get('interest_rate', ''),
+        inp.get('term_months', ''),
+        inp.get('start_date', '')
+    )
+    if err:
+        return {"valid": False, "error": err}
+    calc = calculate_repayment(
+        inp['loan_amount'], inp['interest_rate'],
+        int(inp['term_months']), inp['start_date']
+    )
+    rate = float(inp['interest_rate'])
+    calc['display'] = {
+        'monthly_payment': format_currency(calc['monthly_payment']),
+        'total_repayment': format_currency(calc['total_repayment']),
+        'total_interest': format_currency(calc['total_interest']),
+        'interest_rate': format_rate(rate),
+        'start_date': inp['start_date']
+    }
+    calc['database_format'] = compute_db_format(
+        inp['loan_amount'], inp['interest_rate'], inp['start_date']
+    )
+    calc['valid'] = True
+    return calc
+
+
+def generate():
+    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+    for sc in SCENARIOS:
+        sid = sc['id']
+        inp = sc['input']
+        expected = build_expected(inp)
+        record = {
+            "scenario": f"scenario_{sid:02d}",
+            "tags": sc['tags'],
+            "description": sc['desc'],
+            "input": inp,
+            "action": sc['action'],
+            "expected": expected
+        }
+        if sc['action'] == 'save_then_edit':
+            edit_inp = sc['edit_input']
+            edit_expected = build_expected(edit_inp)
+            record['edit_input'] = edit_inp
+            record['edit_expected'] = edit_expected
+        if sc['action'] == 'save_then_delete':
+            record['delete_confirmation'] = "Confirm deletion of application #1?"
+            record['delete_confirmed'] = "Application #1 deleted."
+            record['database_after_delete'] = {
+                "applications_count": 0,
+                "schedule_entries_count": 0
+            }
+        path = os.path.join(TRANSCRIPTS_DIR, f"scenario_{sid:02d}.json")
+        with open(path, 'w') as f:
+            json.dump(record, f, indent=2)
+        print(f"  wrote {path}")
+    print(f"Generated {len(SCENARIOS)} transcripts in {TRANSCRIPTS_DIR}")
+
+
+if __name__ == '__main__':
+    generate()
+<<<END>>>
+<<<FILE environment/init_db.py>>>
+#!/usr/bin/env python3
+"""Initialize the SQLite database with the loan application schema.
+Run at build time; the Dockerfile deletes this script afterwards.
+"""
+import sqlite3
+import os
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'loans.db')
+SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schema.sql')
+
+
+def init_db():
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    with open(SCHEMA_PATH) as f:
+        conn.executescript(f.read())
+    conn.commit()
+    conn.close()
+    print(f"Database initialized at {DB_PATH}")
+
+
+if __name__ == '__main__':
+    init_db()
+<<<END>>>
+<<<FILE environment/tests_public/test_basic.py>>>
+#!/usr/bin/env python3
+"""Public test: basic calculation with round amounts.
+Run after starting the Flask app:  python3 webapp.py
+Then:  python3 tests_public/test_basic.py
+"""
+import urllib.request
+import urllib.parse
+import json
+import sys
+
+BASE_URL = "http://localhost:5000"
+
+
+def post_api(endpoint, data):
+    url = f"{BASE_URL}{endpoint}"
+    encoded = urllib.parse.urlencode(data).encode()
+    req = urllib.request.Request(url, data=encoded, method='POST')
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+def test_valid_application():
+    result = post_api("/api/calculate", {
+        "applicant_name": "John Smith",
+        "loan_amount": "10000",
+        "interest_rate": "5",
+        "term_months": "12",
+        "start_date": "01/01/2025"
+    })
+    assert result["valid"] is True, f"Expected valid=True, got: {result}"
+    assert result["monthly_payment"] == 856.07, \
+        f"Expected monthly_payment=856.07, got: {result.get('monthly_payment')}"
+    assert len(result["schedule"]) == 12, \
+        f"Expected 12 schedule entries, got {len(result.get('schedule', []))}"
+    assert result["schedule"][0]["instalment_no"] == 1
+    last = result["schedule"][-1]
+    assert abs(last["balance"]) < 0.01, \
+        f"Last balance should be ~0, got {last['balance']}"
+    assert result["total_repayment"] == round(sum(s["payment"] for s in result["schedule"]), 2), \
+        "total_repayment should equal sum of payments"
+    print("  PASS: valid application calculates correctly")
+
+
+def test_display_formats():
+    result = post_api("/api/calculate", {
+        "applicant_name": "John Smith",
+        "loan_amount": "10000",
+        "interest_rate": "5",
+        "term_months": "12",
+        "start_date": "01/01/2025"
+    })
+    disp = result.get("display", {})
+    assert "$" in disp.get("monthly_payment", ""), "Currency should have $ sign"
+    assert disp.get("interest_rate", "").endswith("%"), "Rate should end with %"
+    assert disp.get("start_date") == "01/01/2025", \
+        f"Date should be DD/MM/YYYY, got {disp.get('start_date')}"
+    print("  PASS: display formats present")
+
+
+if __name__ == "__main__":
+    try:
+        urllib.request.urlopen(f"{BASE_URL}/", timeout=2)
+    except Exception:
+        print("ERROR: Flask app not running on port 5000.")
+        print("Start it with:  python3 webapp.py")
+        sys.exit(1)
+
+    tests = [test_valid_application, test_display_formats]
+    passed = failed = 0
+    for t in tests:
+        try:
+            t()
+            passed += 1
+        except AssertionError as e:
+            print(f"FAIL: {t.__name__}: {e}")
+            failed += 1
+        except Exception as e:
+            print(f"ERROR: {t.__name__}: {e}")
+            failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(0 if failed == 0 else 1)
+<<<END>>>
+<<<FILE environment/tests_public/test_validation.py>>>
+#!/usr/bin/env python3
+"""Public test: basic single-field validation error.
+Run after starting the Flask app:  python3 webapp.py
+Then:  python3 tests_public/test_validation.py
+"""
+import urllib.request
+import urllib.parse
+import json
+import sys
+
+BASE_URL = "http://localhost:5000"
+
+
+def post_api(endpoint, data):
+    url = f"{BASE_URL}{endpoint}"
+    encoded = urllib.parse.urlencode(data).encode()
+    req = urllib.request.Request(url, data=encoded, method='POST')
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+def test_empty_name():
+    result = post_api("/api/calculate", {
+        "applicant_name": "",
+        "loan_amount": "10000",
+        "interest_rate": "5",
+        "term_months": "12",
+        "start_date": "01/01/2025"
+    })
+    assert result["valid"] is False, f"Expected valid=False, got: {result}"
+    assert result.get("error") == "Applicant name is required.", \
+        f"Expected 'Applicant name is required.', got: {result.get('error')}"
+    print("  PASS: empty name returns correct error")
+
+
+def test_name_too_short():
+    result = post_api("/api/calculate", {
+        "applicant_name": "A",
+        "loan_amount": "10000",
+        "interest_rate": "5",
+        "term_months": "12",
+        "start_date": "01/01/2025"
+    })
+    assert result["valid"] is False
+    assert result.get("error") == "Applicant name must be at least 2 characters.", \
+        f"Got: {result.get('error')}"
+    print("  PASS: short name returns correct error")
+
+
+if __name__ == "__main__":
+    try:
+        urllib.request.urlopen(f"{BASE_URL}/", timeout=2)
+    except Exception:
+        print("ERROR: Flask app not running on port 5000.")
+        print("Start it with:  python3 webapp.py")
+        sys.exit(1)
+
+    tests = [test_empty_name, test_name_too_short]
+    passed = failed = 0
+    for t in tests:
+        try:
+            t()
+            passed += 1
+        except AssertionError as e:
+            print(f"FAIL: {t.__name__}: {e}")
+            failed += 1
+        except Exception as e:
+            print(f"ERROR: {t.__name__}: {e}")
+            failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(0 if failed == 0 else 1)
+<<<END>>>
+<<<FILE environment/requirements.txt>>>
+flask>=2.0
+<<<END>>>

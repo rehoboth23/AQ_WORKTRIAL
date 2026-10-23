@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+,abc,12abc,,ab
+  ,2024-01-31,0x1A,3.9,ZZTOP
+berlin,2024/1/5,1e3,3,Q
+london,10,0x1A,7
+los angeles,,-12.345, 2 ,x
+Zürich, 20231231 ,0x1A,abc,12345
+london,20240105,1e3,0,Ünï
+NYC-West,abc,12abc,4e2,AB12
+,2024/1/5,12abc,
+berlin,,abc,3,ZZTOP
+São Paulo,abc, 7 ,3.9
+x,2024-01-05,0.1,0,x
+berlin,20240105,12.50,-2.5,ab
+london,abc,-5,
+nyc-east,abc,1E2,3.9,ab
+
+london,,1e3,-2.5
+Österreich,2024-01-31,1e3,10
+Zürich,20240105,10,1,AB12

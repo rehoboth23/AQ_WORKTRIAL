@@ -1,0 +1,14 @@
+branch,posted,amount,units,code
+ny,2024-01-31,1E2,-2.5,Q
+PAR1,007,12abc,-2.5,ZZTOP
+PAR1,9, -3 ,,
+São Paulo,2024-01-31,+3,10
+  ,,2500000000.75,7,
+NYC-West,2024-01-31,2500000000.75,3,ab
+par,abc,1E2,7,12345
+a b c d e,2024-01-05,-0.0,3.9
+nyc-east,10,3.,4e2
+,20240131,abc,-2.5
+São Paulo,20240105,99.999, 2 ,Q,extra
+Zürich,2024-01-05,-0,10,x
+london,20240105,10,1,AB12

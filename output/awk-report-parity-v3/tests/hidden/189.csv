@@ -1,0 +1,21 @@
+branch,posted,amount,units,code
+ , , 
+NYC-West,9,-0,7
+São Paulo,2024-01-31,1e3,-2.5,x
+São Paulo,10,-0,abc
+nyc-east,9,250,3
+par,20240105,99.999,3
+Österreich, 20231231 ,-5,-2.5
+São Paulo,2024/1/5,1E2,-2.5,
+ , , 
+par,,0.2, 2 ,ab
+par,20240105,-12.345,4e2,Q
+Malmö,10,1999.95,3.9,AB12
+london, 20231231 ,1999.95,abc,x
+ny,20240131,0.2,-2.5
+São Paulo,9,1e3,-2.5
+x,007,0.1,,Ünï
+los angeles,abc,-0.0,4e2
+Zürich,20240131,.5,3.9,,extra
+x,2024-01-05,-5,0,Q
+london,20240105,10,1,AB12

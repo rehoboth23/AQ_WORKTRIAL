@@ -1,0 +1,17 @@
+Looking carefully at instruction.md against all the checks and the procedure manual:
+
+1. **MISSING RULE**: Every check requirement is clearly stated in the procedure manual shipped at `/app/docs/procedure.md` — duty_rate vs unit_price (§3.1), transfer exclusion (§3.2), return credits (§3.3), loss tolerance inclusive boundary (§3.4), excess-only duty (§3.4 with worked example), two-step submission with archiving (§4.1), retry with same request_id on 503 (§4.2), read-only data (instruction.md), total_duty summation and rounding (§5). All covered.
+
+2. **LEAKED ANSWER**: No hidden test inputs or expected outputs are revealed. Practice data is for prior months (not March 2024), and the worked example in §3.4 is a standard illustrative example, not a hidden test case.
+
+3. **ORACLE**: No reference implementation or runnable reference program is pointed to. The broken script is the thing to fix, not a reference.
+
+4. **UNSTATED FORMAT**: The `duty_lines` fields, `duty_type` values, negative duty for returns, quantity-as-excess for `loss_over_tolerance`, confirmation.json path and fields, and `total_duty` rounding are all stated in the procedure manual.
+
+5. **MISSING CONTRACT LINE**: The exit code (0 on success), interface (script entry point), and output rule are implicitly clear from "Run the fixed script to file the return." The tamper sentence is present.
+
+6. **STATED ANSWER**: No inferred rules are directly stated in instruction.md beyond what's in `stated_facts`.
+
+7. **STUDY GUIDE**: No tip sentences like "pay attention to," "boundary precision matters," or "the public tests do not cover X." The key points are legitimate task facts (portal validates format only, submissions are final, data is read-only).
+
+VERDICT: clean

@@ -1,0 +1,368 @@
+{
+  "topic": "File a bonded warehouse's month-end excise-duty return across the local ERP, stock ledger and filing portal, following the in-house procedure document.\n\nSEED CARD (binding):\ntopic: File a bonded warehouse's month-end excise-duty return across the local ERP, stock ledger and filing\n  portal, following the in-house procedure document.\nshape: procedure-driven work over local mock services; graded by the portal's final state and audit log\nagent_cannot_verify: The portal only validates format, not the duty amounts; amounts depend on procedure\n  rules (losses within tolerance are duty-free, transfers between bonded sites are not duty events) that\n  the agent must apply from the document.\ndial: number of procedure rules exercised by this month's movements; fair range 4-8.\nquirk_matrix:\n  loss tolerance:\n  - within\n  - at the limit\n  - over\n  movement types:\n  - sales only\n  - plus transfers\n  - plus customer returns\n  portal faults:\n  - none\n  - one 503\n  - 503 then a duplicate risk\n  mix: about 30% easy cells\nself_check_gap: a return correct for the practice movements can still mis-handle a loss exactly at the\n  tolerance or a retried submission that already succeeded; the manual states both, the practice data\n  contains neither at the boundary\nanswer_source: stated\nreference_access: none\nquirk_evidence:\n- quirk: loss tolerance\n  evidence: the procedure manual section on losses, with a worked example\n- quirk: movement types\n  evidence: practice movements with a completed return for each type\n- quirk: portal faults\n  evidence: the procedure manual's retry and idempotency section\npublic_tests: 'about 30%: a visible test that a return for a simple month (no special movements) is accepted'\nanti_cheese: hidden recomputation of the return AND no duplicate submissions in the portal's audit log\nground_truth: the movement data and the duty calculation come from a seeded generator and rule engine\n  in tests/; the tests recompute the correct return and compare.\nchecks:\n- tolerance rule for evaporation losses\n- inter-site transfers excluded from duty\n- returns from customers credited in the month received\n- submission through the portal's two-step submit with the confirmation code archived\n- no duplicate submission (portal requests are idempotent only with the request id)\nknobs:\n- knob: transient service faults\n  fairness: the procedure doc states the retry policy and idempotency key; faults are seeded\n- knob: irreversible, audited steps\n  fairness: instruction says submissions are final and audited\nmust_keep:\n- stock ledger entries are read-only\nenvironment: python:3.12-slim with three small local HTTP services; data as JSON; no network.\nout_of_bounds:\n- tax rules not in the procedure document\n- real-world legal references\nprecheck:\n- recompute the return from the generator; check the portal accepts the oracle's submission\n",
+  "run_id": "file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549",
+  "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549",
+  "task_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/bonded-warehouse-excise-return",
+  "status": "ok",
+  "rounds": [
+    {
+      "round": 0,
+      "dropped_paths": [],
+      "checks": [],
+      "warnings": [
+        "instruction.md names shipped source/config files: /app/file_return.py, file_return.py, start_services.sh",
+        "comments in environment/ may state a rule or label code: environment/file_return.py:4: labels code 'FIXME': FIXME: This script has several known issues that must be corrected"
+      ],
+      "difficulty_gate": []
+    },
+    {
+      "round": 1,
+      "dropped_paths": [],
+      "checks": [
+        {
+          "name": "validator",
+          "passed": true,
+          "reward": null,
+          "error": "",
+          "job_dir": null,
+          "seconds": 0.1,
+          "details": {
+            "output": "PASSED: All structural checks passed."
+          }
+        },
+        {
+          "name": "oracle",
+          "passed": true,
+          "reward": 1.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163048-oracle",
+          "seconds": 70.2,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163048-oracle/bonded-warehouse-excise-return__C8twzyE",
+            "exception": null,
+            "agent_sec": 4.0,
+            "verifier_sec": 47.6
+          }
+        },
+        {
+          "name": "nop",
+          "passed": true,
+          "reward": 0.0,
+          "error": "",
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163048-nop",
+          "seconds": 54.2,
+          "details": {
+            "trial_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163048-nop/bonded-warehouse-excise-return__RVoCsXc",
+            "exception": null,
+            "agent_sec": 2.1,
+            "verifier_sec": 41.8
+          }
+        }
+      ],
+      "warnings": [
+        "instruction.md names shipped source/config files: /app/file_return.py, /app/start_services.sh, file_return.py, start_services.sh",
+        "comments in environment/ may state a rule or label code: environment/file_return.py:4: labels code 'FIXME': FIXME: This script has several known issues that must be corrected"
+      ],
+      "difficulty_gate": [],
+      "oracle_seconds": {
+        "solve": 4.0,
+        "verify": 47.6
+      },
+      "mutation": [
+        {
+          "fault": 0,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Use the unit_price field from the movement record (the broken script does this) instead of looking up the duty_rate from the /commodities endpoint",
+          "verdict": "killed",
+          "failed_tests": 7,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant0",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 1,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Treat transfers as dutiable movements (the broken script does this), or include them with duty=0 instead of excluding them entirely",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant1",
+          "failed_names": [
+            "test_transfers_excluded",
+            "test_loss_at_boundary"
+          ]
+        },
+        {
+          "fault": 10,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the requirements alone)",
+          "verdict": "killed",
+          "failed_tests": 10,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant10",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_two_step_submission",
+            "test_confirmation_archived",
+            "test_no_duplicate_submissions",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 11,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the requirements alone)",
+          "verdict": "killed",
+          "failed_tests": 10,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant11",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_two_step_submission",
+            "test_confirmation_archived",
+            "test_no_duplicate_submissions",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 12,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the requirements alone)",
+          "verdict": "killed",
+          "failed_tests": 10,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant12",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_two_step_submission",
+            "test_confirmation_archived",
+            "test_no_duplicate_submissions",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 13,
+          "wrong_fix": "a solution that drops this existing behaviour (e.g. a rewrite from the requirements alone)",
+          "verdict": "killed",
+          "failed_tests": 10,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant13",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_two_step_submission",
+            "test_confirmation_archived",
+            "test_no_duplicate_submissions",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 14,
+          "wrong_fix": "a solution that ignores this difficulty knob: transient service faults",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant14",
+          "failed_names": [
+            "test_two_step_submission",
+            "test_no_duplicate_submissions"
+          ]
+        },
+        {
+          "fault": 15,
+          "wrong_fix": "a solution that ignores this difficulty knob: irreversible, audited steps",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant15",
+          "failed_names": [
+            "test_two_step_submission",
+            "test_no_duplicate_submissions"
+          ]
+        },
+        {
+          "fault": 16,
+          "wrong_fix": "a solution that ignores this difficulty knob: preservation constraints",
+          "verdict": "killed",
+          "failed_tests": 10,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant16",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_two_step_submission",
+            "test_confirmation_archived",
+            "test_no_duplicate_submissions",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 17,
+          "wrong_fix": "a solution that ignores this difficulty knob: convention traps",
+          "verdict": "killed",
+          "failed_tests": 7,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant17",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 2,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Ignore returns entirely, or treat them as additional sales (adding duty instead of crediting), or use unit_price instead of duty_rate for the credit",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant2",
+          "failed_names": [
+            "test_returns_credited",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 3,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Treat all losses as dutiable (the broken script does this), or treat all losses as duty-free without checking tolerance",
+          "verdict": "killed",
+          "failed_tests": 6,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant3",
+          "failed_names": [
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 4,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Use strict inequality (< instead of \u2264) for the tolerance comparison, so a loss exactly at 0.5% is treated as over-tolerance and dutiable",
+          "verdict": "killed",
+          "failed_tests": 1,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant4",
+          "failed_names": [
+            "test_loss_at_boundary"
+          ]
+        },
+        {
+          "fault": 5,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Charge duty on the entire loss quantity rather than only the excess over tolerance, or use unit_price instead of duty_rate for the loss duty",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant5",
+          "failed_names": [
+            "test_loss_over_tolerance_excess_only",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 6,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Only call /submit (the broken script does this), or call /confirm but not archive the confirmation, or archive without confirming",
+          "verdict": "killed",
+          "failed_tests": 10,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant6",
+          "failed_names": [
+            "test_sales_duty_uses_commodity_rate",
+            "test_transfers_excluded",
+            "test_returns_credited",
+            "test_loss_within_tolerance",
+            "test_loss_at_boundary",
+            "test_loss_over_tolerance_excess_only",
+            "test_two_step_submission",
+            "test_confirmation_archived",
+            "test_no_duplicate_submissions",
+            "test_total_duty_matches"
+          ]
+        },
+        {
+          "fault": 7,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Not retry on 503 (let the script fail), or retry with a new request_id (creating a duplicate), or retry submit but not confirm, or retry confirm without the request_id",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant7",
+          "failed_names": [
+            "test_two_step_submission",
+            "test_no_duplicate_submissions"
+          ]
+        },
+        {
+          "fault": 8,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Write intermediate results to the data directory, or modify the stock ledger file during calculation",
+          "verdict": "survived",
+          "failed_tests": 0,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant8",
+          "failed_names": [],
+          "equivalent": false,
+          "distinguishing_case": "Start services with /app/start_services.sh, then run python3 /app/file_return.py. After completion, check whether /app/data/duty_calculation_2024-03.json exists. With the correct solution, the file does NOT exist. With the mutant, the file IS created containing {\"duty_lines\": ..., \"total_duty\": ...}. The goal prohibits modifying any file under /app/data/, so the mutant's creation of a new file there is wrong.",
+          "equivalence_reason": "The mutant writes an intermediate JSON file to /app/data/duty_calculation_2024-03.json; the correct solution writes nothing under /app/data/. The existing test only hashes stock_2024-03.json (untouched by the mutant), so it misses this case, but the file's existence after the mutant run is a certain, observable violation of the read-only /app/data/ requirement."
+        },
+        {
+          "fault": 9,
+          "wrong_fix": "do what a reasonable implementer would assume instead: Calculate total_duty independently of the line items (e.g., sum all dutiable quantities first, then multiply), leading to rounding or summation discrepancies; or omit return credits (negative lines) from the total",
+          "verdict": "killed",
+          "failed_tests": 2,
+          "total_tests": 14,
+          "job_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/gen-file-a-bonded-warehouse-s-month-end-exci-20261022-153033-a549-r1-163252-mutant9",
+          "failed_names": [
+            "test_returns_credited",
+            "test_total_duty_matches"
+          ]
+        }
+      ],
+      "mutants_tolerated": [
+        {
+          "fault": 8,
+          "verdict": "survived",
+          "wrong_fix": "do what a reasonable implementer would assume instead: Write intermediate results to the data directory, or modify the stock ledger file during calculation",
+          "failed_names": [],
+          "named_tests": null
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "prompt_tokens": 123406,
+    "completion_tokens": 326514,
+    "cost_usd": 1.4895488371999996
+  },
+  "seconds": 5168.8,
+  "task_name": "afterquery/bonded-warehouse-excise-return"
+}

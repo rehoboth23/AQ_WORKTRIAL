@@ -1,0 +1,353 @@
+{
+  "name": "wobblestream-cipher-crack",
+  "description": "Cryptanalyze an in-house stream cipher from its source and known pairs, then write a general decryptor that works under any key.",
+  "difficulty": "hard",
+  "category": "security",
+  "tags": [
+    "cryptanalysis",
+    "lfsr",
+    "stream-cipher",
+    "brute-force",
+    "python"
+  ],
+  "expert_time_estimate_min": 45.0,
+  "junior_time_estimate_min": 120.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You have been handed the source code of WobbleStream, an in-house stream cipher used for internal messaging, along with several known plaintext/ciphertext pairs. Your job is to write a decryption script that recovers the plaintext of any WobbleStream ciphertext, regardless of what key was used to encrypt it. The known pairs are provided for study and verification, but your script must work on entirely new ciphertexts under fresh keys.",
+  "environment_setup": "The Dockerfile installs python:3.12-slim-bookworm and copies: /app/cipher.py (the ~130-line WobbleStream cipher source, read-only chmod 444), /app/README.md (message format and cipher interface), /app/known_pairs/ (10 pairs: pair_N.bin = nonce+ciphertext, pair_N.plain = plaintext, using 3 different keys across pairs covering short/medium/long lengths and text/mixed/binary content types), /app/challenge/challenge_0.bin and challenge_0.plain (a ciphertext under a fourth key for visible testing), and /app/decrypt.py (a starter script that currently just returns the ciphertext bytes). No network, no extra packages.",
+  "instruction_summary": "Write /app/decrypt.py so that `python3 /app/decrypt.py <file>` reads a WobbleStream ciphertext file (4-byte nonce + encrypted bytes) and outputs the exact plaintext bytes to stdout. The script must work for any 16-byte key and any 4-byte nonce, completing within 60 seconds per ciphertext on 1 CPU. The message format is documented in /app/README.md: 2-byte magic 0x89 0x57, version byte 0x01, content-type byte (0x01 text / 0x02 binary / 0x03 mixed), payload, and a trailing CRC-16/XMODEM over everything before the CRC. The cipher source is in /app/cipher.py. Do not modify /app/cipher.py or anything under /tests; such changes fail the task.",
+  "solution_outline": [
+    "Read cipher.py and identify the critical weakness: _finalize_state truncates to 20 bits (state & 0xFFFFF), so only 2^20 effective keys regardless of the 128-bit input key.",
+    "Copy the _lfsr_step and _lfsr_byte functions exactly from cipher.py (primitive polynomial x^20 + x^3 + 1, 20-bit state).",
+    "Implement brute-force decryption: for each ciphertext file, extract the 4-byte nonce and encrypted data.",
+    "Iterate seed from 1 to 2^20-1; for each seed, initialize the 20-bit LFSR and generate 4 keystream bytes.",
+    "XOR those 4 bytes with the first 4 ciphertext bytes and check for the known header (0x89, 0x57, 0x01, type in {1,2,3}).",
+    "On header match, generate the full keystream, decrypt all bytes, verify the CRC-16/XMODEM of header+payload matches the last 2 plaintext bytes.",
+    "Output the verified plaintext (all bytes including header, payload, and CRC) to stdout.",
+    "Handle the zero-seed edge case: cipher.py replaces seed=0 with _FALLBACK_SEED=0xAC01, so seed 0xAC01 must be reachable in the search.",
+    "Optimize by precomputing a lookup table mapping each seed to its first 4 output bytes, then doing a single dict lookup per ciphertext for speed."
+  ],
+  "test_plan": [
+    "test_challenge_visible: decrypt challenge_0.bin and compare byte-for-byte with challenge_0.plain (public baseline)",
+    "test_english_medium_fresh_key: generate fresh random key, encrypt 500-byte English plaintext, decrypt with script, exact match",
+    "test_binary_content_fresh_key: fresh key, 400-byte random-byte payload (type 0x02), exact match",
+    "test_mixed_content_fresh_key: fresh key, 500-byte mixed content (type 0x03), exact match",
+    "test_short_ciphertext_fresh_key: fresh key, 55-byte message (4 header + 49 payload + 2 CRC), exact match",
+    "test_long_ciphertext_fresh_key: fresh key, 2000-byte English message, exact match",
+    "test_large_seed_fresh_key: choose key+nonce that produce a seed > 900000, encrypt, decrypt, exact match",
+    "test_zero_schedule_seed: use a key+nonce pair known to produce effective seed 0 (cipher maps to fallback 0xAC01), encrypt, decrypt, exact match",
+    "test_structured_nonce: fresh key with nonce = struct.pack('>I', 1717200000) (timestamp-like), encrypt, decrypt, exact match",
+    "test_performance: time the script on a 1500-byte ciphertext, must complete under 60 seconds",
+    "test_exact_raw_bytes: verify output is raw bytes (not hex string, base64, or with trailing newline) on a binary-content ciphertext",
+    "test_five_ciphertexts: run the script on 5 different fresh-key ciphertexts in sequence, all must match",
+    "test_practice_covers_hidden_cases: verify every hidden-case dimension (short/medium/long length, text/mixed/binary content) appears \u22653 times in the shipped known pairs"
+  ],
+  "anti_cheat": "All hidden ciphertexts use fresh keys never present in the environment, so hard-coding recovered seeds fails. The 2^128 full-key brute force is infeasible within 60 seconds; only the 2^20 seed-space search works. The test runner also removes /app/cipher.py from the Python path during execution (the agent must have internalized the LFSR logic) and checks that the script does not import cipher.py at runtime.",
+  "failure_modes": "- Agent recovers the sample key's 20-bit seed from known pairs and hard-codes it, failing on fresh keys\n- Agent mis-copies the LFSR step function (wrong polynomial taps or bit convention), causing no seed to match the header\n- Agent includes the nonce bytes in the keystream XOR (should only XOR starting at byte 4 of the file), corrupting the first 4 plaintext bytes\n- Agent assumes all plaintext is ASCII and strips or replaces high bytes, corrupting binary-content messages\n- Agent outputs hex-encoded or base64 text instead of raw bytes\n- Agent's brute force is too slow for 20-bit search in pure Python without precomputation (takes >60s)\n- Agent checks only 2 header bytes instead of 4, leading to false positives on some ciphertexts\n- Agent skips CRC verification, so a rare false-positive seed produces wrong output on a long ciphertext",
+  "shape": "cryptanalysis from source; graded on hidden ciphertexts under fresh keys",
+  "hidden_evaluation": "Tests generate 15 hidden ciphertexts using a seeded PRNG in tests/cipher_ref.py. Each hidden ciphertext uses a fresh 16-byte key and 4-byte nonce drawn from the stated parameter space, with plaintexts of varied lengths (55-2500 bytes) and content types (text/mixed/binary). The script is run on each hidden ciphertext individually; its stdout is compared byte-for-byte against the known plaintext. A different seed produces different keys/nonces, ensuring the attack must generalize.",
+  "checks": [
+    {
+      "requirement": "The cipher source shows _finalize_state returns state & 0xFFFFF, a 20-bit value, making the effective key space 2^20.",
+      "assumed_instead": "The agent might trust the docstring's '128-bit key' claim and attempt full key recovery, which is infeasible.",
+      "hidden_test_input": "A ciphertext encrypted under a uniformly random 16-byte key whose 20-bit seed is 731291.",
+      "why_missed": "The agent might not trace data flow through _finalize_state and miss the truncation.",
+      "caught_by_tests": [
+        "test_english_medium_fresh_key",
+        "test_large_seed_fresh_key"
+      ]
+    },
+    {
+      "requirement": "Short ciphertexts still have the 4-byte known header (magic + version + type) for seed verification.",
+      "assumed_instead": "The agent might rely on longer known-plaintext structures (like words or phrases) that don't exist in a 55-byte message.",
+      "hidden_test_input": "A 55-byte ciphertext (4 header + 49 payload + 2 CRC) under a fresh key.",
+      "why_missed": "Testing only on medium/long ciphertexts from known pairs doesn't exercise the minimal-header-verification case.",
+      "caught_by_tests": [
+        "test_short_ciphertext_fresh_key"
+      ]
+    },
+    {
+      "requirement": "The cipher source shows the key schedule maps any (key, nonce) pair to a 20-bit seed; the brute force must cover the full range 1..2^20-1.",
+      "assumed_instead": "The agent might optimize by trying only seeds in the range observed from sample keys (e.g., 1000-5000) and skip high seeds.",
+      "hidden_test_input": "A ciphertext where key+nonce produce seed 918223 (>900000).",
+      "why_missed": "Sample keys happen to produce mid-range seeds; an agent who doesn't test against large seeds won't discover the gap.",
+      "caught_by_tests": [
+        "test_large_seed_fresh_key"
+      ]
+    },
+    {
+      "requirement": "Instruction states the script must complete within 60 seconds per ciphertext on 1 CPU.",
+      "assumed_instead": "The agent writes a naive O(2^20 * N) brute force without precomputation, which exceeds 60s for long ciphertexts.",
+      "hidden_test_input": "A 1500-byte ciphertext requiring full keystream generation after seed recovery.",
+      "why_missed": "The agent might test only on short ciphertexts where the naive approach is fast enough.",
+      "caught_by_tests": [
+        "test_performance"
+      ]
+    },
+    {
+      "requirement": "Instruction states the script outputs the plaintext bytes to stdout.",
+      "assumed_instead": "The agent outputs hex-encoded or base64-encoded text, or appends a trailing newline.",
+      "hidden_test_input": "A binary-content ciphertext whose plaintext contains bytes 0x00 and 0xFF.",
+      "why_missed": "Testing only on ASCII text doesn't reveal encoding or newline issues.",
+      "caught_by_tests": [
+        "test_exact_raw_bytes"
+      ]
+    },
+    {
+      "requirement": "The README describes content type 0x02 as binary data with arbitrary byte values.",
+      "assumed_instead": "The agent assumes all content is printable ASCII and post-processes the output (e.g., stripping non-ASCII or replacing high bytes).",
+      "hidden_test_input": "A ciphertext with content type 0x02 and payload bytes uniformly drawn from 0x00-0xFF.",
+      "why_missed": "The known pairs include binary content but the agent might not test their output handling carefully.",
+      "caught_by_tests": [
+        "test_binary_content_fresh_key"
+      ]
+    },
+    {
+      "requirement": "The cipher source shows _FALLBACK_SEED = 0xAC01 is used when the schedule produces seed 0; the brute force must be able to match seed 0xAC01.",
+      "assumed_instead": "The agent skips seed 0 because an LFSR at state 0 stays at 0 forever, but doesn't realize the fallback seed 0xAC01 is the actual value used.",
+      "hidden_test_input": "A ciphertext encrypted with a key+nonce that hashes to effective seed 0 (cipher internally uses 0xAC01).",
+      "why_missed": "None of the 10 known pairs produce a zero-hash case; the agent may never encounter it.",
+      "caught_by_tests": [
+        "test_zero_schedule_seed"
+      ]
+    },
+    {
+      "requirement": "The message format CRC-16/XMODEM (documented in README) covers header + payload; the agent should verify CRC to disambiguate rare seed collisions.",
+      "assumed_instead": "The agent checks only the 4-byte header and outputs the first matching seed's decryption, without CRC verification.",
+      "hidden_test_input": "A medium-length ciphertext where, by chance, two different seeds produce the same 4 header bytes but different payloads.",
+      "why_missed": "Seed collisions on 4 bytes are rare (~1 in 2^12); unlikely to occur in small-scale testing.",
+      "caught_by_tests": [
+        "test_crc_disambiguation"
+      ]
+    },
+    {
+      "requirement": "The README describes content type 0x03 as mixed content with both ASCII and high bytes.",
+      "assumed_instead": "The agent treats type 0x03 identically to type 0x01 (ASCII text), perhaps applying ASCII-only heuristics.",
+      "hidden_test_input": "A ciphertext with content type 0x03 containing bytes 0x80-0xFF interspersed with ASCII.",
+      "why_missed": "The agent might only test types 0x01 and 0x02, not 0x03.",
+      "caught_by_tests": [
+        "test_mixed_content_fresh_key"
+      ]
+    },
+    {
+      "requirement": "The script must work independently for each ciphertext; the agent must not cache state across invocations.",
+      "assumed_instead": "The agent caches a precomputed lookup table on disk but the brute-force loop hard-codes a seed from a previous run.",
+      "hidden_test_input": "Five consecutive ciphertexts under five different fresh keys.",
+      "why_missed": "Testing one ciphertext at a time doesn't reveal cross-invocation caching bugs.",
+      "caught_by_tests": [
+        "test_five_ciphertexts"
+      ]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "The cipher's encrypt/decrypt symmetry: encrypting the ciphertext with the same key and nonce returns the original plaintext.",
+      "hidden_test_input": "A known plaintext encrypted under a sample key; verify decrypt(encrypt(m)) = m."
+    }
+  ],
+  "ground_truth": "tests/cipher_ref.py is a pristine copy of the WobbleStream cipher. A seeded Python PRNG (random.Random) generates keys, nonces, and plaintexts (with proper message format headers and CRC). For each hidden test, the reference cipher encrypts the known plaintext, the agent's script decrypts the result, and the output is compared byte-for-byte against the original plaintext. The generator is deterministic (same seed produces identical ciphertexts) and different seeds produce different instances.",
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "quirk_evidence": [
+    {
+      "quirk": "Short ciphertext length",
+      "evidence": "known_pairs/pair_1.bin (150 bytes), pair_4.bin (100 bytes), pair_7.bin (80 bytes) \u2014 three short examples"
+    },
+    {
+      "quirk": "Long ciphertext length",
+      "evidence": "known_pairs/pair_3.bin (1800 bytes), pair_6.bin (1600 bytes), pair_9.bin (2200 bytes) \u2014 three long examples"
+    },
+    {
+      "quirk": "Binary-ish plaintext (type 0x02)",
+      "evidence": "known_pairs/pair_5.bin, pair_5.plain (binary content, 300 bytes) \u2014 visible in .plain file; pair_7 (binary, 80 bytes); pair_9 (binary, 550 bytes)"
+    },
+    {
+      "quirk": "Mixed plaintext (type 0x03)",
+      "evidence": "known_pairs/pair_4.plain, pair_8.plain, pair_2.plain \u2014 three mixed-content examples with high bytes"
+    },
+    {
+      "quirk": "Random key (not sample-like)",
+      "evidence": "known_pairs use KEY_B (random 16-byte key) for pairs 4-6; cipher.py source shows _expand_key processes all 16 key bytes identically"
+    },
+    {
+      "quirk": "Structured IV (timestamp nonce)",
+      "evidence": "known_pairs/pair_8.bin has nonce 0x6647F2A0 (a Unix timestamp); README notes nonces should be unique per message"
+    },
+    {
+      "quirk": "Zero-schedule seed (fallback to 0xAC01)",
+      "evidence": "cipher.py line: `if seed == 0: seed = _FALLBACK_SEED` and `_FALLBACK_SEED = 0xAC01`"
+    }
+  ],
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "The key schedule truncates to 20 bits, making the effective key space 2^20 regardless of the 128-bit nominal key size.",
+      "why": "The known pairs use only 3 keys; from their keystreams alone the agent cannot determine that the schedule collapses the full key space to 20 bits \u2014 the source code states this explicitly."
+    },
+    {
+      "fact": "The LFSR uses primitive polynomial x^20 + x^3 + 1, giving maximal-length period 2^20 - 1.",
+      "why": "The period could be inferred via Berlekamp-Massey from enough keystream bits, but the polynomial taps are most reliably read from the source."
+    },
+    {
+      "fact": "Seed 0 is replaced with fallback 0xAC01; the LFSR is never initialized to zero.",
+      "why": "None of the sample pairs produce a zero-schedule seed, so the fallback value cannot be inferred from data."
+    },
+    {
+      "fact": "The message format has a 4-byte fixed header (0x89, 0x57, 0x01, content_type) followed by payload and a 2-byte CRC-16/XMODEM trailer.",
+      "why": "The content of sample messages shows the header pattern, but the CRC algorithm and the exact header semantics are stated in the README."
+    }
+  ],
+  "reference_binary": "",
+  "sample_file": "",
+  "spec_document": "",
+  "knobs": [
+    {
+      "knob": "Varied hidden draws",
+      "where": "tests/cipher_ref.py generates 15 hidden ciphertexts from 3 PRNG seeds, each with a fresh random key and varied plaintext types/lengths",
+      "fairness": "Keys and nonces are drawn from the stated parameter space (16-byte key, 4-byte nonce) and the message format follows the README specification"
+    },
+    {
+      "knob": "Resource ceilings",
+      "where": "The 60-second per-ciphertext time limit and the 2^20 seed search space require optimization",
+      "fairness": "The instruction explicitly states the 60-second limit; the 20-bit state is visible in cipher.py source"
+    }
+  ],
+  "dial": "Number of hidden ciphertexts (15, within fair range 10-30) and their lengths (55-2500 bytes, within fair range 200-2000 extended slightly for short/long edge cases). Increasing the count stresses robustness; increasing length stresses keystream generation performance.",
+  "quirk_matrix": "{\"dimensions\": {\"ciphertext_length\": [\"short (50-100 bytes)\", \"medium (400-600 bytes)\", \"long (1500-2500 bytes)\"], \"key\": [\"sample-like (ASCII-ish keys)\", \"random (uniform bytes)\", \"random with structured IV (timestamp nonce)\"], \"plaintext\": [\"English text (type 0x01)\", \"mixed (type 0x03)\", \"binary-ish (type 0x02)\"]}, \"mix\": \"30% easy cells (medium length, sample-like key, English text); remaining 70% harder cells spread across other combinations; every cell represented at least once\"}",
+  "public_tests": "The visible test decrypts /app/challenge/challenge_0.bin (a ciphertext under a fourth key not used in any known pair) and compares against challenge_0.plain. This covers the general-key case at medium length with English text. About 30% of hidden-check coverage.",
+  "anti_cheese": "Hidden ciphertexts use fresh keys never present in the environment (drawn from a seeded PRNG in tests/), so hard-coding recovered seeds fails. The per-ciphertext 60-second timeout makes brute-forcing the 128-bit key space impossible. The test runner also removes /app from sys.path and checks the script does not import cipher.py at runtime, forcing the agent to internalize the LFSR logic. A hidden test verifies no import of cipher.py occurs.",
+  "graded_instances": "15 hidden ciphertexts generated from 3 different PRNG seeds (5 ciphertexts each). Each seed produces a different set of keys, nonces, and plaintexts covering all quirk-matrix cells. A determinism self-check in tests/ verifies that the same seed always produces the same ciphertexts, and that different seeds produce different instances.",
+  "self_check_gap": "A solution that correctly brute-forces the 20-bit seed on the practice pairs and the visible challenge may still fail on: (1) ciphertexts where the effective seed is very large (>900000), if the agent optimizes by searching only a small range; (2) binary-content ciphertexts, if the agent post-processes output as ASCII; (3) zero-schedule ciphertexts, if the agent doesn't handle the fallback seed; (4) short ciphertexts where CRC disambiguation is needed. The practice data shows each content type and length, but the seed-range and zero-schedule edge cases require careful source reading, not just practice-pair testing.",
+  "margins": [
+    {
+      "test": "test_performance",
+      "bar": "60 seconds per ciphertext",
+      "oracle_value": "~5-15 seconds (with precomputed lookup table) or ~30-45 seconds (naive brute force)",
+      "baseline": "N/A (absolute time limit)"
+    },
+    {
+      "test": "All decryption tests",
+      "bar": "100% byte-for-byte match (zero errors across all hidden ciphertexts)",
+      "oracle_value": "0 errors",
+      "baseline": "N/A (exact match required)"
+    }
+  ],
+  "contract": [
+    "Entry point: python3 /app/decrypt.py <ciphertext_file>",
+    "Input file: 4-byte nonce (big-endian) followed by encrypted bytes",
+    "Output: raw plaintext bytes to stdout (no trailing newline, no encoding)",
+    "The plaintext has the WobbleStream message format: bytes 0-1 = 0x89 0x57, byte 2 = 0x01, byte 3 = content type in {0x01, 0x02, 0x03}, then payload, then 2-byte CRC-16/XMODEM (big-endian) over all preceding bytes",
+    "Exit code 0 on success; non-zero on failure",
+    "Must complete within 60 seconds per ciphertext on 1 CPU",
+    "Must work for any 16-byte key and any 4-byte nonce",
+    "Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task."
+  ],
+  "invisible_traps": [
+    {
+      "trap": "The _finalize_state function truncates a 32-bit hash to 20 bits via `state & 0xFFFFF`, buried after three lines of murmur3-style mixing that look like proper diffusion. An agent who trusts the '128-bit key' docstring may never notice the truncation.",
+      "stated_in": "cipher.py: the _finalize_state function returns `state & 0xFFFFF` (line visible in source)."
+    },
+    {
+      "trap": "When the key schedule produces seed=0, the cipher silently substitutes _FALLBACK_SEED=0xAC01. An agent whose brute force skips seed=0 (knowing it produces all-zero keystream) will still find 0xAC01 in the normal search range \u2014 but if they separately handle 'zero' and exclude the fallback, they miss this case.",
+      "stated_in": "cipher.py: `if seed == 0: seed = _FALLBACK_SEED` and `_FALLBACK_SEED = 0xAC01`."
+    },
+    {
+      "trap": "The nonce is prepended to the ciphertext file. An agent who XORs the keystream starting from byte 0 of the file (rather than byte 4) will corrupt the first 4 plaintext bytes and fail the header check for every seed.",
+      "stated_in": "README.md: 'The file contains: 4-byte nonce + encrypted message'; cipher.py encrypt() returns `nonce + ciphertext`."
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "Fresh key, English text, medium (500 bytes)",
+      "quirks": "medium length, random key, English text",
+      "purpose": "Basic general-key decryption"
+    },
+    {
+      "instance": "Fresh key, binary content, medium (400 bytes)",
+      "quirks": "medium length, random key, binary-ish",
+      "purpose": "Binary payload handling"
+    },
+    {
+      "instance": "Fresh key, mixed content, medium (500 bytes)",
+      "quirks": "medium length, random key, mixed",
+      "purpose": "Mixed content handling"
+    },
+    {
+      "instance": "Fresh key, English text, short (55 bytes)",
+      "quirks": "short length, random key, English text",
+      "purpose": "Minimal-header verification"
+    },
+    {
+      "instance": "Fresh key, English text, long (2000 bytes)",
+      "quirks": "long length, random key, English text",
+      "purpose": "Full keystream generation performance"
+    },
+    {
+      "instance": "Key producing large seed (>900000), English text, medium",
+      "quirks": "medium length, random key (large seed), English text",
+      "purpose": "Full seed-range coverage"
+    },
+    {
+      "instance": "Key+nonce producing zero schedule seed, medium (450 bytes)",
+      "quirks": "medium length, zero-schedule (fallback seed), English text",
+      "purpose": "Fallback-seed edge case"
+    },
+    {
+      "instance": "Random key with timestamp nonce, English text, medium",
+      "quirks": "medium length, random key, structured IV, English text",
+      "purpose": "Structured nonce handling"
+    },
+    {
+      "instance": "Sample-like key (ASCII), binary content, short (80 bytes)",
+      "quirks": "short length, sample-like key, binary-ish",
+      "purpose": "Sample-like key with binary content"
+    },
+    {
+      "instance": "Random key, mixed content, long (1800 bytes)",
+      "quirks": "long length, random key, mixed",
+      "purpose": "Long mixed-content decryption"
+    },
+    {
+      "instance": "Random key with structured IV, binary content, medium (550 bytes)",
+      "quirks": "medium length, random key with structured IV, binary-ish",
+      "purpose": "Structured IV + binary content"
+    },
+    {
+      "instance": "Random key, English text, medium (450 bytes) \u2014 CRC disambiguation seed",
+      "quirks": "medium length, random key, English text \u2014 crafted so two seeds match the 4-byte header",
+      "purpose": "CRC verification necessity"
+    },
+    {
+      "instance": "Sample-like key, English text, long (2200 bytes)",
+      "quirks": "long length, sample-like key, English text",
+      "purpose": "Sample-like key with long ciphertext"
+    },
+    {
+      "instance": "Random key, mixed content, short (90 bytes)",
+      "quirks": "short length, random key, mixed",
+      "purpose": "Short mixed content"
+    },
+    {
+      "instance": "Random key with structured IV, English text, long (1700 bytes)",
+      "quirks": "long length, structured IV, English text",
+      "purpose": "Long ciphertext with structured IV"
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Increase LFSR state to 24 bits (2^24 brute force is slower in Python, requires C extension or clever math)",
+      "Add a nonlinear S-box post-processing step on the LFSR output, requiring the agent to also recover or invert the S-box",
+      "Reduce the known header to 2 bytes (only magic), making seed disambiguation harder"
+    ],
+    "too_hard": [
+      "Reduce LFSR state to 16 bits (2^16 brute force is instant, no optimization needed)",
+      "Add a --verify flag that runs the cipher with a known key for self-testing",
+      "Provide more known pairs (20+) across more keys, making the pattern more visible"
+    ]
+  },
+  "seed_card": "topic: Given the source of an in-house stream cipher and a few known plaintext/ciphertext pairs made under\n  the same parameters, write a script that recovers the plaintext of new ciphertexts in general.\nshape: cryptanalysis from source; graded on hidden ciphertexts under fresh keys\nagent_cannot_verify: 'Whether the attack generalises: a key-recovery that works on the sample keys can\n  rely on a property of those keys (a short key, a weak IV) that hidden keys do not share.'\ndial: number of hidden ciphertexts and their lengths; fair range 10-30, lengths 200-2,000 bytes.\nquirk_matrix:\n  ciphertext length:\n  - long\n  - medium\n  - short\n  key:\n  - sample-like\n  - random\n  - random with a structured IV\n  plaintext:\n  - English text\n  - mixed\n  - binary-ish\n  mix: about 30% easy cells\nself_check_gap: a recovery that works on the given pairs can still fail on a shorter ciphertext or a key\n  with a repeated schedule word; the cipher source determines both\nanswer_source: stated\nreference_access: none\nquirk_evidence:\n- quirk: ciphertext length\n  evidence: known pairs of several lengths\n- quirk: key\n  evidence: the cipher source shows the key schedule\n- quirk: plaintext\n  evidence: known pairs; the README describes the message format\npublic_tests: 'about 30%: the given known pairs plus one visible ciphertext under the sample key'\nanti_cheese: hidden ciphertexts under fresh keys AND the per-ciphertext time limit (brute force fails)\nground_truth: the cipher implementation and a seeded key/IV generator in tests/ produce hidden ciphertexts\n  of known plaintexts.\nchecks:\n- a weakness stated by the source (e.g. a small internal state or a reused nonce structure)\n- short ciphertexts (less known plaintext structure)\n- keys drawn from the full key space, not the sample's\n- the script runs offline under 60 s per ciphertext on 1 CPU\n- output exactly the plaintext bytes\nknobs:\n- knob: varied hidden draws\n  fairness: keys and IVs drawn from the stated parameter space\n- knob: resource ceilings\n  fairness: the per-ciphertext time and memory limit are stated in the instruction\nmust_keep:\n- the cipher source is read-only\nenvironment: python:3.12-slim; cipher source ~150 lines; no network.\nout_of_bounds:\n- brute force of a full-size key\n- weaknesses not present in the source\nprecheck:\n- confirm the oracle attack recovers fresh-key plaintexts and a sample-overfit attack does not\n",
+  "crux": "",
+  "expected_agent_steps": null
+}

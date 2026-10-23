@@ -1,0 +1,14 @@
+branch,posted,amount,units,code
+,9,-12.345,3,x
+los angeles, ,1E2,3.9,Ünï
+PAR1,,12.50,,12345
+ lon, 20231231 ,0.2,3.9,,extra
+,20240105,0.2,3.9,12345
+nyc-east,20240105,-5,,
+  ,20240105,-12.345,,ZZTOP
+ny,20240105, 7 ,abc,AB12
+nyc-east, , 7 ,2,ZZTOP
+NYC-West,007,0x1A,0,Ünï
+,2024-01-05,3.,7,ab
+garbage
+par,2024/1/5,-12.345,,

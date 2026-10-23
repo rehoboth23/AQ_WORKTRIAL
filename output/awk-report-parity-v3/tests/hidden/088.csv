@@ -1,0 +1,11 @@
+branch,posted,amount,units,code
+,20240105,1E2,3
+
+berlin,2024-01-31,1000000000,3.9,ZZTOP
+x,10,1e3,10
+x,10,1999.95, 2 ,ab
+Österreich,abc,1000000000,4e2,12345
+x,, 7 ,
+,abc, -3 ,,AB12
+par,20240105,-0.0,,Q
+Zürich,20240105,10,1,AB12

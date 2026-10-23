@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+ lon,20240105,99.999,3,x
+NYC-West,,2500000000.75,3
+PAR1, 20231231 ,1e3,abc,Ünï,extra
+berlin,007,12abc,3.9,ZZTOP
+Zürich,abc,12.50,7,extra
+berlin,abc,1000000000, 2 
+los angeles,20240105,12.50,0
+Malmö,2024/1/5,-0,,
+ , , 
+Zürich,9,0x1A,0,
+Zürich,007,3.,7,ab
+london,2024-01-31,+3,-2.5,AB12
+par,9,-0.0,3.9
+NYC-West,2024/1/5,-12.345,7,ab
+x,,250, 2 ,ab
+nyc-east,20240105,10,1,AB12

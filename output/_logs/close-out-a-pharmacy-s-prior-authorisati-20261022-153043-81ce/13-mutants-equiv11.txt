@@ -1,0 +1,5 @@
+```json
+{"equivalent": false,
+ "distinguishing_case": "Process any case from queue.json (e.g., the first case). The correct solution sends POST to http://localhost:5004/submit with JSON body {\"case_id\": \"...\", \"decision_code\": \"...\", \"reason_code\": \"...\"}, while the mutant sends {\"id\": \"...\", \"decision_code\": \"...\", \"reason_code\": \"...\"}. The portal receives a different JSON body missing the required \"case_id\" field and containing an incorrect \"id\" field instead. This violates the specified interface for every single case submitted.",
+ "reason": "The mutant replaces the JSON key \"case_id\" with \"id\" in every portal submission, so the portal receives structurally different JSON for every case — missing the required field and containing an extraneous one. This is a certain code-level difference that produces different HTTP request bodies on every submission."}
+```

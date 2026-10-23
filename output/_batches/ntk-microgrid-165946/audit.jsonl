@@ -1,0 +1,3 @@
+{"time": "2026-10-22T16:59:47", "pid": 40220, "event": "batch_start", "batch": "ntk-microgrid-165946", "topics": 1, "waves": [1], "control": false}
+{"time": "2026-10-22T16:59:47", "pid": 40220, "event": "stage", "topic": "@seeds/microgrid-forecast.yaml", "key": "c825920969", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T17:35:49", "pid": 40220, "event": "killed", "signal": "SIGTERM", "children": []}

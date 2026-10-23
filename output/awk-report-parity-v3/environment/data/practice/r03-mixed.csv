@@ -1,0 +1,20 @@
+branch,posted,amount,units,code
+berlin,007, -3 ,4e2,Q
+Zürich, 20231231 ,.5,abc,ZZTOP
+Zürich,20240131,abc,-2.5,ZZTOP
+São Paulo,,-12.345,7,ZZTOP
+x, ,0.1,7,ZZTOP
+ ,2024-01-31,12.50,0,AB12
+Österreich,abc, ,-2.5,AB12
+ lon,20240131,1e3,,Ünï
+ , 20231231 ,1000000000,2,12345
+a b c d e,20240131,1E2,0,Q
+  ,abc, ,7,ZZTOP
+  ,abc,12abc, 2 ,ZZTOP
+, ,-0.0,7,AB12
+, ,-12.345,3,Ünï
+  , ,99.999,2,
+par,,3.,3.9,Q
+ny, 20231231 ,15.25,3,ZZTOP
+
+a b c d e, 20231231 ,12.50,0,ZZTOP

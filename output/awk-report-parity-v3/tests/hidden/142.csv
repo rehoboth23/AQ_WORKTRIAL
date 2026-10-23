@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+,2024-01-05,99.999,4e2,AB12
+berlin,2024-01-31,-12.345,abc,
+NYC-West,2024-01-31,abc,4e2
+ny,9, -3 ,3
+london,2024-01-05,1000000000,7,Ünï
+Österreich,2024-01-05,-12.345,7,12345
+PAR1,007,1999.95, 2 ,AB12
+São Paulo,abc,1999.95,3,x
+Österreich,20240131,-12.345,,12345
+ lon,10,abc,0
+, 20231231 ,99.999,0,ab
+a b c d e,9,0.2,7,Ünï
+
+ lon,abc,12abc,-2.5,x
+berlin, 20231231 ,99.999,abc,AB12
+nyc-east,20240105,10,1,AB12

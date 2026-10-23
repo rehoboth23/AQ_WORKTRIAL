@@ -1,0 +1,10 @@
+[
+  {"id": "M001", "date": "2024-03-05", "type": "sale",     "commodity": "spirits", "quantity": 100, "unit_price": 12.50, "site": "WH1", "customer": "ACME Corp"},
+  {"id": "M002", "date": "2024-03-08", "type": "sale",     "commodity": "tobacco", "quantity": 50,  "unit_price": 35.00, "site": "WH1", "customer": "ACME Corp"},
+  {"id": "M003", "date": "2024-03-12", "type": "sale",     "commodity": "beer",    "quantity": 200, "unit_price": 3.00,  "site": "WH1", "customer": "Delta Ltd"},
+  {"id": "M004", "date": "2024-03-15", "type": "sale",     "commodity": "wine",    "quantity": 80,  "unit_price": 18.00, "site": "WH1", "customer": "Delta Ltd"},
+  {"id": "M005", "date": "2024-03-18", "type": "transfer", "commodity": "beer",    "quantity": 50,  "unit_price": 3.00,  "site_from": "WH1", "site_to": "WH2"},
+  {"id": "M006", "date": "2024-03-20", "type": "return",   "commodity": "tobacco", "quantity": 5,   "unit_price": 35.00, "site": "WH1", "customer": "ACME Corp"},
+  {"id": "M007", "date": "2024-03-28", "type": "loss",     "commodity": "spirits", "quantity": 3,   "unit_price": 12.50, "site": "WH1"},
+  {"id": "M008", "date": "2024-03-29", "type": "loss",     "commodity": "wine",    "quantity": 4,   "unit_price": 18.00, "site": "WH1"}
+]

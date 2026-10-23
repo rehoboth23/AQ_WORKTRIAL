@@ -1,0 +1,22 @@
+branch,posted,amount,units,code
+berlin,20240131,0x1A,
+a,b
+  ,20240131,+3,7,12345
+berlin,2024-01-31,2500000000.75,
+berlin,10,2500000000.75,7
+a b c d e,20240131,99.999, 2 ,x
+nyc-east,,0x1A,3.9,x
+Zürich,,0.1,,Q
+a b c d e, 20231231 ,abc,3.9,ab
+Österreich,2024-01-05,2500000000.75, 2 ,extra
+NYC-West,10,-0,3,12345
+NYC-West,2024-01-05,12.50, 2 ,12345
+  ,abc,-5,0,ab
+garbage
+  , 20231231 , 7 ,4e2,AB12
+Zürich,2024-01-31,12.50,abc
+São Paulo,2024-01-31,99.999,4e2
+x,10,+3,3
+a,b,c
+london,2024-01-05,-12.345,-2.5
+Zürich,20240105,10,1,AB12

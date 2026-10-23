@@ -1,0 +1,17 @@
+branch,posted,amount,units,code
+NYC-West,20240131,1999.95,-2.5,12345
+Österreich,2024-01-31,1000000000,3,
+garbage
+a,b,c
+ny,,12.50,-2.5,x
+x,9,1000000000,abc
+ lon,007,0x1A,,ab
+Zürich,007,12abc,
+Malmö,9,0x1A,7,extra
+NYC-West, 20231231 ,0.2,0,
+,20240131,12abc,
+a b c d e,2024-01-05,99.999,abc,ZZTOP
+Österreich,2024/1/5,-5,0,x
+Zürich,10,2500000000.75,3.9
+los angeles,2024/1/5,,0
+nyc-east,20240105,10,1,AB12

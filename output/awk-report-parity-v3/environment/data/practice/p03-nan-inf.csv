@@ -1,0 +1,7 @@
+branch,posted,amount,units,code
+NAN, 20231231 ,nan,2,ZZTOP
+NAN,2024-01-31,inf,10,AB12
+NAN,20240131,-inf,3.9,ZZTOP
+NAN, ,NaN,3.9,ZZTOP
+NAN,20240131,infinity,10,x
+NAN, ,5,3,ab

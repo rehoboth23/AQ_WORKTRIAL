@@ -1,0 +1,25 @@
+branch,posted,amount,units,code
+garbage
+PAR1,20240105,0.2,4e2,x
+london,9,250,10,ZZTOP
+los angeles,10,-5,7
+a,b,c
+par, 20231231 ,.5,3,AB12
+Malmö,20240105,2500000000.75,abc,extra
+x, 20231231 ,-0,10,12345
+x,9,.5,abc,AB12
+london,2024/1/5,1999.95,,Ünï
+  ,abc,12.50,3,AB12
+São Paulo,10,1E2,abc
+nyc-east,9,12abc,7,12345
+london,2024-01-05,1E2,4e2
+
+ lon, 20231231 ,12abc,3,ab,extra
+  ,2024/1/5,1000000000,-2.5
+a,b
+x, 20231231 ,0x1A,,Ünï
+Österreich,2024/1/5,1e3,
+x,,0.2, 2 
+  , 20231231 ,3.,,
+São Paulo,2024/1/5, -3 ,-2.5,x
+london,20240105,10,1,AB12

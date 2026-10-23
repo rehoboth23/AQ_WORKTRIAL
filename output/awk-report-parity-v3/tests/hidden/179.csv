@@ -1,0 +1,27 @@
+branch,posted,amount,units,code
+par,10,3.,3.9
+ lon, 20231231 ,3.,10,x,extra
+,2024/1/5,99.999,4e2,ZZTOP
+Zürich,9,,3.9,Ünï
+london,2024/1/5,250,7,extra
+ny,abc,,3.9,ab
+london,20240105,-0,3.9
+x,10,250,10,Q
+a b c d e,,abc,,ZZTOP,extra
+london,2024/1/5,-0, 2 
+São Paulo,2024/1/5,12abc,7,ZZTOP
+,abc,-5,4e2,ab
+PAR1,20240131,abc,abc,ZZTOP
+par,9,3.,-2.5,ZZTOP
+los angeles,2024-01-05,2500000000.75,0
+NYC-West,2024-01-05,,
+Zürich,abc,250,7,x
+Zürich,10,+3,,Q
+NYC-West,2024-01-31,1999.95,4e2,ZZTOP
+los angeles,2024-01-31,-5,3,Ünï
+nyc-east,20240131,-5,,x
+São Paulo,007,12abc,,AB12
+par,20240131,1E2,-2.5
+  ,9,-12.345,0,12345
+a b c d e,,1e3,0
+Zürich,20240105,10,1,AB12

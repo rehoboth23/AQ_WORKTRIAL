@@ -1,0 +1,1055 @@
+<<<MANIFEST>>>
+environment/session_svc.py
+environment/loadgen.py
+environment/RUNBOOK.md
+environment/scenario.json
+environment/generate_practice_stream.py
+environment/init_db.py
+environment/tests_public/test_smoke.py
+<<<END>>>
+
+<<<FILE environment/session_svc.py>>>
+#!/usr/bin/env python3
+"""Session service backed by SQLite.
+
+Manages sessions with TTL and TTL-refresh-on-read.
+PUT updates data but does NOT refresh TTL — only read (GET) refreshes TTL.
+Listens on 0.0.0.0:8080.
+"""
+
+import json
+import os
+import sqlite3
+import threading
+import time
+import uuid
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse
+
+DATA_DIR = "/app/data"
+DB_PATH = os.path.join(DATA_DIR, "sessions.db")
+DEFAULT_TTL = 300
+PORT = 8080
+
+_db_lock = threading.Lock()
+
+
+def init_db():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            data       TEXT NOT NULL,
+            ttl        INTEGER NOT NULL,
+            expires_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+class SessionServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class SessionHandler(BaseHTTPRequestHandler):
+    # ------------------------------------------------------------------ #
+    #  helpers
+    # ------------------------------------------------------------------ #
+    def _send_json(self, status, body, extra_headers=None):
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_no_content(self):
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+    @staticmethod
+    def _parse_path():
+        parsed = urlparse(
+            getattr(
+                # placeholder; set in the actual handler below
+                lambda: None,
+                "__call__",
+                lambda: None,
+            )()
+        )  # no-op; real implementation follows
+        parts = [p for p in parsed.path.split("/") if p]
+        return parts
+
+    # ------------------------------------------------------------------ #
+    #  routing
+    # ------------------------------------------------------------------ #
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 1 and parts[0] == "sessions":
+            self._create_session()
+        elif len(parts) == 2 and parts[0] == "admin" and parts[1] == "migrate":
+            self._read_body()
+            self._send_json(501, {"error": "not implemented"})
+        elif len(parts) == 2 and parts[0] == "admin" and parts[1] == "compact":
+            self._read_body()
+            self._send_json(501, {"error": "not implemented"})
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 2 and parts[0] == "sessions":
+            self._get_session(parts[1])
+        elif len(parts) == 2 and parts[0] == "admin" and parts[1] == "store":
+            self._send_json(200, {"store": "sqlite"})
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 2 and parts[0] == "sessions":
+            self._update_session(parts[1])
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 2 and parts[0] == "sessions":
+            self._delete_session(parts[1])
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    # ------------------------------------------------------------------ #
+    #  session operations  (SQLite backend)
+    # ------------------------------------------------------------------ #
+    def _create_session(self):
+        body = self._read_body()
+        data = body.get("data", {})
+        ttl = int(body.get("ttl", DEFAULT_TTL))
+        session_id = str(uuid.uuid4())
+        now = time.time()
+        expires_at = now + ttl
+
+        with _db_lock:
+            conn = get_db()
+            try:
+                conn.execute(
+                    "INSERT INTO sessions "
+                    "(session_id, data, ttl, expires_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (session_id, json.dumps(data), ttl, expires_at, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._send_json(
+            201,
+            {"session_id": session_id, "data": data},
+            {"Set-Cookie": f"session_id={session_id}; Path=/"},
+        )
+
+    def _get_session(self, session_id):
+        now = time.time()
+        with _db_lock:
+            conn = get_db()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+
+                if row is None:
+                    self._send_json(404, {"error": "not found"})
+                    return
+
+                if row["expires_at"] <= now:
+                    conn.execute(
+                        "DELETE FROM sessions WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    conn.commit()
+                    self._send_json(404, {"error": "not found"})
+                    return
+
+                # TTL refresh on read: expires_at = now + TTL
+                ttl = row["ttl"]
+                new_expires = now + ttl
+                conn.execute(
+                    "UPDATE sessions SET expires_at = ?, updated_at = ? "
+                    "WHERE session_id = ?",
+                    (new_expires, now, session_id),
+                )
+                conn.commit()
+                data = json.loads(row["data"])
+            finally:
+                conn.close()
+
+        self._send_json(200, {"session_id": session_id, "data": data})
+
+    def _update_session(self, session_id):
+        now = time.time()
+        body = self._read_body()
+        data = body.get("data", {})
+
+        with _db_lock:
+            conn = get_db()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+
+                if row is None:
+                    self._send_json(404, {"error": "not found"})
+                    return
+
+                if row["expires_at"] <= now:
+                    conn.execute(
+                        "DELETE FROM sessions WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    conn.commit()
+                    self._send_json(404, {"error": "not found"})
+                    return
+
+                # Update data but do NOT refresh TTL (expires_at unchanged)
+                conn.execute(
+                    "UPDATE sessions SET data = ?, updated_at = ? "
+                    "WHERE session_id = ?",
+                    (json.dumps(data), now, session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        self._send_json(200, {"session_id": session_id, "data": data})
+
+    def _delete_session(self, session_id):
+        with _db_lock:
+            conn = get_db()
+            try:
+                conn.execute(
+                    "DELETE FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        self._send_no_content()
+
+    # ------------------------------------------------------------------ #
+    #  suppress default logging
+    # ------------------------------------------------------------------ #
+    def log_message(self, fmt, *args):
+        pass
+
+
+def main():
+    init_db()
+    server = SessionServer(("0.0.0.0", PORT), SessionHandler)
+    print(f"Session service listening on 0.0.0.0:{PORT}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+
+<<<FILE environment/loadgen.py>>>
+#!/usr/bin/env python3
+"""Practice load generator for the session service migration.
+
+Generates a deterministic stream of operations from a seed, sends them
+to the service, and records each request and response to a JSON file.
+
+The migration request is sent in a background thread so that requests
+continue to arrive while migration is in progress — this exercises the
+dual-write path.
+
+Usage:
+  python3 loadgen.py --seed 1 --host localhost --port 8080 --output /tmp/log.json
+  python3 loadgen.py --seed 1 --stream-only --output /tmp/stream.json
+"""
+
+import argparse
+import json
+import os
+import random
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+
+
+# ---------------------------------------------------------------------- #
+#  stream generation  (deterministic from seed)
+# ---------------------------------------------------------------------- #
+def generate_stream(seed, num_requests=10000):
+    """Return a deterministic list of operation dicts.
+
+    Each dict has:
+        op          – 'create' | 'read' | 'update' | 'delete' | 'migrate'
+        seq         – sequence number (0-based)
+        session_id  – stream-level id (for create the real id is assigned
+                      by the service; the loadgen maps it at run time)
+        data        – present for create / update
+        ttl         – present for create
+    """
+    rng = random.Random(seed)
+    stream = []
+    active = []          # list of stream session-ids currently "alive"
+    migrate_at = num_requests // 3
+
+    ttl_pool = [300, 300, 300, 300, 300, 5, 5, 5, 2, 2, 2]
+
+    i = 0
+    while i < num_requests:
+        # ----- migration marker -----
+        if i == migrate_at:
+            stream.append({"op": "migrate", "seq": i})
+            i += 1
+            continue
+
+        r = rng.random()
+
+        # write probability depends on distance from migration point
+        dist = i - migrate_at
+        if -50 <= dist <= 50:
+            write_prob = 0.50       # burst
+        elif -200 <= dist <= 200:
+            write_prob = 0.30       # medium
+        else:
+            write_prob = 0.15       # low
+
+        # ----- create -----
+        if r < 0.20 and len(active) < 200:
+            ttl = rng.choice(ttl_pool)
+            sid = f"s-{seed}-{len(stream)}"
+            data = {"value": rng.randint(0, 9999), "n": i}
+            stream.append(
+                {
+                    "op": "create",
+                    "seq": i,
+                    "session_id": sid,
+                    "data": data,
+                    "ttl": ttl,
+                }
+            )
+            active.append(sid)
+            i += 1
+
+        # ----- update (possibly followed by read-after-write) -----
+        elif r < 0.20 + write_prob * 0.4 and active:
+            idx = rng.randint(0, len(active) - 1)
+            sid = active[idx]
+            data = {"value": rng.randint(0, 9999), "n": i}
+            stream.append(
+                {
+                    "op": "update",
+                    "seq": i,
+                    "session_id": sid,
+                    "data": data,
+                }
+            )
+            i += 1
+            # read-after-write pair
+            if rng.random() < 0.30 and i < num_requests and i != migrate_at:
+                stream.append(
+                    {"op": "read", "seq": i, "session_id": sid}
+                )
+                i += 1
+
+        # ----- read -----
+        elif r < 0.90 and active:
+            idx = rng.randint(0, len(active) - 1)
+            sid = active[idx]
+            stream.append({"op": "read", "seq": i, "session_id": sid})
+            i += 1
+
+        # ----- delete -----
+        elif active:
+            idx = rng.randint(0, len(active) - 1)
+            sid = active.pop(idx)
+            stream.append({"op": "delete", "seq": i, "session_id": sid})
+            i += 1
+
+        # ----- nothing to read/update/delete → create -----
+        else:
+            ttl = rng.choice(ttl_pool)
+            sid = f"s-{seed}-{len(stream)}"
+            data = {"value": rng.randint(0, 9999), "n": i}
+            stream.append(
+                {
+                    "op": "create",
+                    "seq": i,
+                    "session_id": sid,
+                    "data": data,
+                    "ttl": ttl,
+                }
+            )
+            active.append(sid)
+            i += 1
+
+    return stream
+
+
+# ---------------------------------------------------------------------- #
+#  HTTP helpers
+# ---------------------------------------------------------------------- #
+def _send_one(host, port, op, actual_sid=None):
+    """Send a single request; return (status, body_dict, ts, error_str)."""
+    ts = time.time()
+    base = f"http://{host}:{port}"
+    error = None
+
+    try:
+        if op["op"] == "create":
+            payload = json.dumps({"data": op["data"], "ttl": op["ttl"]}).encode()
+            req = urllib.request.Request(
+                f"{base}/sessions", data=payload, method="POST"
+            )
+            req.add_header("Content-Type", "application/json")
+
+        elif op["op"] == "read":
+            req = urllib.request.Request(
+                f"{base}/sessions/{actual_sid}", method="GET"
+            )
+
+        elif op["op"] == "update":
+            payload = json.dumps({"data": op["data"]}).encode()
+            req = urllib.request.Request(
+                f"{base}/sessions/{actual_sid}", data=payload, method="PUT"
+            )
+            req.add_header("Content-Type", "application/json")
+
+        elif op["op"] == "delete":
+            req = urllib.request.Request(
+                f"{base}/sessions/{actual_sid}", method="DELETE"
+            )
+
+        elif op["op"] == "migrate":
+            req = urllib.request.Request(
+                f"{base}/admin/migrate", data=b"{}", method="POST"
+            )
+            req.add_header("Content-Type", "application/json")
+        else:
+            return 0, {}, ts, f"unknown op: {op['op']}"
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            status = resp.status
+            raw = resp.read().decode()
+            try:
+                body = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                body = {"raw": raw}
+
+    except urllib.error.HTTPError as e:
+        status = e.code
+        raw = e.read().decode() if e.fp else ""
+        try:
+            body = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            body = {"raw": raw}
+    except Exception as exc:  # connection refused, timeout, etc.
+        status = 0
+        body = {"error": str(exc)}
+        error = str(exc)
+
+    return status, body, ts, error
+
+
+# ---------------------------------------------------------------------- #
+#  full run
+# ---------------------------------------------------------------------- #
+def run_loadgen(seed, host, port, output_file, num_requests=10000):
+    stream = generate_stream(seed, num_requests)
+    log = []
+    sid_map = {}  # stream-sid → actual service uuid
+
+    migrate_done = threading.Event()
+    migrate_box = [None]  # (status, body, ts, error)
+
+    for op in stream:
+        if op["op"] == "migrate":
+            # fire migrate in a background thread so requests keep flowing
+            op_snapshot = dict(op)
+
+            def _bg(o=op_snapshot):
+                migrate_box[0] = _send_one(host, port, o)
+                migrate_done.set()
+
+            t = threading.Thread(target=_bg, daemon=True)
+            t.start()
+
+            log.append(
+                {
+                    "seq": op["seq"],
+                    "ts": time.time(),
+                    "op": "migrate",
+                    "status": None,
+                    "resp_body": None,
+                    "_pending": True,
+                }
+            )
+            continue
+
+        stream_sid = op.get("session_id")
+        actual_sid = sid_map.get(stream_sid, stream_sid)
+
+        status, body, ts, err = _send_one(host, port, op, actual_sid)
+
+        # learn the real id from a successful create
+        if op["op"] == "create" and status == 201:
+            real = body.get("session_id")
+            if real:
+                sid_map[stream_sid] = real
+                actual_sid = real
+
+        entry = {
+            "seq": op["seq"],
+            "ts": ts,
+            "op": op["op"],
+            "session_id": (
+                body.get("session_id") if op["op"] == "create" else actual_sid
+            ),
+            "data": op.get("data"),
+            "ttl": op.get("ttl"),
+            "status": status,
+            "resp_body": body,
+        }
+        if err:
+            entry["error"] = err
+        log.append(entry)
+
+    # wait for migrate to finish (60 s is generous)
+    migrate_done.wait(timeout=60)
+    if migrate_box[0] is not None:
+        status, body, ts, err = migrate_box[0]
+        for e in log:
+            if e.get("_pending"):
+                e["status"] = status
+                e["resp_body"] = body
+                e["ts"] = ts
+                e.pop("_pending", None)
+                if err:
+                    e["error"] = err
+                break
+
+    with open(output_file, "w") as f:
+        json.dump(log, f, indent=2, sort_keys=True)
+
+    total = len(log)
+    failures = sum(
+        1 for e in log if e.get("error") or e.get("status", 0) == 0
+    )
+    print(f"Load test complete: {total} requests, {failures} failures")
+    print(f"Log written to {output_file}")
+
+
+# ---------------------------------------------------------------------- #
+#  CLI
+# ---------------------------------------------------------------------- #
+def main():
+    ap = argparse.ArgumentParser(description="Session service load generator")
+    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--host", default="localhost")
+    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--num-requests", type=int, default=10000)
+    ap.add_argument("--stream-only", action="store_true")
+    args = ap.parse_args()
+
+    if args.stream_only:
+        stream = generate_stream(args.seed, args.num_requests)
+        with open(args.output, "w") as f:
+            json.dump(stream, f, indent=2, sort_keys=True)
+        print(f"Stream written to {args.output} ({len(stream)} operations)")
+    else:
+        run_loadgen(
+            args.seed,
+            args.host,
+            args.port,
+            args.output,
+            args.num_requests,
+        )
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+
+<<<FILE environment/RUNBOOK.md>>>
+# Session Service Migration Runbook
+
+## Overview
+
+The session service (`/app/session_svc.py`) currently stores sessions in
+SQLite at `/app/data/sessions.db`.  Operations has decided to move to an
+append-only log store for durability.  The migration must happen **live**:
+traffic continues, no connections drop, no stale reads, no lost writes.
+
+## Current Architecture
+
+| Component | Value |
+|-----------|-------|
+| Service   | `/app/session_svc.py` |
+| Port      | 8080 |
+| Backend   | SQLite, `/app/data/sessions.db` |
+| Default TTL | 300 s |
+| TTL refresh | On read (GET) only |
+
+## Target Architecture
+
+| Component | Value |
+|-----------|-------|
+| Backend   | Append-only log store, `/app/data/session_log.jsonl` |
+| Format    | JSON lines, one entry per line |
+| Compaction | `/admin/compact` endpoint |
+
+### Log store entry format
+
+Each line in `session_log.jsonl` is a JSON object:
+
+```json
+{
+  "session_id": "<uuid>",
+  "data":       { ... },
+  "expires_at": <unix_timestamp_float>,
+  "ts":         <unix_timestamp_float>,
+  "op":         "write" | "touch" | "delete"
+}
+```
+
+* **write** – a new session or a data update (PUT).
+* **touch** – TTL refresh on read (GET).  Data is copied from the latest
+  write entry; `expires_at` is set to `now + TTL`.
+* **delete** – session deletion.
+
+**Read returns the entry with the highest `ts` for a session** (not the
+latest by file position).  If the highest-`ts` entry is a delete, the
+session is gone (404).  If the highest-`ts` entry's `expires_at` has
+passed (`expires_at <= now`), the session is expired (404).
+
+## Migration Procedure
+
+The migration is triggered by `POST /admin/migrate` on the **live**
+process.  No restart.
+
+1. **Start dual-write mode** – writes go to both SQLite and the log store.
+2. **Copy existing sessions** from SQLite to the log store.
+3. **Switch reads** to the log store.
+4. **Stop SQLite writes** – SQLite is retired.
+5. **Record the migration** in `/app/data/access.log`.
+
+## Rules
+
+1. **Sessions written during the switch-over must not be lost.** Dual-write
+   ensures writes arriving mid-switch are persisted to the log store.
+
+2. **Each copied entry must carry its original `updated_at` timestamp from
+   SQLite**, so the log store can determine which entry is newer when a
+   dual-written update exists.  Using the current time as `ts` for copied
+   entries makes them newer than dual-written updates and causes stale
+   reads.
+
+3. **TTL refresh on read: reading a session resets its expiry to
+   `now + TTL`.** This must be implemented in the log store path (append a
+   `touch` entry on GET).
+
+4. **PUT updates data but does NOT refresh TTL.** Only read (GET) refreshes
+   TTL.  PUT preserves the existing `expires_at`.
+
+5. **Sessions expiring during the switch must be handled correctly: an
+   expired session must return 404, not stale data.** Check
+   `expires_at <= now` before copying; skip expired sessions so they are
+   absent from the log store and return 404.
+
+6. **After migration, SQLite must not be used for reads or writes.**
+
+7. **After compaction, the log file must be under 2 MB.** Compaction
+   rewrites the file keeping only the latest entry (highest `ts`) per
+   `session_id`.
+
+8. **Append a migration record to `/app/data/access.log`** with the
+   timestamp and the number of sessions migrated.
+
+9. **The migration must happen via `/admin/migrate` on the live process.**
+   No restart that drops connections.
+
+10. **Preserve the HTTP API** (endpoints, response formats, cookie format)
+    and TTL behaviour.
+
+11. **Precedence:** when dual-write is active, reads come from SQLite until
+    the switch; after the switch, reads come from the log store only.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/sessions` | Create session. Body `{data, ttl?}`. Returns 201 `{session_id, data}`. `Set-Cookie: session_id=<uuid>; Path=/`. |
+| GET | `/sessions/<id>` | Read session. Returns 200 `{session_id, data}` if valid, 404 `{error: "not found"}` if expired/missing. Refreshes TTL. |
+| PUT | `/sessions/<id>` | Update data. Body `{data}`. Returns 200 `{session_id, data}` if valid, 404 if expired/missing. Does NOT refresh TTL. |
+| DELETE | `/sessions/<id>` | Delete session. Returns 204 always. |
+| POST | `/admin/migrate` | Perform live migration. Returns 200 `{status: "migrated", sessions_migrated: N}`. |
+| GET | `/admin/store` | Returns 200 `{store: "sqlite" | "logstore"}`. |
+| POST | `/admin/compact` | Compact the log store. Returns 200 `{status: "compacted", entries: N}`. |
+
+**All responses include the header `X-Service-PID: <pid>`.**
+
+## Access Log
+
+`/app/data/access.log` is an append-only text file.  Each migration record
+includes:
+
+* Timestamp
+* Number of sessions migrated
+
+Example line:
+
+```
+2024-06-01T12:00:00.123456 migration: 42 sessions migrated
+```
+
+## Practice Tools
+
+* **Load generator:** `/app/loadgen.py` — generates a deterministic request
+  stream from a seed and records responses.
+  * `python3 /app/loadgen.py --seed 1 --host localhost --port 8080 --output /tmp/log.json`
+  * `python3 /app/loadgen.py --seed 1 --stream-only --output /tmp/stream.json`
+* **Practice stream:** `/app/practice_stream.json` — the stream for seed 1.
+* **Scenario:** `/app/scenario.json` — describes the practice scenario.
+* **Smoke test:** `/app/tests_public/test_smoke.py` — covers the idle common
+  path.
+<<<END>>>
+
+<<<FILE environment/scenario.json>>`
+{
+  "seed": 1,
+  "num_requests": 10000,
+  "migration_point": 3333,
+  "description": "Practice load stream for session service migration testing.",
+  "stream_file": "/app/practice_stream.json",
+  "ttl_values": [300, 5, 2],
+  "operation_types": ["create", "read", "update", "delete", "migrate"],
+  "notes": [
+    "Covers TTL values 300 (fresh), 5 (near-expiry), and 2 (expiring-during-switch) seconds.",
+    "Includes create, read, update, and delete operations.",
+    "Includes read-after-write pairs (read immediately following a write to the same session).",
+    "Includes burst writes near the migration point (within 100 requests).",
+    "Migration occurs at approximately 1/3 through the stream.",
+    "The load generator sends the migrate request in a background thread so requests continue during migration."
+  ]
+}
+<<<END>>>
+
+<<<FILE environment/generate_practice_stream.py>>>
+#!/usr/bin/env python3
+"""Generate the practice load stream (seed 1) at build time.
+
+Writes /app/practice_stream.json and verifies minimum coverage of all
+quirk dimensions.
+"""
+
+import json
+import os
+import sys
+
+# allow importing loadgen from the same directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from loadgen import generate_stream
+
+
+def verify_coverage(stream):
+    """Assert the stream covers every quirk dimension at least 3 times."""
+    creates = [op for op in stream if op["op"] == "create"]
+    reads = [op for op in stream if op["op"] == "read"]
+    writes = [op for op in stream if op["op"] == "update"]
+
+    # TTL coverage
+    for ttl in (300, 5, 2):
+        n = sum(1 for c in creates if c["ttl"] == ttl)
+        assert n >= 3, f"Not enough creates with ttl={ttl}: found {n}"
+
+    # operation coverage
+    assert len(reads) >= 3, f"Not enough reads: {len(reads)}"
+    assert len(writes) >= 3, f"Not enough writes: {len(writes)}"
+
+    # read-after-write pairs
+    raw = 0
+    for i in range(len(stream) - 1):
+        a, b = stream[i], stream[i + 1]
+        if (
+            a["op"] == "update"
+            and b["op"] == "read"
+            and a.get("session_id") == b.get("session_id")
+        ):
+            raw += 1
+    assert raw >= 3, f"Not enough read-after-write pairs: {raw}"
+
+    # writes near migration
+    migrate_seq = next(op["seq"] for op in stream if op["op"] == "migrate")
+    near = sum(
+        1
+        for op in writes
+        if abs(op["seq"] - migrate_seq) <= 100
+    )
+    assert near >= 3, f"Not enough writes near migration: {near}"
+
+    print(
+        f"Coverage OK: {len(creates)} creates, {len(reads)} reads, "
+        f"{len(writes)} writes, {raw} read-after-write pairs, "
+        f"{near} writes near migration"
+    )
+
+
+def main():
+    stream = generate_stream(1, 10000)
+    verify_coverage(stream)
+
+    out = "/app/practice_stream.json"
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(stream, f, indent=2, sort_keys=True)
+    print(f"Generated {len(stream)} operations -> {out}")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+
+<<<FILE environment/init_db.py>>>
+#!/usr/bin/env python3
+"""Populate /app/data/sessions.db with 20 initial sessions at build time."""
+
+import json
+import os
+import sqlite3
+import uuid
+
+DATA_DIR = "/app/data"
+DB_PATH = os.path.join(DATA_DIR, "sessions.db")
+
+
+def main():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            data       TEXT NOT NULL,
+            ttl        INTEGER NOT NULL,
+            expires_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+
+    rows = []
+    for i in range(20):
+        sid = str(uuid.uuid4())
+        # 10 long-TTL, 5 medium-TTL, 5 short-TTL
+        if i < 10:
+            ttl = 300
+        elif i < 15:
+            ttl = 5
+        else:
+            ttl = 2
+        data = {"user": f"user{i}", "counter": i, "batch": "initial"}
+        # Use a fixed epoch so the build is reproducible.
+        # Sessions are created "now" relative to build; short-TTL ones
+        # will expire quickly, which exercises the copy-skip-expired rule.
+        base_ts = 1700000000.0
+        updated_at = base_ts
+        expires_at = base_ts + ttl
+        rows.append(
+            (sid, json.dumps(data), ttl, expires_at, updated_at)
+        )
+
+    conn.executemany(
+        "INSERT INTO sessions "
+        "(session_id, data, ttl, expires_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    print(f"Initialised {len(rows)} sessions in {DB_PATH}")
+
+
+if __name__ == "__main__":
+    main()
+<<<END>>>
+
+<<<FILE environment/tests_public/test_smoke.py>>>
+#!/usr/bin/env python3
+"""Public smoke test for the session service migration.
+
+Tests the common path only:
+  1. Start the service.
+  2. Create a session on SQLite.
+  3. Call /admin/migrate.
+  4. Verify /admin/store returns 'logstore'.
+  5. Read the session back from the log store.
+  6. Create a new session on the log store.
+  7. Delete a session.
+
+Run:  python3 /app/tests_public/test_smoke.py
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+PORT = 8080
+PYTHON = "/usr/local/bin/python3"
+SERVICE = "/app/session_svc.py"
+
+
+def wait_for_service(timeout=15):
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            req = urllib.request.Request(f"http://localhost:{PORT}/admin/store")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.2)
+    return False
+
+
+def api(method, path, body=None, timeout=10):
+    url = f"http://localhost:{PORT}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if data:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return resp.status, json.loads(raw) if raw else {}, dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode() if e.fp else ""
+        return e.code, json.loads(raw) if raw else {}, dict(e.headers)
+
+
+def main():
+    proc = subprocess.Popen(
+        [PYTHON, SERVICE],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        preexec_fn=os.setsid,
+    )
+    try:
+        if not wait_for_service():
+            print("FAIL: service did not start")
+            return 1
+
+        checks = []
+
+        # 1. create session
+        st, body, hdrs = api("POST", "/sessions",
+                             {"data": {"user": "alice"}, "ttl": 300})
+        assert st == 201, f"create status {st}"
+        assert body["data"] == {"user": "alice"}, f"create data {body}"
+        sid = body["session_id"]
+        assert f"session_id={sid}" in hdrs.get("Set-Cookie", ""), "no cookie"
+        checks.append("create session")
+
+        # 2. migrate
+        st, body, hdrs = api("POST", "/admin/migrate", {})
+        assert st == 200, f"migrate status {st}: {body}"
+        assert body.get("status") == "migrated", f"migrate body {body}"
+        checks.append("migrate")
+
+        # 3. store check
+        st, body, hdrs = api("GET", "/admin/store")
+        assert st == 200, f"store status {st}"
+        assert body.get("store") == "logstore", f"store body {body}"
+        checks.append("store=logstore")
+
+        # 4. read back
+        st, body, hdrs = api("GET", f"/sessions/{sid}")
+        assert st == 200, f"read status {st}: {body}"
+        assert body["session_id"] == sid, f"read sid {body}"
+        assert body["data"] == {"user": "alice"}, f"read data {body}"
+        checks.append("read back after migrate")
+
+        # 5. create new session on log store
+        st, body, hdrs = api("POST", "/sessions",
+                             {"data": {"user": "bob"}, "ttl": 300})
+        assert st == 201, f"create2 status {st}"
+        assert body["data"] == {"user": "bob"}, f"create2 data {body}"
+        checks.append("create on logstore")
+
+        # 6. delete
+        st, body, hdrs = api("DELETE", f"/sessions/{sid}")
+        assert st == 204, f"delete status {st}"
+        checks.append("delete")
+
+        # 7. verify deleted
+        st, body, hdrs = api("GET", f"/sessions/{sid}")
+        assert st == 404, f"read-after-delete status {st}"
+        checks.append("404 after delete")
+
+        print(f"\nAll smoke checks passed: {', '.join(checks)}")
+        return 0
+
+    except AssertionError as e:
+        print(f"FAIL: {e}")
+        return 1
+    finally:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:
+            proc.terminate()
+        proc.wait()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+<<<END>>>

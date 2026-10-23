@@ -1,0 +1,13 @@
+branch,posted,amount,units,code
+Zürich, 20231231 , 7 ,10,
+,10,12.50,10,Q
+São Paulo,, 7 ,abc,ZZTOP
+berlin,007,+3,4e2,extra
+ny,2024-01-31,-0,
+a,b,c
+São Paulo,007,3.,-2.5,Q
+nyc-east,007,1999.95, 2 ,x
+Zürich,abc,0.1,4e2,x
+ lon,10,-0,10,Q
+x,2024-01-31,12abc,7
+Zürich,20240105,10,1,AB12

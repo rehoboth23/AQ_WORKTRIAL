@@ -1,0 +1,357 @@
+```json
+{
+  "name": "bonded-warehouse-excise-return",
+  "description": "File a bonded warehouse's month-end excise-duty return across local ERP, stock ledger and filing portal services, applying procedure rules for loss tolerance, inter-site transfers and customer returns, and handling portal 503 faults with idempotent retries.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["excise-duty", "bonded-warehouse", "procedure-driven", "http-services", "retry", "idempotency"],
+  "expert_time_estimate_min": 35,
+  "junior_time_estimate_min": 75,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You are the excise administrator for bonded warehouse BWH-01 at month-end. Three local HTTP services—an ERP with movement records, a stock ledger with opening positions, and a filing portal—provide the data and submission interface. A starter script connects to all three but miscalculates duty (includes transfers, uses strict < for loss tolerance) and has no retry logic for portal 503 faults. An in-house procedure manual defines the duty rules, tolerance boundary, two-step submission process, and idempotency policy. You must fix the script, file the return, and archive the receipt.",
+  "environment_setup": "The Dockerfile builds python:3.12-slim-bookworm with curl and psmisc installed. It copies three small HTTP services (services/erp_service.py on port 8001, services/stock_ledger_service.py on port 8002, services/portal_service.py on port 8003) that use only the Python standard library. Data ships as JSON in /app/data/: erp_movements.json (practice movements with sales, transfers, returns, within- and over-tolerance evaporation), stock_ledger.json (opening stock 10000 litres), portal_state.json (empty, with fault_config). A /app/data/practice_returns/ directory has three completed reference returns (sales_only.json, plus_transfers.json, plus_returns.json) showing correct duty for each movement type. A /app/procedure_manual.md defines all rules. A /app/file_return.py starter script has bugs: includes transfers in dutiable quantity, uses strict < for tolerance, has no retry on 503. A /app/start_services.sh launches all three services. A /app/tests_public/test_basic.py provides a common-path test. No services are running at container start.",
+  "instruction_summary": "instruction.md tells the agent to file the excise-duty return for the current period. It names the three services and their endpoints (ERP port 8001, stock ledger port 8002, portal port 8003), the procedure manual path (/app/procedure_manual.md), the filing receipt output path (/app/data/filing_receipt.json), and the required receipt fields (period, duty_amount, dutiable_quantity, confirmation_code, archive_ref, request_id). It states that the portal validates format only—not duty amounts—that stock ledger entries are read-only, and that submissions are final and audited. It mentions the starter script /app/file_return.py has errors. It ends with the tamper sentence.",
+  "solution_outline": [
+    "Copy /solution/file_return_correct.py to /app/file_return.py, replacing the buggy starter.",
+    "Kill any existing services on ports 8001-8003 with fuser -k.",
+    "Start erp_service.py, stock_ledger_service.py, portal_service.py as background processes.",
+    "Wait for all three /health endpoints to respond.",
+    "Run /app/file_return.py which: GETs /movements from ERP, GETs /opening_stock from ledger, computes duty excluding transfers and using max(0, loss - tolerance) with tolerance = opening_stock * 0.005, POSTs /submit/step1 with request_id RETURN-{period} retrying on 503 with same request_id up to 3 times, POSTs /submit/step2 with the confirmation_code retrying on 503, and saves filing_receipt.json."
+  ],
+  "test_plan": [
+    "test_graded_filing (parametrized over 10 instances): generates movements via seeded generator, writes test data, starts services, runs /app/file_return.py, reads portal_state.json, checks exactly 1 filing, correct duty_amount (±0.01), correct dutiable_quantity, status='filed', archive_ref present, all audit_log entries share 1 request_id, filing_receipt.json exists with matching fields.",
+    "test_stock_ledger_readonly: saves stock_ledger.json content before filing, runs a filing, asserts the file is byte-identical afterward.",
+    "test_practice_covers_hidden_cases: reads all shipped practice data (main + practice_returns/), asserts each movement type (sale, transfer_out, transfer_in, return_from_customer, evaporation_loss) appears >= 3 times.",
+    "test_generator_deterministic: calls generate_movements twice with same seed, asserts identical output; calls with different seed, asserts different output."
+  ],
+  "anti_cheat": "The tests recompute the correct duty from the movement data using a rule engine in tests/generator.py and compare with the portal's filed amount—an agent cannot hard-code the practice answer because graded instances use different seeds and quantities. The tests also check the audit log for duplicate request_ids, catching any solution that retries with a new id. The agent never sees the generator or the test instances.",
+  "failure_modes": "A capable agent may: (1) miss the 'up to and including' boundary, keeping the starter's strict < and failing at-limit instances—practice data never has a loss at the exact tolerance, so self-testing passes; (2) skip retry logic because practice has no 503 faults, then crash or fail on fault instances; (3) implement retry but generate a fresh request_id per attempt, creating duplicate filings in the audit log; (4) include transfers in the dutiable quantity if it doesn't read the manual carefully—though practice data has transfers so this is more likely caught; (5) forget to save filing_receipt.json or omit required fields. All are the agent's fault because the procedure manual states each rule explicitly.",
+  "shape": "procedure-driven work over local mock services; graded by the portal's final state and audit log",
+  "hidden_evaluation": "Tests generate 10 graded instances from sibling seeds (101-110) using a deterministic generator in tests/. Each instance combines one level from three dimensions (loss tolerance: within/at_limit/over; movement types: sales_only/plus_transfers/plus_returns; portal faults: none/one_503/503_then_duplicate_risk). The practice data the agent sees has within- and over-tolerance losses but never at the exact limit, and has no portal 503 faults. The graded instances include both. The rule engine recomputes the expected duty for each instance independently.",
+  "checks": [
+    {
+      "requirement": "Losses up to and including the tolerance threshold are duty-free. (procedure_manual.md §4)",
+      "assumed_instead": "Tax all evaporation losses regardless of tolerance.",
+      "hidden_test_input": "Instance seed 101: evaporation loss 36 litres, opening stock 10000, tolerance 50 (within).",
+      "why_missed": "The starter uses < which happens to give the right answer for strictly-within losses, so practice tests pass.",
+      "caught_by_tests": ["test_graded_filing[101-within-sales_only-none]"]
+    },
+    {
+      "requirement": "Losses up to and including the tolerance threshold are duty-free. (procedure_manual.md §4, 'up to and including')",
+      "assumed_instead": "Use strict < for tolerance check, treating a loss exactly at the tolerance as dutiable.",
+      "hidden_test_input": "Instance seed 104: evaporation loss exactly 50 litres, opening stock 10000, tolerance 50 (at limit).",
+      "why_missed": "Practice data has losses at 45/50 (within) and 70/50, 55/40 (over) but never exactly at the tolerance boundary. A solution using < passes all practice tests but taxes the at-limit loss incorrectly.",
+      "caught_by_tests": ["test_graded_filing[104-at_limit-sales_only-none]"]
+    },
+    {
+      "requirement": "Losses exceeding the threshold are dutiable on the excess quantity only. (procedure_manual.md §4)",
+      "assumed_instead": "Tax the entire loss amount when it exceeds tolerance.",
+      "hidden_test_input": "Instance seed 109: evaporation loss 72 litres, opening stock 12000, tolerance 60 (over by 12).",
+      "why_missed": "Starter computes excess = loss - tolerance, which is correct for over-tolerance, but an agent might refactor and get it wrong.",
+      "caught_by_tests": ["test_graded_filing[109-over-plus_returns-none]"]
+    },
+    {
+      "requirement": "Transfers between bonded sites are not duty events and are excluded from the calculation entirely. (procedure_manual.md §3)",
+      "assumed_instead": "Include transfer_out as dutiable quantity and transfer_in as a credit, as the starter does.",
+      "hidden_test_input": "Instance seed 110: movements include transfer_out 1800 and transfer_in 1200 alongside sales.",
+      "why_missed": "The starter includes transfers; practice data has transfers so the agent should notice, but might not fix it if they only test with sales-only data.",
+      "caught_by_tests": ["test_graded_filing[110-within-plus_transfers-one_503]"]
+    },
+    {
+      "requirement": "Goods returned by customers are credited in the period they are received back into bond. (procedure_manual.md §5)",
+      "assumed_insted": "Ignore returns or credit them in a different period.",
+      "hidden_test_input": "Instance seed 109: return_from_customer 350 litres in the current period.",
+      "why_missed": "The starter subtracts returns, but an agent might refactor and drop the subtraction.",
+      "caught_by_tests": ["test_graded_filing[109-over-plus_returns-none]"]
+    },
+    {
+      "requirement": "Both steps must be completed for the return to be considered filed. (procedure_manual.md §6)",
+      "assumed_instead": "Only do step1, or skip step2 on a 503.",
+      "hidden_test_input": "Any graded instance—check filing status is 'filed' with a non-null archive_ref.",
+      "why_missed": "Starter does both steps but has no retry; on a 503 in step2 the script crashes, leaving the filing pending.",
+      "caught_by_tests": ["test_graded_filing"]
+    },
+    {
+      "requirement": "Save the filing receipt to /app/data/filing_receipt.json with period, duty_amount, dutiable_quantity, confirmation_code, archive_ref, request_id. (procedure_manual.md §8)",
+      "assumed_instead": "Don't save the receipt, or save it without all required fields.",
+      "hidden_test_input": "Any graded instance—check filing_receipt.json exists and has all six fields matching the portal's record.",
+      "why_missed": "Agent might focus on the submission and forget the receipt file, or omit fields the manual lists.",
+      "caught_by_tests": ["test_graded_filing"]
+    },
+    {
+      "requirement": "Do not generate a new request_id for retries. A new request_id creates a new filing attempt, recorded as a duplicate. (procedure_manual.md §7)",
+      "assumed_instead": "Generate a fresh request_id (e.g. with uuid or a counter) for each retry attempt.",
+      "hidden_test_input": "Instance seed 105: portal 503 on step1 with create_pending_before_503=true; a retry with a different request_id creates a second filing.",
+      "why_missed": "Practice data has no 503 faults, so the agent never tests retry logic. An agent that adds retry but uses a new request_id per attempt creates duplicates that only appear under fault conditions.",
+      "caught_by_tests": ["test_graded_filing[105-at_limit-plus_transfers-503_then_duplicate_risk]", "test_graded_filing[107-over-sales_only-503_then_duplicate_risk]"]
+    },
+    {
+      "requirement": "Retry the same step with the same request_id. (procedure_manual.md §7)",
+      "assumed_instead": "No retry logic at all—crash on 503.",
+      "hidden_test_input": "Instance seed 106: portal returns 503 once on step1, then succeeds on retry.",
+      "why_missed": "Practice data has no faults; agent might not implement retry because everything works without it.",
+      "caught_by_tests": ["test_graded_filing[106-at_limit-plus_returns-one_503]", "test_graded_filing[108-over-plus_transfers-one_503]"]
+    },
+    {
+      "requirement": "Stock ledger entries are read-only. Do not modify /app/data/stock_ledger.json. (instruction.md)",
+      "assumed_instead": "Write to the stock ledger file during processing.",
+      "hidden_test_input": "Any instance—compare stock_ledger.json bytes before and after filing.",
+      "why_missed": "Agent might cache or log to the stock ledger file inadvertently.",
+      "caught_by_tests": ["test_graded_filing", "test_stock_ledger_readonly"]
+    },
+    {
+      "requirement": "The duty calculation formula: dutiable = sales - customer_returns + max(0, evaporation - tolerance), duty = dutiable × 2.50. (procedure_manual.md §2-4)",
+      "assumed_instead": "Various incorrect formulas (wrong rate, wrong sign on returns, taxing all losses).",
+      "hidden_test_input": "All 10 graded instances with different movement combinations and quantities.",
+      "why_missed": "Agent might get one sub-rule wrong but pass practice tests because practice doesn't cover every combination.",
+      "caught_by_tests": ["test_graded_filing"]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "ERP service returns movement data correctly via GET /movements.",
+      "hidden_test_input": "Tests write movements to erp_movements.json, start the service, and GET /movements—the response must match the written data."
+    },
+    {
+      "behaviour": "Stock ledger service returns opening stock via GET /opening_stock.",
+      "hidden_test_input": "Tests write opening_stock to stock_ledger.json, start the service, and GET /opening_stock—the response must contain the written value."
+    },
+    {
+      "behaviour": "Portal service accepts valid step1 submissions and returns a confirmation code.",
+      "hidden_test_input": "Tests POST /submit/step1 with valid JSON and check for a 200 response with confirmation_code."
+    }
+  ],
+  "ground_truth": "A seeded generator and rule engine in tests/generator.py create movement data and compute the expected duty. The rule engine applies: dutiable = sales - returns + max(0, evaporation - opening_stock * 0.005), duty = dutiable * 2.50, transfers excluded. The tests write generated movements to /app/data/erp_movements.json, run /app/file_return.py, read the portal's filed duty_amount, and compare with the rule engine's output (±0.01). The generator uses Python's random.Random with integer seeds; same seed always produces identical bytes.",
+  "dial": "Number of procedure rules exercised by this month's movements. Fair range 4-8; chosen value 6 (sales dutiable, transfers excluded, returns credited, loss within duty-free, loss at-limit duty-free, loss over: excess dutiable). The submission rules (two-step, retry, idempotency) add 3 more on fault instances.",
+  "quirk_matrix": {
+    "dimensions": {
+      "loss_tolerance": ["within", "at_limit", "over"],
+      "movement_types": ["sales_only", "plus_transfers", "plus_returns"],
+      "portal_faults": ["none", "one_503", "503_then_duplicate_risk"]
+    },
+    "mix": "3 of 10 instances are easy cells (within + sales_only + none) = 30%. Each level of each dimension appears in at least 2 instances.",
+    "instances": [
+      {"seed": 101, "loss": "within", "movements": "sales_only", "fault": "none"},
+      {"seed": 102, "loss": "within", "movements": "sales_only", "fault": "none"},
+      {"seed": 103, "loss": "within", "movements": "sales_only", "fault": "none"},
+      {"seed": 104, "loss": "at_limit", "movements": "sales_only", "fault": "none"},
+      {"seed": 105, "loss": "at_limit", "movements": "plus_transfers", "fault": "503_then_duplicate_risk"},
+      {"seed": 106, "loss": "at_limit", "movements": "plus_returns", "fault": "one_503"},
+      {"seed": 107, "loss": "over", "movements": "sales_only", "fault": "503_then_duplicate_risk"},
+      {"seed": 108, "loss": "over", "movements": "plus_transfers", "fault": "one_503"},
+      {"seed": 109, "loss": "over", "movements": "plus_returns", "fault": "none"},
+      {"seed": 110, "loss": "within", "movements": "plus_transfers", "fault": "one_503"}
+    ]
+  },
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "The excise duty rate is €2.50 per litre.",
+      "why": "A configured rate, not derivable from movement data."
+    },
+    {
+      "fact": "The tolerance is 0.5% of opening stock.",
+      "why": "A configured percentage, not derivable from movement data."
+    },
+    {
+      "fact": "Losses up to and including the tolerance threshold are duty-free (boundary is inclusive).",
+      "why": "Practice data has losses strictly within and strictly over tolerance but never exactly at the boundary, so the data alone cannot disambiguate < from <=."
+    },
+    {
+      "fact": "On 503, retry with the same request_id; the portal is idempotent.",
+      "why": "Practice data has no 503 faults, so the data cannot show retry or idempotency behavior."
+    },
+    {
+      "fact": "The two-step submission process (step1 returns confirmation_code, step2 returns archive_ref) is required.",
+      "why": "A procedure rule, not derivable from movement data."
+    },
+    {
+      "fact": "The request_id must be unique per filing, derived from the period (e.g. RETURN-2024-03).",
+      "why": "A convention stated in the manual, not inferable from data."
+    }
+  ],
+  "quirk_evidence": [
+    {
+      "quirk": "loss_tolerance/within",
+      "evidence": "procedure_manual.md §4 worked example (opening 10000, tolerance 50, evaporation 45 → duty-free) and practice_returns/sales_only.json (opening 8000, tolerance 40, evaporation 30 → duty-free)."
+    },
+    {
+      "quirk": "loss_tolerance/at_limit",
+      "evidence": "procedure_manual.md §4: 'Losses up to and including the tolerance threshold are duty-free.' No practice example is at the exact boundary."
+    },
+    {
+      "quirk": "loss_tolerance/over",
+      "evidence": "practice_returns/plus_transfers.json (opening 10000, tolerance 50, evaporation 70 → excess 20 dutiable) and practice_returns/plus_returns.json (opening 8000, tolerance 40, evaporation 55 → excess 15 dutiable)."
+    },
+    {
+      "quirk": "movement_types/sales_only",
+      "evidence": "practice_returns/sales_only.json with completed return."
+    },
+    {
+      "quirk": "movement_types/plus_transfers",
+      "evidence": "practice_returns/plus_transfers.json with completed return showing transfers excluded from duty."
+    },
+    {
+      "quirk": "movement_types/plus_returns",
+      "evidence": "practice_returns/plus_returns.json with completed return showing returns reducing dutiable quantity."
+    },
+    {
+      "quirk": "portal_faults/none",
+      "evidence": "All practice data has no portal faults—portal_state.json ships with step1_503_count=0."
+    },
+    {
+      "quirk": "portal_faults/one_503",
+      "evidence": "procedure_manual.md §7: 'The filing portal may return HTTP 503... retry the same step with the same request_id.'"
+    },
+    {
+      "quirk": "portal_faults/503_then_duplicate_risk",
+      "evidence": "procedure_manual.md §7: 'Do not generate a new request_id for retries. A new request_id creates a new filing attempt, which is recorded as a duplicate in the audit log.'"
+    }
+  ],
+  "public_tests": "A visible test in /app/tests_public/test_basic.py that starts services with simple practice data (sales only, within-tolerance loss, no faults), runs /app/file_return.py, and checks the filing receipt exists with confirmation_code, archive_ref, and a positive duty_amount. Covers about 30% of what the hidden tests check (the common path only, no edge cases).",
+  "anti_cheese": "Hidden recomputation: the tests recompute the correct duty from generated movement data using a rule engine and compare with the portal's filed amount—hard-coding the practice answer fails on different seeds. No duplicate submissions: the tests assert exactly one filing and one unique request_id in the audit log—submitting multiple times or with different request_ids fails. Enforced at run time by reading portal_state.json after the filing, not by scanning source. A hidden test in test_graded_filing checks both for every instance.",
+  "graded_instances": "The graded instances are generated by tests/generator.py from seeds 101-110, distinct from the practice data in /app/data/. Each instance combines one level from each quirk-matrix dimension. The practice data has seeds embedded in JSON files; the graded data is generated fresh in tests. The determinism self-check (test_generator_deterministic) verifies same-seed-same-bytes and different-seed-different-output.",
+  "self_check_gap": "A solution that reproduces the entire practice set can still fail on two cases: (1) a loss exactly at the tolerance boundary—the practice data has losses at 45/50 and 70/50 but never at 50/50, so a solution using strict < passes all practice tests but taxes the at-limit loss; (2) a retried submission that already succeeded—the practice data has no 503 faults, so a solution that generates a new request_id per retry passes practice but creates duplicates under fault conditions. The practice set nonetheless determines the right answer because the manual explicitly states 'up to and including' and 'do not generate a new request_id for retries', and the practice examples show the general rule (within is duty-free, over is taxed on excess) from which the boundary follows.",
+  "margins": [
+    {
+      "test": "Duty amount accuracy",
+      "bar": "±0.01 of the rule engine's computed value",
+      "oracle_value": "Exact match (the rule engine and the oracle use the same formula)",
+      "baseline": "N/A—absolute check against recomputed value"
+    },
+    {
+      "test": "Number of filings",
+      "bar": "Exactly 1",
+      "oracle_value": "1",
+      "baseline": "N/A"
+    },
+    {
+      "test": "Number of unique request_ids in audit log",
+      "bar": "Exactly 1",
+      "oracle_value": "1",
+      "baseline": "N/A"
+    }
+  ],
+  "contract": [
+    "Entry point: /app/file_return.py, invoked by the agent or by /solution/solve.sh.",
+    "Services: ERP on 127.0.0.1:8001 (GET /movements, GET /period, GET /health), Stock Ledger on 127.0.0.1:8002 (GET /opening_stock, GET /entries, GET /health), Portal on 127.0.0.1:8003 (POST /submit/step1, POST /submit/step2, GET /health).",
+    "Duty rate: €2.50 per litre.",
+    "Tolerance: opening_stock × 0.005 litres.",
+    "Dutiable quantity = sales − customer_returns + max(0, evaporation_loss − tolerance).",
+    "Transfers (transfer_out, transfer_in) are excluded from dutiable quantity entirely.",
+    "Customer returns are credited in the period received (reduce dutiable quantity).",
+    "Losses ≤ tolerance are duty-free; losses > tolerance are dutiable on the excess only.",
+    "Step 1: POST /submit/step1 with {request_id, period, duty_amount, dutiable_quantity, movements_summary} → returns {confirmation_code, status: 'pending_confirmation'}.",
+    "Step 2: POST /submit/step2 with {request_id, confirmation_code} → returns {archive_ref, status: 'filed'}.",
+    "Both steps must complete; filing status must be 'filed' with a non-null archive_ref.",
+    "request_id = RETURN-{period} (e.g. RETURN-2024-03), reused for all retries.",
+    "On HTTP 503: retry the same step with the same request_id, up to 3 attempts.",
+    "Idempotency: a request with an existing request_id returns the existing result.",
+    "Filing receipt saved to /app/data/filing_receipt.json with: period, duty_amount, dutiable_quantity, confirmation_code, archive_ref, request_id.",
+    "Stock ledger (/app/data/stock_ledger.json) is read-only.",
+    "Portal records every attempt in /app/data/portal_state.json audit_log.",
+    "Portal may create a pending filing before returning 503 (response-lost scenario)."
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Loss exactly at the tolerance boundary is duty-free, but using strict < instead of <= gives no runtime error—just a slightly higher duty amount that the portal accepts (it validates format only).",
+      "stated_in": "procedure_manual.md §4: 'Losses up to and including the tolerance threshold are duty-free.'"
+    },
+    {
+      "trap": "On a 503 where the portal already created a pending filing, retrying with a new request_id creates a duplicate filing. No error is returned—the portal accepts the new request. The duplicate is only visible in the audit log.",
+      "stated_in": "procedure_manual.md §7: 'Do not generate a new request_id for retries. A new request_id creates a new filing attempt, which is recorded as a duplicate in the audit log.'"
+    },
+    {
+      "trap": "A 503 on step2 means the filing was not archived. The agent must retry step2 with the same request_id and confirmation_code. If the agent assumes step2 always succeeds after step1, the filing remains pending and is never filed.",
+      "stated_in": "procedure_manual.md §7: 'Retry the same step with the same request_id.'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "seed 101: within + sales_only + none",
+      "quirks": "loss within tolerance, no transfers/returns, no portal faults",
+      "purpose": "Basic duty calculation: sales dutiable, within-tolerance loss duty-free."
+    },
+    {
+      "instance": "seed 102: within + sales_only + none",
+      "quirks": "same dimensions, different quantities",
+      "purpose": "Confirms the basic path with different numbers."
+    },
+    {
+      "instance": "seed 103: within + sales_only + none",
+      "quirks": "same dimensions, different quantities",
+      "purpose": "Third easy instance for the 30% easy mix."
+    },
+    {
+      "instance": "seed 104: at_limit + sales_only + none",
+      "quirks": "loss exactly at tolerance, no transfers/returns, no faults",
+      "purpose": "Invisible trap: tests the <= boundary. Practice data never has this."
+    },
+    {
+      "instance": "seed 105: at_limit + plus_transfers + 503_then_duplicate_risk",
+      "quirks": "boundary loss, transfers present, portal 503 with pending filing created",
+      "purpose": "Hardest combination: boundary rule + transfer exclusion + idempotency under duplicate risk."
+    },
+    {
+      "instance": "seed 106: at_limit + plus_returns + one_503",
+      "quirks": "boundary loss, customer returns, one 503 on step1",
+      "purpose": "Boundary + return crediting + retry logic."
+    },
+    {
+      "instance": "seed 107: over + sales_only + 503_then_duplicate_risk",
+      "quirks": "over-tolerance loss, no transfers/returns, 503 with duplicate risk",
+      "purpose": "Over-tolerance excess calculation + idempotency."
+    },
+    {
+      "instance": "seed 108: over + plus_transfers + one_503",
+      "quirks": "over-tolerance loss, transfers, one 503",
+      "purpose": "Excess calculation + transfer exclusion + retry."
+    },
+    {
+      "instance": "seed 109: over + plus_returns + none",
+      "quirks": "over-tolerance loss, returns, no faults",
+      "purpose": "Excess + returns without fault complications."
+    },
+    {
+      "instance": "seed 110: within + plus_transfers + one_503",
+      "quirks": "within-tolerance loss, transfers, one 503",
+      "purpose": "Transfer exclusion + retry on a simple loss case."
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Add a second boundary case (e.g. loss = tolerance + 1, testing the over side of the boundary).",
+      "Add step2 503 faults to more instances.",
+      "Increase the number of movement types per instance (e.g. transfers AND returns in the same month).",
+      "Add a instance where the loss is 0 (no evaporation at all)."
+    ],
+    "too_hard": [
+      "Remove the at_limit instance, keeping only within and over.",
+      "Reduce portal fault instances to one, with create_pending_before_503=false (no duplicate risk).",
+      "Remove transfers or returns from the graded set, testing only one movement type at a time.",
+      "Provide a practice example at the tolerance boundary so the agent can test it."
+    ]
+  },
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "knobs": [
+    {
+      "knob": "transient service faults",
+      "where": "The portal service reads fault_config from /app/data/portal_state.json. When step1_503_count > 0, it returns 503 for that many attempts. When create_pending_before_503=true, it creates the pending filing before returning 503, so a retry with a different request_id creates a duplicate.",
+      "fairness": "procedure_manual.md §7 states: 'The filing portal may return HTTP 503... retry the same step with the same request_id' and 'Do not generate a new request_id for retries.' Faults are seeded deterministically via the fault_config written by the tests."
+    },
+    {
+      "knob": "irreversible, audited steps",
+      "where": "The portal records every step1 and step2 attempt in /app/data/portal_state.json audit_log with the request_id, result, and timestamp. Filings cannot be deleted or undone.",
+      "fairness": "instruction.md states: 'Submissions are final and audited. The portal records every attempt in its audit log.'"
+    },
+    {
+      "knob": "hidden-edge coverage",
+      "where": "The at-limit loss case (evaporation == tolerance) appears only in graded instances, never in practice data.",
+      "fairness": "procedure_manual.md §4 states: 'Losses up to and including the tolerance threshold are duty-free.' The practice data shows within (45/50) and over (70/50, 55/40) so the general rule is visible; the boundary word 'including' is explicit."
+    }
+  ]
+}
+```
