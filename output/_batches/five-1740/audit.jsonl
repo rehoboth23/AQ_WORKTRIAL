@@ -1,0 +1,28 @@
+{"time": "2026-10-22T17:40:20", "pid": 56853, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T17:40:20", "pid": 56853, "event": "stage", "topic": "@seeds/pharmacy-prior-auth.yaml", "key": "dc20b0289b", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T17:40:22", "pid": 56873, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T17:40:22", "pid": 56873, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T17:40:22", "pid": 56873, "event": "stage", "topic": "@seeds/excise-return.yaml", "key": "9d01066dab", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T17:40:24", "pid": 56886, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T17:40:24", "pid": 56886, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T17:40:24", "pid": 56886, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T17:40:24", "pid": 56886, "event": "stage", "topic": "@seeds/checkpoint-race.yaml", "key": "d1c4f47b75", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T17:40:26", "pid": 56906, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T17:40:26", "pid": 56906, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T17:40:26", "pid": 56906, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T17:40:26", "pid": 56906, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T17:40:26", "pid": 56906, "event": "stage", "topic": "@seeds/ids-rules.yaml", "key": "6bb9dd2373", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T17:40:28", "pid": 56920, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T17:40:28", "pid": 56920, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T17:40:28", "pid": 56920, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T17:40:28", "pid": 56920, "event": "skipped_locked", "topic": "@seeds/checkpoint-race.yaml"}
+{"time": "2026-10-22T17:40:28", "pid": 56920, "event": "skipped_locked", "topic": "@seeds/ids-rules.yaml"}
+{"time": "2026-10-22T17:40:28", "pid": 56920, "event": "stage", "topic": "@seeds/address-rules.yaml", "key": "410de41297", "frm": "pending", "to": "generating", "why": ""}
+{"time": "2026-10-22T18:05:29", "pid": 56886, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T18:05:30", "pid": 61819, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T18:05:30", "pid": 61819, "event": "skipped_locked", "topic": "@seeds/pharmacy-prior-auth.yaml"}
+{"time": "2026-10-22T18:05:30", "pid": 61819, "event": "skipped_locked", "topic": "@seeds/excise-return.yaml"}
+{"time": "2026-10-22T18:05:30", "pid": 61819, "event": "resume", "topic": "@seeds/checkpoint-race.yaml", "key": "d1c4f47b75", "stage": "generating", "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/a-go-upload-service-s-multi-threaded-che-20261022-174024-6503"}
+{"time": "2026-10-22T18:05:56", "pid": 56853, "event": "killed", "signal": "SIGTERM", "children": []}
+{"time": "2026-10-22T18:05:57", "pid": 61924, "event": "batch_start", "batch": "five-1740", "topics": 5, "waves": [5], "control": false}
+{"time": "2026-10-22T18:05:57", "pid": 61924, "event": "resume", "topic": "@seeds/pharmacy-prior-auth.yaml", "key": "dc20b0289b", "stage": "generating", "logs_dir": "/Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/output/_logs/close-out-a-pharmacy-s-prior-authorisati-20261022-174020-5666"}

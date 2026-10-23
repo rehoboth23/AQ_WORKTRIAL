@@ -1,0 +1,433 @@
+{
+  "name": "pharmacy-prior-auth-queue-closeout",
+  "description": "Close out a pharmacy's prior-authorisation queue by applying formulary rules through local services and submitting each decision to the portal, graded on decision correctness and audit integrity",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": [
+    "pharmacy",
+    "prior-auth",
+    "rule-application",
+    "local-services",
+    "audit-trail"
+  ],
+  "expert_time_estimate_min": 50.0,
+  "junior_time_estimate_min": 130.0,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "A pharmacy's prior-authorisation system has a queue of 18 open PA cases. Three local HTTP services (formulary on 8001, prescriber on 8002, payer on 8003) provide authoritative drug, patient, and plan data. A portal service on 8004 accepts decision submissions. The services are not running. An operating manual at /app/manual/operating_manual.md defines the exact decision process (payer waiver check \u2192 step therapy \u2192 quantity \u2192 exception), source precedence, decision/reason codes, and audit-log format. A stale local test file at /app/tests/test_local.py contains two incorrect expectations that contradict the manual. The agent must start the services, read the manual, process every case, and submit each decision to the portal with a correct audit log.",
+  "environment_setup": "python:3.12-slim-bookworm with Flask installed. Four service scripts under /app/services/ (formulary on 8001, prescriber on 8002, payer on 8003, portal on 8004), each reading from JSON data files under /app/data/. The payer service provides GET /plan/{patient_id} returning {plan_id, plan_name, step_therapy_waivers: [drug_id list]}. The formulary service provides GET /drug/{drug_id} returning {drug_id, drug_name, max_quantity, step_therapy_requirements: [drug_id list], exception_diagnoses: [code list]}. The prescriber service provides GET /history/{patient_id} returning {prior_drugs: [{drug_id, outcome, date}]}. The portal accepts POST /submit with {case_id, decision, reason_code, reviewer_id, timestamp} and returns 200 for any well-formed body. The practice queue at /app/queue/prior_auth_queue.json (18 cases from seed 42) covers all quirk-matrix levels \u22653 times plus 3+ payer-waiver (NOT_REQUIRED) cases, but does NOT include: quantity exactly at the limit, exception diagnosis in non-primary position, two-drug step therapy, or combined step-therapy-fail + quantity-over. Patient records under /app/patient_records/ are read-only. Data files (formulary.json, prescriber_history.json, payer_plans.json) are pre-generated and COPY'd in. The generator is NOT in the image. Audit directory /app/audit/ exists but is empty. A stale local test file at /app/tests/test_local.py contains 5 test cases: 3 correct (common path) and 2 with wrong expectations (expects DENY for quantity-at-limit, expects DENY for secondary-position exception). No services are running at container start.",
+  "instruction_summary": "Read /app/manual/operating_manual.md. Start the four services (python3 /app/services/*.py). Process every case in /app/queue/prior_auth_queue.json following the manual's decision process in order: (1) Query the payer service for the patient's plan; if the drug is in the plan's step_therapy_waivers list, step therapy is not required (reason NOT_REQUIRED, skip to step 3). (2) Verify step therapy via the prescriber service (authoritative over notes); ALL requirements must be met; if any is not met \u2192 DENY/STEP_THERAPY_NOT_MET. (3) Check quantity against formulary limits (\u2264 is within limit); if over, check exception diagnoses. (4) If over limit with matching exception diagnosis \u2192 APPROVE/QTY_LIMIT_EXCEPTION; if over without exception \u2192 DENY/QTY_LIMIT_EXCEEDED. (5) If all checks pass \u2192 APPROVE with reason MEETS_CRITERIA or NOT_REQUIRED. Submit each decision to POST http://localhost:8004/submit. Write the audit log to /app/audit/audit_log.json. Each case decided exactly once. The operating manual is the authoritative specification; if any local test contradicts the manual, the manual wins. Do not modify /app/patient_records/. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+  "solution_outline": [
+    "Start formulary_service.py, prescriber_service.py, payer_service.py, portal_service.py in background, wait for readiness",
+    "Read the queue from /app/queue/prior_auth_queue.json",
+    "For each case: GET payer plan for patient_id; check if drug_id is in step_therapy_waivers",
+    "If not waived: GET prescriber history; check ALL step_therapy_requirements from formulary against prescriber history; if any not met \u2192 DENY/STEP_THERAPY_NOT_MET",
+    "GET formulary drug info for max_quantity and exception_diagnoses; check requested_quantity \u2264 max_quantity",
+    "If over limit: check if ANY diagnosis_code in the case matches ANY code in exception_diagnoses; if yes \u2192 APPROVE/QTY_LIMIT_EXCEPTION; if no \u2192 DENY/QTY_LIMIT_EXCEEDED",
+    "If all checks pass: APPROVE with MEETS_CRITERIA (if step therapy was required and met) or NOT_REQUIRED (if waived)",
+    "POST each decision to the portal with case_id, decision, reason_code, reviewer_id, timestamp",
+    "Write audit_log.json with one entry per case (case_id, decision, reason_code, timestamp)",
+    "Verify all 18 cases processed, no duplicates, audit log consistent with submissions"
+  ],
+  "test_plan": [
+    "test_practice_covers_hidden_cases: read practice queue, run rule engine, assert each quirk-matrix level appears \u22653 times",
+    "test_generator_determinism: same seed \u2192 identical output bytes",
+    "test_generator_different_seeds: seed 137 \u2260 seed 271 queues",
+    "test_practice_basic_validity: all practice submissions have valid decision/reason codes, all 18 cases present, no duplicates",
+    "test_graded_step_therapy_met: cases where step therapy is required and met \u2192 APPROVE/MEETS_CRITERIA",
+    "test_graded_step_therapy_not_met: cases where step therapy is required and not met \u2192 DENY/STEP_THERAPY_NOT_MET",
+    "test_graded_step_therapy_prescriber_only: notes silent but prescriber confirms \u2192 APPROVE/MEETS_CRITERIA",
+    "test_graded_payer_waiver: drug in plan's step_therapy_waivers \u2192 APPROVE/NOT_REQUIRED (skip step therapy)",
+    "test_graded_quantity_at_limit: requested quantity equals formulary max \u2192 APPROVE (\u2264 not <)",
+    "test_graded_quantity_over_no_exception: over limit, no exception diagnosis \u2192 DENY/QTY_LIMIT_EXCEEDED",
+    "test_graded_quantity_over_with_exception: over limit with exception diagnosis \u2192 APPROVE/QTY_LIMIT_EXCEPTION",
+    "test_graded_exception_secondary_diagnosis: exception code in non-primary position \u2192 APPROVE/QTY_LIMIT_EXCEPTION",
+    "test_graded_stale_note_step_therapy: notes say not met, prescriber says met \u2192 APPROVE/MEETS_CRITERIA",
+    "test_graded_stale_note_false_claim: notes say met, prescriber says not \u2192 DENY/STEP_THERAPY_NOT_MET",
+    "test_graded_note_contradicts_formulary_qty: notes claim different qty limit \u2192 use formulary limit",
+    "test_graded_two_step_therapy: drug requiring two prior drugs \u2192 both must be verified",
+    "test_graded_decision_order: step therapy not met AND quantity over with exception \u2192 DENY/STEP_THERAPY_NOT_MET (step therapy checked first, reason from first failing check)",
+    "test_graded_no_duplicate_submissions: no case_id appears more than once in portal or audit log",
+    "test_graded_all_cases_processed: every case_id in graded queue has a submission",
+    "test_patient_records_unchanged: all files under /app/patient_records/ byte-identical to original",
+    "test_graded_audit_log_consistent: audit log entries match portal submissions exactly",
+    "test_payer_service_queried: for cases with non-default plan, the formulary tier-specific limits are applied (indirectly verified via decision correctness)",
+    "test_no_tests_modification: /app/tests/test_local.py byte-identical to original (stale test not 'fixed')",
+    "test_tamper_guard: forbidden imports (tests/rule_engine, tests/generator) blocked at run time via import hook"
+  ],
+  "anti_cheat": "The portal accepts any well-formed submission regardless of correctness, so the agent cannot verify decisions by portal response. Expected decisions are computed by a rule engine in tests/ that the agent never sees. The graded queues use different seeds (137, 271) whose cases are never in the image. Patient records are read-only and checked by hash. The stale local test at /app/tests/test_local.py is also checked by hash \u2014 if the agent 'fixes' it to match its implementation, the hash check fails. No reference implementation or expected-output file exists in the image. The generator is deleted from the image after build. An import hook in the test runner blocks importing tests/rule_engine.py or tests/generator.py from the solution's process.",
+  "failure_modes": "Trusting queue notes over the prescriber/formulary/payer services. Using < instead of \u2264 for quantity limits. Checking only the first diagnosis code for exceptions. Not querying the payer service for plan waivers. Not querying the prescriber service when notes are silent. Checking only the first step-therapy requirement for multi-drug requirements. Returning the wrong reason code when multiple checks could fail (not following the manual's step order). Trusting the stale local test over the manual. Hard-coding decisions from the practice queue. Submitting a case twice or missing a case. Modifying /app/tests/test_local.py to match wrong implementation. Using lowercase or non-standard decision/reason codes.",
+  "shape": "procedure-driven case decisions over local services; graded by submitted decisions and audit log",
+  "hidden_evaluation": "The tests generate two graded queues (seeds 137 and 271) with 18 cases each, replace the data files and queue, restart services, re-run solve.sh, and compare every decision against a rule engine in tests/rule_engine.py that applies the manual's rules. The graded queues combine quirks in ways the practice queue shows only individually: quantity exactly at the limit, exception diagnoses in non-primary position, two-drug step therapy, combined step-therapy-fail + quantity-over (testing decision order), and payer-waiver cases where the drug is in the plan's waiver list. The stale local test at /app/tests/test_local.py has wrong expectations for two edge cases; if the agent conforms to the stale test instead of the manual, those graded cases fail.",
+  "checks": [
+    {
+      "requirement": "Manual Step 2: 'If ALL step therapy requirements are met \u2192 proceed; reason MEETS_CRITERIA if step therapy was required and met'",
+      "assumed_instead": "Skip step therapy check or use wrong reason code",
+      "hidden_test_input": "Graded case where prescriber confirms prior drug tried and failed for a drug with one step-therapy requirement",
+      "why_missed": "Agent might not query prescriber or might use wrong reason code; portal accepts any string",
+      "caught_by_tests": [
+        "test_graded_step_therapy_met"
+      ]
+    },
+    {
+      "requirement": "Manual Step 2: 'If ANY step therapy requirement is not met \u2192 DENY with STEP_THERAPY_NOT_MET'",
+      "assumed_instead": "Approve based on notes saying therapy was tried",
+      "hidden_test_input": "Graded case where prescriber shows no prior drug history but notes claim prior therapy",
+      "why_missed": "Agent trusts notes over prescriber service; portal accepts incorrect APPROVE",
+      "caught_by_tests": [
+        "test_graded_step_therapy_not_met",
+        "test_graded_stale_note_false_claim"
+      ]
+    },
+    {
+      "requirement": "Manual Step 2: 'Always verify step therapy using the prescriber service, regardless of what the notes say'",
+      "assumed_instead": "Skip prescriber query when notes are silent, assume therapy not met",
+      "hidden_test_input": "Graded case with empty notes but prescriber service confirms prior drug tried and failed",
+      "why_missed": "No runtime error; agent assumes notes are complete and issues DENY",
+      "caught_by_tests": [
+        "test_graded_step_therapy_prescriber_only"
+      ]
+    },
+    {
+      "requirement": "Manual Section 3: 'Prescriber service is authoritative for patient prescribing history; notes are informational only'",
+      "assumed_instead": "Trust notes that say patient tried prior drug when prescriber service shows they did not",
+      "hidden_test_input": "Graded case where notes say 'Methotrexate tried, inadequate response' but prescriber history is empty",
+      "why_missed": "Portal accepts the incorrect APPROVE/MEETS_CRITERIA",
+      "caught_by_tests": [
+        "test_graded_stale_note_false_claim"
+      ]
+    },
+    {
+      "requirement": "Manual Section 3: 'Prescriber service is authoritative; notes saying step therapy not met are overridden by prescriber service showing therapy met'",
+      "assumed_instead": "Trust notes saying 'patient has not tried prior therapy' over prescriber service",
+      "hidden_test_input": "Graded case where notes say 'no prior therapy' but prescriber shows Methotrexate tried and failed",
+      "why_missed": "Agent issues DENY/STEP_THERAPY_NOT_MET following notes; correct is APPROVE/MEETS_CRITERIA",
+      "caught_by_tests": [
+        "test_graded_stale_note_step_therapy"
+      ]
+    },
+    {
+      "requirement": "Manual Step 2: 'If ANY step therapy requirement is not met \u2192 DENY' \u2014 applies to multi-drug requirements where ALL must be verified",
+      "assumed_instead": "Check only the first step-therapy requirement and ignore the second",
+      "hidden_test_input": "Graded case for Infliximab requiring Methotrexate AND Adalimumab; patient tried Methotrexate but not Adalimumab",
+      "why_missed": "Practice queue only has single-drug requirements; first check passes, second fails; agent issues APPROVE instead of DENY",
+      "caught_by_tests": [
+        "test_graded_two_step_therapy"
+      ]
+    },
+    {
+      "requirement": "Manual Step 1: 'Query the payer service for the patient's plan. If the drug is in the plan's step_therapy_waivers list, step therapy is not required; reason is NOT_REQUIRED; proceed to quantity check'",
+      "assumed_instead": "Skip the payer service query entirely; require step therapy for all drugs; never produce NOT_REQUIRED",
+      "hidden_test_input": "Graded case where payer service returns a plan with the prescribed drug in step_therapy_waivers; patient has no prior drug history",
+      "why_missed": "Agent never queries port 8003; issues DENY/STEP_THERAPY_NOT_MET instead of APPROVE/NOT_REQUIRED; portal accepts it",
+      "caught_by_tests": [
+        "test_graded_payer_waiver"
+      ]
+    },
+    {
+      "requirement": "Manual Step 3: 'If the requested quantity is at or below the limit \u2192 continue to exception check or approve'",
+      "assumed_instead": "Use strict less-than: quantity < limit to approve",
+      "hidden_test_input": "Graded case requesting exactly the formulary max quantity (e.g., 2 pens, limit is 2)",
+      "why_missed": "Practice queue never has quantity == limit (only strictly below or strictly over); using < passes all practice tests but produces DENY on the boundary; no runtime error",
+      "caught_by_tests": [
+        "test_graded_quantity_at_limit"
+      ]
+    },
+    {
+      "requirement": "Manual Step 3: 'If quantity exceeds limit and no exception diagnosis matches \u2192 DENY with QTY_LIMIT_EXCEEDED'",
+      "assumed_instead": "Approve over-limit quantities if notes say 'clinical necessity' without matching exception code",
+      "hidden_test_input": "Graded case requesting 5 pens of Adalimumab (limit 2) with diagnosis Z00.00 (not in exceptions)",
+      "why_missed": "Portal accepts the APPROVE; only rule engine catches the missing exception match",
+      "caught_by_tests": [
+        "test_graded_quantity_over_no_exception"
+      ]
+    },
+    {
+      "requirement": "Manual Step 3: 'If quantity exceeds limit but an exception diagnosis matches \u2192 APPROVE with QTY_LIMIT_EXCEPTION'",
+      "assumed_instead": "Deny all over-limit quantities regardless of exception diagnoses",
+      "hidden_test_input": "Graded case requesting 3 pens of Adalimumab (limit 2) with diagnosis M05.9 (in exceptions)",
+      "why_missed": "Portal accepts the DENY; looks conservative but wrong per manual",
+      "caught_by_tests": [
+        "test_graded_quantity_over_with_exception"
+      ]
+    },
+    {
+      "requirement": "Manual Step 3: 'Check if ANY of the case's diagnosis codes match the formulary's exception_diagnoses list'",
+      "assumed_instead": "Check only the first diagnosis code for exception match",
+      "hidden_test_input": "Graded case with exception code as second diagnosis (e.g., ['M06.9', 'M05.9'] where M05.9 is the exception)",
+      "why_missed": "Practice queue always has exception as first code; checking only first passes practice; produces DENY/QTY_LIMIT_EXCEEDED instead of APPROVE/QTY_LIMIT_EXCEPTION; no runtime error",
+      "caught_by_tests": [
+        "test_graded_exception_secondary_diagnosis"
+      ]
+    },
+    {
+      "requirement": "Manual Section 3: 'Formulary service is authoritative for drug rules, quantity limits, exception diagnoses'",
+      "assumed_instead": "Use quantity limit mentioned in notes when it differs from formulary",
+      "hidden_test_input": "Graded case where notes say limit is 4 but formulary says 2; patient requests 3",
+      "why_missed": "Following notes leads to APPROVE; portal accepts it; only formulary service has the correct limit",
+      "caught_by_tests": [
+        "test_graded_note_contradicts_formulary_qty"
+      ]
+    },
+    {
+      "requirement": "Manual: 'Apply steps in order. The first failing step determines the decision and reason code. Step 2 (step therapy) is checked before Step 3 (quantity).'",
+      "assumed_instead": "Check quantity first, return QTY_LIMIT_EXCEEDED or QTY_LIMIT_EXCEPTION when step therapy also fails",
+      "hidden_test_input": "Graded case where step therapy is not met AND quantity is over with exception diagnosis",
+      "why_missed": "Practice queue never combines step-therapy-fail with quantity-over; if agent checks quantity first, it returns APPROVE/QTY_LIMIT_EXCEPTION or DENY/QTY_LIMIT_EXCEEDED instead of DENY/STEP_THERAPY_NOT_MET; no runtime error",
+      "caught_by_tests": [
+        "test_graded_decision_order"
+      ]
+    },
+    {
+      "requirement": "Manual Section 4: 'Decision codes APPROVE/DENY and reason codes exactly as listed (case-sensitive): MEETS_CRITERIA, NOT_REQUIRED, STEP_THERAPY_NOT_MET, QTY_LIMIT_EXCEEDED, QTY_LIMIT_EXCEPTION'",
+      "assumed_instead": "Use lowercase 'approve' or a different reason string like 'STEP_THERAPY_FAILED' or 'WAIVED'",
+      "hidden_test_input": "Any graded case \u2014 the test checks the exact codes in every submission",
+      "why_missed": "Portal accepts any string; no validation error",
+      "caught_by_tests": [
+        "test_graded_step_therapy_met",
+        "test_graded_step_therapy_not_met",
+        "test_graded_payer_waiver"
+      ]
+    },
+    {
+      "requirement": "Manual Section 5: 'Each case must be submitted exactly once (no duplicates in portal or audit log)'",
+      "assumed_instead": "Resubmit a case to correct a mistake, or process a case twice in a loop",
+      "hidden_test_input": "Graded queue where any implementation that double-submits produces duplicate case_ids",
+      "why_missed": "Portal accepts duplicate submissions; only the audit-log check catches it",
+      "caught_by_tests": [
+        "test_graded_no_duplicate_submissions"
+      ]
+    },
+    {
+      "requirement": "Manual Section 6: 'Every case in the queue must have exactly one entry in the audit log and one portal submission'",
+      "assumed_instead": "Skip writing audit log, write partial entries, or skip cases that seem ambiguous",
+      "hidden_test_input": "Graded queue with 18 cases; test checks 18 submissions and 18 audit entries",
+      "why_missed": "Portal submissions may be correct but audit trail incomplete; or a case is skipped",
+      "caught_by_tests": [
+        "test_graded_audit_log_consistent",
+        "test_graded_all_cases_processed"
+      ]
+    },
+    {
+      "requirement": "Instruction: 'Do not modify patient records under /app/patient_records/'",
+      "assumed_instead": "Write intermediate results or logs into the patient_records directory",
+      "hidden_test_input": "SHA-256 hash of each file under /app/patient_records/ compared to original",
+      "why_missed": "Processing still works; only hash check catches the modification",
+      "caught_by_tests": [
+        "test_patient_records_unchanged"
+      ]
+    },
+    {
+      "requirement": "Instruction: 'The operating manual is the authoritative specification; if any local test contradicts the manual, the manual wins.' The stale local test at /app/tests/test_local.py must not be modified.",
+      "assumed_instead": "Trust the local test's wrong expectations (DENY for quantity-at-limit, DENY for secondary-position exception) and 'fix' the implementation or the test to match",
+      "hidden_test_input": "Hash check of /app/tests/test_local.py; graded cases include quantity-at-limit and secondary-position exception",
+      "why_missed": "If the agent conforms to the stale test, it implements < instead of \u2264 and checks only the first diagnosis; if it 'fixes' the test file, the hash check fails",
+      "caught_by_tests": [
+        "test_no_tests_modification",
+        "test_graded_quantity_at_limit",
+        "test_graded_exception_secondary_diagnosis"
+      ]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "Patient record files under /app/patient_records/ remain byte-identical",
+      "hidden_test_input": "SHA-256 hash of each file compared to original"
+    },
+    {
+      "behaviour": "The stale local test at /app/tests/test_local.py remains byte-identical (the agent must not 'fix' it)",
+      "hidden_test_input": "SHA-256 hash of /app/tests/test_local.py compared to original"
+    },
+    {
+      "behaviour": "Service data files are not modified by processing (formulary, prescriber history, payer plans remain as-is)",
+      "hidden_test_input": "Service responses after processing match responses before processing"
+    }
+  ],
+  "ground_truth": "A rule engine in tests/rule_engine.py reads the same formulary.json, prescriber_history.json, payer_plans.json, and queue that the services use, applies the manual's decision process exactly (payer waiver check \u2192 step therapy via prescriber history with ALL requirements \u2192 quantity \u2264 formulary limit \u2192 exception diagnosis match across ALL codes \u2192 source precedence \u2192 decision order returns first failing check's reason code), and returns the expected decision and reason code for each case. The generator in tests/generator.py produces all data files from a seed; the tests call it with seeds 137 and 271 for graded instances.",
+  "verifier_packages": [
+    "flask==3.0.0"
+  ],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "quirk_evidence": [
+    {
+      "quirk": "step_therapy=met",
+      "evidence": "Practice cases PA-0042, PA-0043, PA-0044 where prescriber service confirms prior drug and decision is APPROVE/MEETS_CRITERIA"
+    },
+    {
+      "quirk": "step_therapy=not_met",
+      "evidence": "Practice cases PA-0045, PA-0046, PA-0047 where prescriber service shows no prior drug and decision is DENY/STEP_THERAPY_NOT_MET"
+    },
+    {
+      "quirk": "step_therapy=met_only_via_prescriber",
+      "evidence": "Practice cases PA-0048, PA-0049, PA-0050 where notes are empty but prescriber service confirms prior drug; manual Step 2 says 'always verify using the prescriber service'"
+    },
+    {
+      "quirk": "quantity=within_limit",
+      "evidence": "Practice cases PA-0051, PA-0052, PA-0053 with quantity strictly below formulary max"
+    },
+    {
+      "quirk": "quantity=over",
+      "evidence": "Practice cases PA-0054, PA-0055, PA-0056 with quantity over limit and no exception diagnosis"
+    },
+    {
+      "quirk": "quantity=over_with_exception",
+      "evidence": "Practice cases PA-0057, PA-0058, PA-0059 with quantity over limit but exception diagnosis present (always as first diagnosis code)"
+    },
+    {
+      "quirk": "source_conflict=stale_note",
+      "evidence": "Practice cases PA-0060, PA-0061, PA-0062 where notes contradict prescriber service; manual Section 3 states precedence"
+    },
+    {
+      "quirk": "source_conflict=note_contradicts_formulary",
+      "evidence": "Practice cases PA-0063, PA-0064, PA-0065 where notes claim different quantity limit; manual Section 3 states formulary is authoritative"
+    },
+    {
+      "quirk": "payer_waiver (NOT_REQUIRED)",
+      "evidence": "Practice cases PA-0066, PA-0067, PA-0068 where payer service returns a plan waiving step therapy for the drug; decision is APPROVE/NOT_REQUIRED"
+    }
+  ],
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "Quantity at or below the formulary limit is within limit (\u2264, not <)",
+      "why": "The boundary convention (inclusive vs exclusive) cannot be inferred from examples that are strictly within or strictly over; the manual must state it"
+    },
+    {
+      "fact": "Prescriber service is authoritative for prescribing history; formulary service is authoritative for drug rules; payer service is authoritative for plan waivers; queue notes are informational only",
+      "why": "Source precedence is a policy choice that data alone cannot determine \u2014 both sources could be correct in different scenarios"
+    },
+    {
+      "fact": "Decision and reason codes are case-sensitive exact strings from the manual's list: APPROVE, DENY, MEETS_CRITERIA, NOT_REQUIRED, STEP_THERAPY_NOT_MET, QTY_LIMIT_EXCEEDED, QTY_LIMIT_EXCEPTION",
+      "why": "Code vocabulary is a contract convention, not inferable from behavior"
+    },
+    {
+      "fact": "Each case must be submitted exactly once (no duplicates, no omissions)",
+      "why": "Idempotency requirement is a procedural rule, not derivable from data"
+    },
+    {
+      "fact": "Steps are applied in order: payer waiver (Step 1) \u2192 step therapy (Step 2) \u2192 quantity (Step 3) \u2192 exception (Step 4). The first failing step determines the decision and reason code.",
+      "why": "The order of checks and which failure is reported is a procedural rule; data showing individual checks does not reveal what happens when multiple checks could fail simultaneously"
+    },
+    {
+      "fact": "The operating manual is the authoritative specification; local tests at /app/tests/test_local.py may contain errors and must not be modified",
+      "why": "The precedence of specification over tests is a policy choice; the stale test's incorrect expectations cannot be distinguished from correct ones by data alone"
+    }
+  ],
+  "reference_binary": "",
+  "sample_file": "",
+  "spec_document": "",
+  "knobs": [
+    {
+      "knob": "noisy convenient source vs authoritative source",
+      "where": "Queue cases have free-text notes that are sometimes stale or contradictory; the formulary, prescriber, and payer services have the authoritative data but require HTTP queries",
+      "fairness": "Manual Section 3 states: 'Formulary service is authoritative for drug rules, quantity limits, exception diagnoses. Prescriber service is authoritative for patient prescribing history. Payer service is authoritative for plan waivers. Do NOT use queue notes to make or skip any check. Notes are for human reference only.'"
+    },
+    {
+      "knob": "irreversible, audited steps",
+      "where": "Each decision submitted to the portal is final; the audit log at /app/audit/audit_log.json is graded for completeness and consistency; no resubmission allowed",
+      "fairness": "Instruction states: 'Decisions are final and the audit trail will be reviewed. Each case must be decided exactly once.' and Manual Section 5: 'Each case must be submitted exactly once'"
+    },
+    {
+      "knob": "stale local tests",
+      "where": "A shipped test file at /app/tests/test_local.py contains 5 test cases: 3 correct (common path) and 2 with wrong expectations (expects DENY for quantity-at-limit using < logic; expects DENY for secondary-position exception checking only first code)",
+      "fairness": "Instruction states: 'The operating manual is the authoritative specification; if any local test contradicts the manual, the manual wins.' The manual states \u2264 and 'any diagnosis code' explicitly. The test file is hash-checked to prevent modification."
+    }
+  ],
+  "dial": "18 open cases with 4-5 hitting an exception path (quantity-over-with-exception, step-therapy-met-only-via-prescriber, or payer-waiver); fair range 8-20 cases with 2-5 exceptions",
+  "quirk_matrix": "{\"step_therapy\": [\"met\", \"not_met\", \"met_only_via_prescriber\"], \"quantity\": [\"within_limit\", \"over\", \"over_with_exception\"], \"source_conflict\": [\"none\", \"stale_note\", \"note_contradicts_formulary\"], \"mix\": \"about 30% easy cells (step_therapy=met, quantity=within_limit, source_conflict=none)\"}",
+  "public_tests": "tests_public/ ships with the environment and contains two worked examples: (1) a case with step therapy met and quantity within limit \u2192 APPROVE/MEETS_CRITERIA, (2) a case with step therapy not met \u2192 DENY/STEP_THERAPY_NOT_MET. These cover the ordinary path only and contain no edge cases, boundary values, source conflicts, exception diagnoses, payer waivers, or NOT_REQUIRED cases.",
+  "anti_cheese": "The tests recompute every decision from scratch using the rule engine and compare against portal submissions \u2014 hard-coding practice-queue answers fails on graded seeds. A duplicate-submission check catches bulk-approve or double-submit shortcuts. Patient-record hash check catches writing results into read-only directories. A hash check on /app/tests/test_local.py catches agents that 'fix' the stale test to match their wrong implementation. An import hook in the test runner blocks importing tests/rule_engine.py or tests/generator.py from the solution's process at run time. A static scan also checks for forbidden imports.",
+  "graded_instances": "Two graded queues generated from seeds 137 and 271 by tests/generator.py. Each has 18 cases covering all quirk-matrix levels plus edge cases not in practice: quantity exactly at the limit, exception diagnosis in secondary position, two-drug step therapy, combined step-therapy-fail + quantity-over (decision order), and payer-waiver (NOT_REQUIRED) cases. The generator is deterministic (same seed \u2192 same bytes) and produces different queues for different seeds (verified by test_generator_different_seeds). The tests stop any running services, write the new data files and queue, clear submissions, restart services, run solve.sh, then check every decision against the rule engine.",
+  "self_check_gap": "A solution that correctly processes the entire practice queue (18 cases, 0 mismatches) can still fail on graded instances because: (1) the practice queue never includes a case where quantity equals the exact limit (only strictly below or strictly over), so a < vs \u2264 bug goes undetected; (2) the practice queue always places the exception diagnosis as the first code, but graded instances place it in secondary position, so checking only the first code passes practice; (3) the practice queue only has single-drug step therapy requirements, but graded instances include two-drug requirements, so checking only the first requirement passes practice; (4) the practice queue never combines step-therapy-fail with quantity-over, so the decision-order (which check determines the reason code) is untested. The practice queue nonetheless determines the right answer because the manual explicitly states \u2264 (not <), 'any diagnosis code', 'ALL requirements', and the step order \u2014 the gap is in the agent's testing discipline, not in the information available.",
+  "margins": [
+    {
+      "test": "All graded decisions must exactly match the rule engine across both seeds",
+      "bar": "100% of cases correct (36/36 across seeds 137 and 271)",
+      "oracle_value": "100% (18/18 on seed 137, 18/18 on seed 271)",
+      "baseline": "N/A (exact match, not threshold)"
+    }
+  ],
+  "contract": [
+    "Entry point: the agent processes /app/queue/prior_auth_queue.json and submits to POST http://localhost:8004/submit",
+    "Output: audit log at /app/audit/audit_log.json \u2014 JSON array of objects with keys case_id, decision, reason_code, timestamp",
+    "Decision codes: APPROVE or DENY (case-sensitive, exact match)",
+    "Reason codes: MEETS_CRITERIA, NOT_REQUIRED, STEP_THERAPY_NOT_MET, QTY_LIMIT_EXCEEDED, QTY_LIMIT_EXCEPTION (case-sensitive, exact match)",
+    "Portal submission body: {case_id, decision, reason_code, reviewer_id, timestamp} \u2014 all fields required",
+    "Process order: Step 1 (payer waiver) \u2192 Step 2 (step therapy) \u2192 Step 3 (quantity) \u2192 Step 4 (exception). The first failing step determines the decision and reason code.",
+    "Step 1: GET http://localhost:8003/plan/{patient_id} \u2192 if drug_id in step_therapy_waivers, reason is NOT_REQUIRED, skip to Step 3",
+    "Step 2: GET http://localhost:8002/history/{patient_id} \u2192 check ALL drugs in formulary step_therapy_requirements against prescriber history; if any not met \u2192 DENY/STEP_THERAPY_NOT_MET; if all met \u2192 reason MEETS_CRITERIA",
+    "Step 3: GET http://localhost:8001/drug/{drug_id} \u2192 if requested_quantity \u2264 max_quantity \u2192 APPROVE with reason from Step 1 or 2; if over \u2192 proceed to Step 4",
+    "Step 4: check if ANY diagnosis_code in the case's list matches ANY code in formulary exception_diagnoses; if yes \u2192 APPROVE/QTY_LIMIT_EXCEPTION; if no \u2192 DENY/QTY_LIMIT_EXCEEDED",
+    "Precedence: formulary service > prescriber service > payer service > queue notes (formulary authoritative for drug rules; prescriber authoritative for history; payer authoritative for plan waivers; notes informational only)",
+    "Quantity comparison: requested_quantity \u2264 formulary_limit.max is 'within limit' (inclusive, not strict less-than)",
+    "Exception diagnosis: any diagnosis_code in the case's list matching any code in formulary exception_diagnoses triggers the exception (check ALL codes, not just the first)",
+    "Each case_id submitted exactly once (no duplicates in portal or audit log)",
+    "Every case_id in the queue must appear in submissions (no omissions)",
+    "Patient records under /app/patient_records/ must not be modified",
+    "The operating manual is the authoritative specification; if /app/tests/test_local.py contradicts the manual, the manual wins. Do not modify /app/tests/test_local.py.",
+    "Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task."
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Quantity exactly equal to the formulary limit: using < instead of \u2264 produces DENY instead of APPROVE with no runtime error. The stale local test at /app/tests/test_local.py also expects DENY for this case, reinforcing the wrong behavior if the agent trusts the test.",
+      "stated_in": "Manual Step 3: 'If the requested quantity is at or below the limit \u2192 continue to Step 4.' Instruction: 'The operating manual is the authoritative specification; if any local test contradicts the manual, the manual wins.'"
+    },
+    {
+      "trap": "Notes claim patient tried prior drug but prescriber service shows no such history: trusting notes produces incorrect APPROVE with no runtime error.",
+      "stated_in": "Manual Section 3: 'Prescriber service is authoritative for patient prescribing history' and Step 2: 'Always verify step therapy using the prescriber service, regardless of what the notes say'"
+    },
+    {
+      "trap": "Exception diagnosis code is the second or third in the list: checking only the first code produces DENY/QTY_LIMIT_EXCEEDED instead of APPROVE/QTY_LIMIT_EXCEPTION with no runtime error. The stale local test also expects DENY for this case.",
+      "stated_in": "Manual Step 3: 'Check if any of the case's diagnosis codes match the formulary's exception_diagnoses list'"
+    },
+    {
+      "trap": "Notes state a different quantity limit than the formulary: following notes' limit produces a wrong approve/deny decision with no runtime error.",
+      "stated_in": "Manual Section 3: 'Formulary service is authoritative for drug rules, quantity limits, step therapy requirements, exception diagnoses'"
+    },
+    {
+      "trap": "Step therapy fails AND quantity is over with exception: checking quantity first returns APPROVE/QTY_LIMIT_EXCEPTION or DENY/QTY_LIMIT_EXCEEDED instead of DENY/STEP_THERAPY_NOT_MET. No runtime error; the wrong reason code is accepted by the portal.",
+      "stated_in": "Manual: 'Apply steps in order. The first failing step determines the decision and reason code.'"
+    },
+    {
+      "trap": "Drug is in the payer service's step_therapy_waivers list but the agent never queries port 8003: the agent issues DENY/STEP_THERAPY_NOT_MET instead of APPROVE/NOT_REQUIRED. No runtime error; portal accepts the wrong decision.",
+      "stated_in": "Manual Step 1: 'Query the payer service for the patient's plan. If the drug is in the plan's step_therapy_waivers list, step therapy is not required; reason is NOT_REQUIRED.'"
+    },
+    {
+      "trap": "Two-drug step therapy requirement: the agent checks only the first requirement drug, finds it met, and issues APPROVE. The second requirement is not met, so the correct decision is DENY. No runtime error.",
+      "stated_in": "Manual Step 2: 'If ANY step therapy requirement is not met \u2192 DENY with STEP_THERAPY_NOT_MET'"
+    },
+    {
+      "trap": "The stale local test at /app/tests/test_local.py has wrong expectations for quantity-at-limit and secondary-position exception. If the agent conforms to the test, it implements < and first-code-only checking. If the agent 'fixes' the test file, the hash check fails.",
+      "stated_in": "Instruction: 'The operating manual is the authoritative specification; if any local test contradicts the manual, the manual wins.' The test file must not be modified."
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "Graded queue seed 137, 18 cases",
+      "quirks": "step_therapy={met, not_met, met_only_via_prescriber}; quantity={within, at_limit, over, over_with_exception}; source_conflict={none, stale_note, note_contradicts_formulary}; includes two-step therapy case, secondary-position exception diagnosis, combined step-therapy-fail + quantity-over (decision order), and payer-waiver (NOT_REQUIRED) case",
+      "purpose": "Full quirk-matrix coverage with combinations and edge cases not seen in practice queue"
+    },
+    {
+      "instance": "Graded queue seed 271, 18 cases",
+      "quirks": "Same quirk dimensions but different drugs, patients, quantities, and note text; different combination pairing (e.g., stale_note + over_with_exception in same case, payer_waiver + quantity_over_no_exception)",
+      "purpose": "Independent replication; a solution that overfits to seed-137's specific values fails here"
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Increase cases to 20 with 5+ exceptions",
+      "Add a payer-service plan tier that modifies formulary limits (another precedence layer: query payer for tier, pass tier to formulary)",
+      "Include a case where step therapy is met for one required drug but not the other in a two-drug requirement, and the second drug is met only via prescriber (combining two quirks)"
+    ],
+    "too_hard": [
+      "Reduce to 14 cases with 3 exceptions",
+      "Remove the stale local test knob (only noisy-source and irreversible-steps knobs)",
+      "Remove the decision-order check (only one check can fail per case)",
+      "Add a 'reference decisions' file showing correct answers for 50% of practice cases"
+    ]
+  },
+  "seed_card": "topic: Close out a pharmacy's prior-authorisation queue through the local formulary, prescriber and payer\n  services, following the operating manual, and submit each decision through the portal.\nshape: procedure-driven case decisions over local services; graded by submitted decisions and audit log\nagent_cannot_verify: Each case's correct decision depends on manual rules applied in a stated order (step\n  therapy, quantity limits, an exception path); the portal accepts any well-formed decision.\ndial: number of open cases and how many hit an exception path; fair range 8-20 cases with 2-5 exceptions.\nquirk_matrix:\n  step therapy:\n  - met\n  - not met\n  - met only via prescriber service\n  quantity:\n  - within limit\n  - over\n  - over with exception diagnosis\n  source conflict:\n  - none\n  - stale note\n  - note contradicts formulary\n  mix: about 30% easy cells\nself_check_gap: decisions matching the practice cases can still be wrong where two sources conflict or\n  a quantity sits exactly on the limit; the manual states the precedence and the limit table\nanswer_source: stated\nreference_access: none\nquirk_evidence:\n- quirk: step therapy\n  evidence: the manual's step-therapy section; practice cases with decisions\n- quirk: quantity\n  evidence: the manual's quantity-limit table; practice cases at the limit\n- quirk: source conflict\n  evidence: the manual's precedence rule; one practice case with conflicting sources\npublic_tests: 'about 30%: two visible worked cases with the manual''s ordinary path'\nanti_cheese: hidden recomputation of every decision AND no case decided twice in the audit log\nground_truth: cases come from a seeded generator; a rule engine in tests/ applies the manual to compute\n  the expected decisions.\nchecks:\n- step-therapy rule (prior failed drug required)\n- quantity limit with an exception for a documented diagnosis\n- a case needing information from the prescriber service before deciding\n- decision codes and reason codes exactly as the manual lists\n- every submission carries the case id; no case decided twice\nknobs:\n- knob: noisy convenient source vs authoritative source\n  fairness: the queue export has free-text notes; the manual says the formulary service is authoritative\n- knob: irreversible, audited steps\n  fairness: instruction says decisions are final and the audit trail is graded\nmust_keep:\n- patient records are read-only\nenvironment: python:3.12-slim with three local HTTP services; no network; no real patient data.\nout_of_bounds:\n- clinical judgement beyond the manual\n- real drug databases\nprecheck:\n- run the rule engine on a generated queue; the oracle must reach 100%\n",
+  "crux": "The portal accepts any well-formed submission, so the agent cannot verify decision correctness against the portal. The manual states every rule, but the practice queue does not exercise four edge cases (quantity exactly at limit, secondary-position exception, two-drug step therapy, combined step-therapy-fail + quantity-over) plus the payer-waiver path. A stale local test reinforces two of these wrong behaviors. The agent must implement the manual's rules faithfully without being able to test against the uncovered edge cases, while also resisting the stale test's incorrect expectations.",
+  "expected_agent_steps": null
+}

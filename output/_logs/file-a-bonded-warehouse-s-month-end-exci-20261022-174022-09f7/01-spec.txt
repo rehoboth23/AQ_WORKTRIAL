@@ -1,0 +1,342 @@
+```json
+{
+  "name": "bonded-warehouse-excise-filing",
+  "description": "File a bonded warehouse month-end excise duty return by implementing procedure rules for losses, transfers and returns, then submitting through a two-step portal with retry handling.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["excise-duty", "procedure-compliance", "mock-services", "retry-logic", "calculation"],
+  "expert_time_estimate_min": 45,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "You are the duty accountant for Bonded Warehouse Alpha. It is month-end and you must file the excise duty return for November 2024. The warehouse runs three local systems: an ERP that records stock movements, a stock ledger that holds opening balances and reconciliation data, and a filing portal that accepts returns. A filing script at /app/file_return.py exists but was written by a predecessor who left before the current procedure manual took effect. The procedure manual at /app/procedure_manual.md is the authoritative reference. The filing portal validates format only—it does not check that duty amounts are correct. You must ensure the return is both accepted and accurate.",
+  "environment_setup": "python:3.12-slim-bookworm with Flask and requests installed. Three mock HTTP services (ERP port 8001, Stock Ledger port 8002, Filing Portal port 8003) are provided as Python scripts under /app/services/ but not started. Practice data for November 2024 is in /app/data/ (products.json, movements_2024-11.json, opening_stock_2024-11.json, ledger_2024-11.json, portal_config.json with no faults). A starter script /app/file_return.py queries the ERP and submits to the portal but has several calculation and procedural errors: it treats all evaporation losses as fully dutiable (no tolerance logic), includes inter-site transfers as dutiable, only credits customer returns whose original sale fell in the filing month, does a single-step submission (no confirm), has no retry logic, and does not archive the confirmation code. The procedure manual at /app/procedure_manual.md contains the correct rules. The stock ledger data files under /app/data/ are read-only (must_keep).",
+  "instruction_summary": "File the November 2024 excise duty return for Bonded Warehouse Alpha. (1) Read /app/procedure_manual.md thoroughly—it is the authoritative reference. (2) Fix /app/file_return.py so the duty calculation follows every rule in the manual and the filing completes both steps (submit + confirm) with retry handling. (3) Start the three services (python3 /app/services/erp_server.py &, etc.). (4) Run the corrected script for month 2024-11. (5) Confirm the portal accepted the return and the confirmation code is written to /app/confirmation.txt. The filing portal only validates format; it does not verify duty amounts. You must ensure correctness yourself. The stock ledger files under /app/data/ are read-only—do not modify them. Submissions are final and audited; the portal's audit log is part of the compliance record.",
+  "solution_outline": [
+    "Start all three services and wait for them to be ready.",
+    "Query ERP (GET /api/products, GET /api/movements?month=2024-11) and Stock Ledger (GET /api/opening_balance?month=2024-11).",
+    "For each product, compute dutiable quantity: sales + max(0, evaporation_loss - tolerance) - customer_returns_received_this_month, where tolerance = opening_stock × 0.005 and the ≤ comparison is used (loss not exceeding tolerance is fully excluded).",
+    "Exclude transfer_out movements entirely from the dutiable quantity.",
+    "Credit customer returns in the month received regardless of original_sale_date.",
+    "Compute duty_amount = round(dutiable_quantity × duty_rate, 2) per line; total_duty = round(sum of lines, 2).",
+    "Generate a UUID request_id for idempotency.",
+    "POST /api/returns/submit with the return payload; on 503, wait 2 s, then GET /api/returns/status?request_id=…; if found, proceed to confirm with that submission_id; if not found, retry submit with the same request_id.",
+    "POST /api/returns/confirm with the submission_id from step 8.",
+    "Write confirmation code, submission_id and filing date to /app/confirmation.txt in the format: <confirmation_code> <submission_id> <YYYY-MM-DD>."
+  ],
+  "test_plan": [
+    "test_simple_month: graded data with sales only; checks dutiable quantities and total duty match generator's expected values.",
+    "test_within_tolerance_loss: a product whose evaporation loss is well within 0.5% of opening stock; verifies loss is excluded from dutiable quantity.",
+    "test_at_limit_loss: a product whose evaporation loss is exactly 0.5% of opening stock; verifies loss is still excluded (≤ not <).",
+    "test_over_tolerance_loss: a product whose loss exceeds 0.5%; verifies only the excess is dutiable, not the full loss.",
+    "test_transfers_excluded: graded data includes transfer_out movements; verifies they do not appear in dutiable quantities.",
+    "test_customer_returns_prior_month: a return whose original_sale_date is in a prior month; verifies it is credited in the filing month.",
+    "test_portal_503_retry: portal configured to return 503 on first submit; verifies script retries after checking status with the same request_id.",
+    "test_no_duplicate_submissions: portal returns 503 but data was saved; verifies the script does not create a second submission (audit log has exactly one submit action per month).",
+    "test_confirmation_archival: verifies /app/confirmation.txt exists and contains confirmation_code, submission_id and date in the correct format.",
+    "test_all_products_covered: verifies every product with a non-zero dutiable quantity has a line in the filed return.",
+    "test_practice_covers_hidden_cases: reads the shipped practice data and verifies each movement type (sale, evaporation_loss, transfer_out, customer_return) appears at least 3 times."
+  ],
+  "anti_cheat": "The graded data uses a different seed from the practice data, so hard-coded amounts fail. The portal state file is recomputed by the test's generator and compared line by line. A hidden test also checks the portal's audit log for duplicate submissions, so a script that submits twice (e.g., retrying without checking status) is caught. The confirmation file is checked for exact format, not just existence.",
+  "failure_modes": "An agent that only verifies portal acceptance (format OK) but not duty amounts will pass practice but fail graded tests on incorrect calculations. Using < instead of ≤ for tolerance comparison works on practice data (no boundary loss) but fails the at-limit test. Not implementing retry logic works on the fault-free practice run but fails the 503 test. Filtering returns by original_sale_date works when practice returns happen to be from the same month but fails when graded data has prior-month returns. Skipping the confirm step leaves the return in submitted-but-unconfirmed state.",
+  "shape": "procedure-driven work over local mock services; graded by the portal's final state and audit log",
+  "hidden_evaluation": "Tests generate fresh movement data from sibling seeds in tests/generator.py, covering each quirk-matrix cell (loss within/at-limit/over, sales/transfers/returns, portal none/503/duplicate-risk). The portal state file and confirmation file are compared against the generator's expected duty. The portal's audit log is inspected for duplicate submissions and correct request_id reuse. About 30% of cells are easy (sales only, no faults); the rest exercise at least one tricky rule or fault scenario.",
+  "checks": [
+    {
+      "requirement": "Evaporation and storage losses not exceeding 0.5% of the opening stock … are excluded from duty (procedure manual §4.3)",
+      "assumed_instead": "All losses are dutiable, or tolerance threshold is applied with strict less-than",
+      "hidden_test_input": "A product with evaporation loss of 0.3% of opening stock (well within tolerance)",
+      "why_missed": "The portal accepts any amount; no runtime error signals an incorrect duty figure",
+      "caught_by_tests": ["test_within_tolerance_loss"]
+    },
+    {
+      "requirement": "Not exceeding 0.5% includes the exact boundary—losses at exactly 0.5% are excluded (procedure manual §4.3, 'not exceeding')",
+      "assumed_instead": "Strict less-than: losses strictly below 0.5% are excluded, at 0.5% they are over",
+      "hidden_test_input": "A product with opening stock 10000 L and evaporation loss of exactly 50 L (0.500%)",
+      "why_missed": "Practice data never lands on the exact boundary; code using < 0.005 instead of <= 0.005 passes practice but fails graded",
+      "caught_by_tests": ["test_at_limit_loss"]
+    },
+    {
+      "requirement": "Losses exceeding this tolerance are dutiable on the excess portion only (procedure manual §4.3)",
+      "assumed_instead": "The full loss amount is dutiable once the threshold is crossed",
+      "hidden_test_input": "A product with loss of 0.8% of opening stock—only the 0.3% excess should be dutiable",
+      "why_missed": "The portal accepts the over-payment; no error is raised",
+      "caught_by_tests": ["test_over_tolerance_loss"]
+    },
+    {
+      "requirement": "Transfers between bonded sites are not duty events (procedure manual §4.4)",
+      "assumed_instead": "All stock leaving the warehouse is dutiable, including transfers",
+      "hidden_test_input": "Two transfer_out movements to other bonded sites in the graded month",
+      "why_missed": "The starter script treats transfer_out like a sale; portal accepts the inflated return",
+      "caught_by_tests": ["test_transfers_excluded"]
+    },
+    {
+      "requirement": "Customer returns are credited against duty in the month the goods are received back … regardless of the original sale date (procedure manual §4.5)",
+      "assumed_instead": "Returns are only credited if the original sale was in the filing month",
+      "hidden_test_input": "A return received in November for a sale made in September",
+      "why_missed": "The starter script filters by original_sale_date; the return is silently dropped and the credit lost",
+      "caught_by_tests": ["test_customer_returns_prior_month"]
+    },
+    {
+      "requirement": "The filing portal requires a two-step submission process: submit then confirm (procedure manual §5.1)",
+      "assumed_instead": "A single POST to /api/returns/submit completes the filing",
+      "hidden_test_input": "Portal returns submission_id on submit but the return is only recorded as accepted after confirm",
+      "why_missed": "The submit endpoint returns a success-like response; without confirm, the return remains in submitted state and is not accepted",
+      "caught_by_tests": ["test_simple_month", "test_confirmation_archival"]
+    },
+    {
+      "requirement": "Write the confirmation details to /app/confirmation.txt in the format: <confirmation_code> <submission_id> <YYYY-MM-DD> (procedure manual §5.4)",
+      "assumed_instead": "Write only the confirmation code, or omit the file entirely",
+      "hidden_test_input": "After successful filing, the test reads /app/confirmation.txt and parses all three fields",
+      "why_missed": "The portal does not check this file; omitting it causes no runtime error",
+      "caught_by_tests": ["test_confirmation_archival"]
+    },
+    {
+      "requirement": "Do not submit a new return without first checking the status … Duplicate submissions are flagged in the audit log (procedure manual §5.3)",
+      "assumed_instead": "After a 503, immediately retry with a new request_id",
+      "hidden_test_input": "Portal returns 503 but the data was saved (soft fault); retrying with a new request_id creates a second submission",
+      "why_missed": "The portal accepts both; only the audit log reveals the duplicate",
+      "caught_by_tests": ["test_no_duplicate_submissions"]
+    },
+    {
+      "requirement": "The request_id is the idempotency key for the entire two-step process (procedure manual §5.2)",
+      "assumed_instead": "Generate a new UUID on each attempt, including retries",
+      "hidden_test_input": "Portal faults on first submit; agent retries with a different request_id, creating a duplicate",
+      "why_missed": "No runtime error; both submissions are format-valid",
+      "caught_by_tests": ["test_portal_503_retry", "test_no_duplicate_submissions"]
+    },
+    {
+      "requirement": "Before retrying, check the status of the original request by calling GET /api/returns/status?request_id=<request_id> (procedure manual §5.3)",
+      "assumed_instead": "Always retry from step 1 without checking whether the first attempt succeeded",
+      "hidden_test_input": "First submit returns 503 but was actually saved; status endpoint would reveal it",
+      "why_missed": "A blind retry with the same request_id is idempotent (no duplicate) but a blind retry with a new request_id is not; either way the agent did not follow the stated procedure",
+      "caught_by_tests": ["test_portal_503_retry"]
+    },
+    {
+      "requirement": "Each product with a non-zero dutiable quantity must appear as a line in the return (procedure manual §4.6 aggregation)",
+      "assumed_instead": "Skip products that only have returns or only have excess-loss, or aggregate across categories",
+      "hidden_test_input": "A product that has only an over-tolerance excess (no sales) must still appear with its dutiable excess-loss quantity",
+      "why_missed": "Omitting a line reduces the total duty but the portal accepts the return",
+      "caught_by_tests": ["test_all_products_covered"]
+    },
+    {
+      "requirement": "Sum all product duty amounts. Round the total to two decimal places (procedure manual §4.7)",
+      "assumed_instead": "Sum rounded line amounts differently, or round before summing, or use integer truncation",
+      "hidden_test_input": "Multiple lines whose sum rounds differently than summing unrounded intermediate values",
+      "why_missed": "The portal accepts the return even with a slightly wrong total",
+      "caught_by_tests": ["test_simple_month", "test_over_tolerance_loss"]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "The stock ledger data files under /app/data/ must remain unchanged (read-only)",
+      "hidden_test_input": "A checksum of /app/data/ledger_2024-11.json and /app/data/opening_stock_2024-11.json before and after the agent's work"
+    },
+    {
+      "behaviour": "Products with zero dutiable quantity (e.g., only transfers, no sales/losses/returns) have no line in the return",
+      "hidden_test_input": "A product that only had transfers out should not appear as a zero-amount line"
+    }
+  ],
+  "ground_truth": "A seeded Python generator in tests/generator.py creates products, opening stock, and movements for a given month and seed. It also computes the expected duty return by applying every procedure rule exactly (tolerance with ≤, excess-only for over-tolerance, transfer exclusion, returns credited in month received). The tests call this generator for each graded scenario, write the data to the service data files, start the services, run the agent's script, then read the portal state file (/tmp/portal_state.json) and /app/confirmation.txt and compare against the generator's expected values. The generator is deterministic: same seed produces identical bytes.",
+  "dial": "Number of procedure rules exercised by this month's movements. Fair range 4–8; chosen value 7 (tolerance-within, tolerance-at-limit, tolerance-over, transfer exclusion, prior-month returns, two-step filing, retry/idempotency). Moving toward 4 removes the harder rules (at-limit, retry); moving toward 8 adds more product categories with cross-interactions.",
+  "quirk_matrix": {
+    "dimensions": {
+      "loss_tolerance": ["within", "at_limit", "over"],
+      "movement_types": ["sales_only", "plus_transfers", "plus_returns"],
+      "portal_faults": ["none", "one_503", "503_then_duplicate_risk"]
+    },
+    "mix": "About 30% easy cells (sales_only + within_tolerance + no_faults). Remaining cells exercise at least one non-trivial rule or fault scenario. Each graded test draws from one cell; across all tests, every level of every dimension is exercised at least once."
+  },
+  "answer_source": "stated",
+  "inferred_rules": [],
+  "stated_facts": [
+    {
+      "fact": "Loss tolerance is 0.5% of opening stock; 'not exceeding' means the boundary is inclusive (≤)",
+      "why": "The boundary semantics (≤ vs <) are a matter of legal interpretation stated in the procedure manual; the data cannot demonstrate inclusivity because a boundary loss is a degenerate case"
+    },
+    {
+      "fact": "The filing portal requires a two-step submission (submit then confirm) and the request_id serves as idempotency key",
+      "why": "These are API contract details stated in the procedure manual; the data cannot show them because they are procedural requirements, not patterns in the movements"
+    },
+    {
+      "fact": "After a 503, the agent must check the submission status before retrying, using the same request_id",
+      "why": "Retry semantics are a stated procedure rule; the data cannot show whether a 503 response means the server did or did not process the request"
+    },
+    {
+      "fact": "Confirmation must be archived to /app/confirmation.txt in the format <confirmation_code> <submission_id> <YYYY-MM-DD>",
+      "why": "The archival path and format are stated requirements; the data cannot imply them"
+    }
+  ],
+  "quirk_evidence": [
+    {
+      "quirk": "loss_tolerance: within",
+      "evidence": "/app/data/movements_2024-11.json contains three products with evaporation losses below 0.5% of opening stock; procedure manual §4.3 states these are excluded"
+    },
+    {
+      "quirk": "loss_tolerance: over",
+      "evidence": "/app/data/movements_2024-11.json contains one product (SPI-002) with loss exceeding 0.5%; procedure manual §4.3 worked example shows excess-only calculation"
+    },
+    {
+      "quirk": "loss_tolerance: at_limit",
+      "evidence": "Procedure manual §4.3 says 'not exceeding 0.5%'—the phrase 'not exceeding' implies the boundary is inclusive; no movement in the practice data lands exactly at the limit"
+    },
+    {
+      "quirk": "movement_types: plus_transfers",
+      "evidence": "/app/data/movements_2024-11.json contains two transfer_out entries; procedure manual §4.4 says they are not duty events"
+    },
+    {
+      "quirk": "movement_types: plus_returns",
+      "evidence": "/app/data/movements_2024-11.json contains three customer_return entries, one with original_sale_date in October; procedure manual §4.5 says credited regardless of original sale date"
+    },
+    {
+      "quirk": "portal_faults: one_503",
+      "evidence": "Procedure manual §5.3 describes the retry and status-check procedure; the practice portal_config.json has fault_mode 'none', so no 503 occurs in the practice run"
+    },
+    {
+      "quirk": "portal_faults: 503_then_duplicate_risk",
+      "evidence": "Procedure manual §5.3 warns 'Do not submit a new return without first checking the status. Duplicate submissions are flagged in the audit log.'; practice data has no fault, so the agent cannot test this path"
+    }
+  ],
+  "public_tests": "A single visible test in /app/tests_public/test_simple_return.py that runs the filing script for a trivial month (2 products, sales only, no losses/transfers/returns, no portal faults) and checks that the portal has one accepted return with correct total duty. Covers about 30% of the graded surface (basic sales calculation, two-step submission, confirmation archival). Ships in the image so the agent can run it during development.",
+  "anti_cheese": "The tests recompute the correct return from the movement data using the generator (no hard-coded expected values). The portal's audit log is inspected for duplicate submissions—simply submitting twice with different request_ids is caught. The confirmation file format is parsed and all three fields verified. A hidden test removes the requests library from sys.modules and verifies the script does not import disallowed modules at runtime.",
+  "graded_instances": "Graded instances use sibling seeds (100–108) in tests/generator.py, each producing a different month of movements covering a specific quirk-matrix cell. The generator is deterministic: running it twice with the same seed produces byte-identical JSON. A different seed changes the product quantities and movement dates. The practice data (seed 42) is never reused in graded tests. Each graded test writes its data to /app/data/, restarts the services, clears the portal state, runs the agent's script, and checks the results.",
+  "self_check_gap": "A solution that produces zero mismatches on the practice month (seed 42) can still fail on graded instances because: (1) the practice month has no evaporation loss exactly at the 0.5% boundary, so a < comparison passes practice but fails the at-limit graded test; (2) the practice portal has no faults, so retry and idempotency logic is never exercised; (3) the practice month has only one prior-month return, and if the starter script's same-month filter happens to include it (because original_sale_date is close), the agent might not notice the bug. The practice data nonetheless determines the right answer because the procedure manual states every rule explicitly—including the inclusive boundary, the retry procedure, and the regardless-of-original-date rule—and the agent must implement what the manual says, not just what the practice data exercises.",
+  "margins": [
+    {
+      "test": "Duty amount per line matches generator's expected value",
+      "bar": "Within 0.01 of expected (rounding tolerance)",
+      "oracle_value": "Exact match after rounding to 2 decimal places",
+      "baseline": "N/A (absolute check against generator)"
+    },
+    {
+      "test": "Total duty matches generator's expected total",
+      "bar": "Within 0.01 of expected",
+      "oracle_value": "Exact match after rounding to 2 decimal places",
+      "baseline": "N/A"
+    },
+    {
+      "test": "Number of submissions in audit log",
+      "bar": "Exactly 1 submission per month",
+      "oracle_value": "1",
+      "baseline": "N/A"
+    },
+    {
+      "test": "Number of confirmations in audit log",
+      "bar": "Exactly 1 confirmation per month",
+      "oracle_value": "1",
+      "baseline": "N/A"
+    }
+  ],
+  "contract": [
+    "Entry point: /app/file_return.py <YYYY-MM> (month as command-line argument)",
+    "The script queries http://localhost:8001/api/products, http://localhost:8001/api/movements?month=…, http://localhost:8002/api/opening_balance?month=…",
+    "Duty per product line: round(dutiable_quantity × duty_rate, 2)",
+    "Dutiable quantity per product: sales + max(0, evaporation_loss - opening_stock × 0.005) - customer_returns_this_month",
+    "transfer_out movements are excluded from the dutiable quantity entirely",
+    "customer_return movements are credited in the month received regardless of original_sale_date",
+    "Total duty: round(sum of all line duty_amounts, 2)",
+    "Products with zero dutiable quantity have no line in the return",
+    "Submit: POST http://localhost:8003/api/returns/submit with JSON body {request_id, month, declarant, lines, total_duty}; response contains submission_id",
+    "Confirm: POST http://localhost:8003/api/returns/confirm with JSON body {submission_id}; response contains confirmation_code",
+    "On 503 from submit: wait 2 s, GET http://localhost:8003/api/returns/status?request_id=…; if found, proceed to confirm with returned submission_id; if not found, retry submit with same request_id",
+    "Confirmation archival: write to /app/confirmation.txt a single line: <confirmation_code> <submission_id> <YYYY-MM-DD>",
+    "Exit code 0 on success; non-zero on unrecoverable failure",
+    "The same request_id must be used for all retry attempts of the same submission"
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Loss exactly at 0.5% tolerance: using strict less-than (< 0.005) excludes the boundary case that should be included, adding a spurious dutiable quantity. The portal accepts the wrong amount with no error.",
+      "stated_in": "Procedure manual §4.3: 'losses not exceeding 0.5% of the opening stock … are excluded from duty' — 'not exceeding' means ≤"
+    },
+    {
+      "trap": "Over-tolerance loss: dutiably treating the full loss amount instead of only the excess. The portal accepts the over-payment with no error.",
+      "stated_in": "Procedure manual §4.3: 'Losses exceeding this tolerance are dutiable on the excess portion only'"
+    },
+    {
+      "trap": "After a 503, the submission may have been saved. Retrying with a new request_id creates a duplicate. The portal accepts both submissions; only the audit log reveals the error.",
+      "stated_in": "Procedure manual §5.3: 'Before retrying, check the status of the original request' and 'The request_id is the idempotency key'"
+    },
+    {
+      "trap": "Customer returns from a prior month: filtering by original_sale_date drops the credit. The portal accepts the higher duty with no error.",
+      "stated_in": "Procedure manual §4.5: 'credited against duty in the month the goods are received back … regardless of the original sale date'"
+    },
+    {
+      "trap": "Skipping the confirm step: the submit endpoint returns a submission_id and a 200 response, but the return is not formally accepted until confirmed. No runtime error occurs; the return simply stays in 'submitted' state.",
+      "stated_in": "Procedure manual §5.1: 'The filing portal requires a two-step submission process'"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "seed 100 — simple month",
+      "quirks": "loss_tolerance=within, movement_types=sales_only, portal_faults=none",
+      "purpose": "Basic sales calculation, two-step submission, confirmation archival"
+    },
+    {
+      "instance": "seed 101 — within-tolerance losses",
+      "quirks": "loss_tolerance=within, movement_types=sales_only, portal_faults=none",
+      "purpose": "Verify losses below 0.5% are excluded from duty"
+    },
+    {
+      "instance": "seed 102 — at-limit loss",
+      "quirks": "loss_tolerance=at_limit, movement_types=sales_only, portal_faults=none",
+      "purpose": "Boundary case: loss exactly at 0.5% must be excluded (≤ not <)"
+    },
+    {
+      "instance": "seed 103 — over-tolerance loss",
+      "quirks": "loss_tolerance=over, movement_types=sales_only, portal_faults=none",
+      "purpose": "Only the excess over 0.5% is dutiable"
+    },
+    {
+      "instance": "seed 104 — transfers",
+      "quirks": "loss_tolerance=within, movement_types=plus_transfers, portal_faults=none",
+      "purpose": "Inter-site transfers are excluded from duty"
+    },
+    {
+      "instance": "seed 105 — customer returns from prior month",
+      "quirks": "loss_tolerance=within, movement_types=plus_returns, portal_faults=none",
+      "purpose": "Returns credited in month received regardless of original sale date"
+    },
+    {
+      "instance": "seed 106 — portal 503",
+      "quirks": "loss_tolerance=within, movement_types=sales_only, portal_faults=one_503",
+      "purpose": "Retry after 503 with status check and same request_id"
+    },
+    {
+      "instance": "seed 107 — duplicate risk",
+      "quirks": "loss_tolerance=over, movement_types=plus_transfers, portal_faults=503_then_duplicate_risk",
+      "purpose": "503 where data was saved; must not create duplicate submission"
+    },
+    {
+      "instance": "seed 108 — combined",
+      "quirks": "loss_tolerance=at_limit, movement_types=plus_transfers+plus_returns, portal_faults=one_503",
+      "purpose": "Multiple tricky rules exercised together: at-limit loss, transfers, prior-month returns, and portal fault"
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Add a second duty rate tier (e.g., spirits above 40% ABV at a higher rate) requiring the agent to look up ABV from the product catalog",
+      "Add a requirement to also file a supplementary return for late-arriving movements",
+      "Add a third service (Customs Authority) that must receive a copy of the confirmation within a time limit"
+    ],
+    "too_hard": [
+      "Remove portal faults from graded tests (only test calculation correctness)",
+      "Add a loss-at-boundary example to the practice data so the agent can test the ≤ comparison",
+      "Include a worked example in the procedure manual showing the at-limit case explicitly"
+    ]
+  },
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "knobs": [
+    {
+      "knob": "transient service faults",
+      "where": "Portal server reads /app/data/portal_config.json; graded tests write a fault configuration before starting the portal",
+      "fairness": "Procedure manual §5.3 explicitly states the retry policy (wait 2 s, check status, reuse request_id) and warns about duplicate submissions; faults are deterministic per config, not random"
+    },
+    {
+      "knob": "irreversible, audited steps",
+      "where": "The portal records every submit and confirm action in its audit log (/tmp/portal_state.json); duplicate submissions are permanently recorded",
+      "fairness": "Instruction.md states 'Submissions are final and audited; the portal's audit log is part of the compliance record'; the procedure manual §5.3 warns 'Do not submit a new return without first checking the status'"
+    }
+  ]
+}
+```

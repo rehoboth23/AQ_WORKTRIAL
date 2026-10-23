@@ -1,0 +1,15 @@
+batch five-1740, topics:
+  @seeds/pharmacy-prior-auth.yaml
+  @seeds/excise-return.yaml
+  @seeds/checkpoint-race.yaml
+  @seeds/ids-rules.yaml
+  @seeds/address-rules.yaml
+dashboard loop already running; leaving it as it is
+dashboard: /Users/rehobothokorie/Desktop/afterquery_platform_engineer_work_trial/jobs/dashboard.html (reloads itself)
+copy 1: pid 56843
+copy 2: pid 56863
+copy 3: pid 56876
+copy 4: pid 56896
+copy 5: pid 56910
+logs: output/_batches/five-1740/copies/   report: output/_reports/five-1740.md   dashboard: jobs/dashboard.html
+waiting for the batch (Ctrl-C stops only this wait; resume later with: bash scripts/pipeline.sh --resume five-1740)

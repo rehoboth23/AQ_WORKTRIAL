@@ -1,0 +1,426 @@
+```json
+{
+  "walkthrough": [
+    "Agent reads instruction.md — sees that procedure_manual.md is authoritative, quick_reference.md is convenience-only, and the filing portal only validates format.",
+    "Agent reads environment_setup — sees an explicit list of every bug in the starter script (treats all losses as dutiable, includes transfers, filters returns by original_sale_date, single-step submission, no retry, no confirmation archival). This is a complete checklist.",
+    "Agent reads procedure_manual.md — confirms each rule: tolerance ≤0.5%, excess-only above tolerance, transfers excluded, returns regardless of date, two-step submit+confirm, retry with same request_id, confirmation archival format.",
+    "Agent reads the starter script and, guided by the bug list, fixes each defect one by one.",
+    "Agent runs the public test (simple month with sales only) — it passes.",
+    "Agent runs the script against practice data — portal accepts the return. Agent checks duty amounts manually against the manual's rules and they match.",
+    "The only subtle point is the ≤ vs < boundary. The manual says 'not exceeding,' so a careful agent uses ≤. Since practice data has no exact-boundary case, the agent cannot test this, but the manual is clear.",
+    "Result: with the explicit bug list, the agent essentially follows a checklist and passes 4/5 runs. The only possible miss is the boundary case or a subtle retry bug."
+  ],
+  "too_easy_because": [
+    "The environment_setup explicitly lists every bug in the starter script, turning the task into a checklist exercise rather than a genuine audit.",
+    "The procedure manual is short and all rules are in one place with no cross-referencing required — an agent who reads it once gets every rule.",
+    "There is no contradicting source to create confusion; the only document is the procedure manual, so there is no ambiguity about which rules apply.",
+    "All calculation rules are simple multiplications with no unit conversions, category lookups, or conditional rate adjustments — the only non-trivial rule is the tolerance boundary.",
+    "The self_check_gap is narrow: the only gap is the ≤ vs < boundary and the untested retry path. An agent that reads the manual carefully will implement both correctly.",
+    "The quirk_matrix has only 3 dimensions with 27 cells but the practice data and manual together cover almost every rule explicitly, leaving almost nothing for the agent to discover independently."
+  ],
+  "spec": {
+    "name": "bonded-warehouse-excise-filing",
+    "description": "File a bonded warehouse month-end excise duty return by implementing procedure rules for losses, transfers, returns, product duty categories and unit conventions, then submitting through a two-step portal with retry handling.",
+    "difficulty": "hard",
+    "category": "data-processing",
+    "tags": [
+      "excise-duty",
+      "procedure-compliance",
+      "mock-services",
+      "retry-logic",
+      "calculation",
+      "contradicting-sources"
+    ],
+    "expert_time_estimate_min": 60.0,
+    "junior_time_estimate_min": 150.0,
+    "base_image": "python:3.12-slim-bookworm",
+    "scenario": "You are the duty accountant for Bonded Warehouse Alpha. It is month-end and you must file the excise duty return for November 2024. The warehouse runs three local systems: an ERP that records stock movements and product catalog, a stock ledger that holds opening balances and receipt data, and a filing portal that accepts returns. A filing script at /app/file_return.py exists but was written by a predecessor who left before the current procedure manual took effect. The procedure manual at /app/procedure_manual.md is the authoritative reference. A quick reference card at /app/quick_reference.md provides a convenient summary. The filing portal validates format only—it does not check that duty amounts are correct. You must ensure the return is both accepted and accurate.",
+    "environment_setup": "python:3.12-slim-bookworm with Flask and requests installed. Three mock HTTP services (ERP port 8001, Stock Ledger port 8002, Filing Portal port 8003) are provided as Python scripts under /app/services/. Practice data for November 2024 is in /app/data/ (products.json with code, name, category, abv fields; movements_2024-11.json with sale, evaporation_loss, transfer_out and customer_return types; opening_balance_2024-11.json; early_receipts_2024-11.json; portal_config.json with fault_mode='none'). A starter script /app/file_return.py queries the ERP and submits to the portal but was written by a predecessor who left before the current procedure manual took effect; it does not follow all current rules. The procedure manual at /app/procedure_manual.md is the authoritative reference. A quick reference card at /app/quick_reference.md provides a summary. All files under /app/data/ are read-only.",
+    "instruction_summary": "File the November 2024 excise duty return for Bonded Warehouse Alpha. (1) Read /app/procedure_manual.md thoroughly—it is the authoritative reference. In case of conflict with any other document, the procedure manual takes precedence. (2) Fix /app/file_return.py so the duty calculation follows every rule in the manual and the filing completes correctly. (3) Start the three services (python3 /app/services/erp_server.py &, python3 /app/services/stock_ledger_server.py &, python3 /app/services/filing_portal.py &). (4) Run the corrected script for month 2024-11. (5) Confirm the portal accepted the return and the confirmation code is written to /app/confirmation.txt. The filing portal only validates format; it does not verify duty amounts. You must ensure correctness yourself. All files under /app/data/ are read-only—do not modify them. Submissions are final and audited; the portal's audit log is part of the compliance record. A quick reference card at /app/quick_reference.md is provided for convenience, but the procedure manual is authoritative in case of conflict. Do not modify the Python interpreter, its standard library or import hooks, or anything under /tests; such changes fail the task.",
+    "solution_outline": [
+      "Start all three services and wait for them to be ready.",
+      "Query ERP (GET /api/products, GET /api/movements?month=2024-11) and Stock Ledger (GET /api/opening_balance?month=2024-11, GET /api/early_receipts?month=2024-11).",
+      "For each product, compute opening_stock = opening_balance + early_receipts (goods received at the warehouse by the 25th that were in bond at month start).",
+      "For each product, compute tolerance = opening_stock × 0.005. Evaporation losses not exceeding tolerance (≤) are excluded; losses exceeding tolerance are dutiable on the excess only.",
+      "Compute dutiable_quantity_liters = sales + max(0, evaporation_loss - tolerance) - customer_returns_this_month. Exclude transfer_out entirely. Credit returns regardless of original_sale_date.",
+      "Compute dutiable_lpa = dutiable_quantity_liters × (product.abv / 100).",
+      "Look up duty rate by product category from the rate table. If product code starts with 'DEN', apply 50% of the spirits rate.",
+      "Compute duty_amount = round(dutiable_lpa × effective_rate, 2) per line. Total_duty = round(sum of all line duty_amounts, 2). Products with zero dutiable quantity are omitted.",
+      "Generate a UUID request_id for idempotency.",
+      "POST /api/returns/submit; on 503, wait 2 s, GET /api/returns/status?request_id=…; if found, proceed to confirm with returned submission_id; if not found, retry submit with same request_id.",
+      "POST /api/returns/confirm with submission_id.",
+      "Write to /app/confirmation.txt: <confirmation_code> <submission_id> <YYYY-MM-DD>."
+    ],
+    "test_plan": [
+      "test_simple_month: graded data with sales only across categories; checks LPA conversion, per-line rounding, two-step submission, and confirmation archival.",
+      "test_within_tolerance_loss: product with evaporation loss well within 0.5% of opening stock; verifies loss is excluded from dutiable quantity.",
+      "test_at_limit_loss: product with loss exactly at 0.5% of opening stock; verifies loss is excluded (≤ not <).",
+      "test_over_tolerance_loss: product with loss exceeding 0.5%; verifies only the excess is dutiable.",
+      "test_transfers_excluded: graded data includes transfer_out movements; verifies they do not appear in dutiable quantities.",
+      "test_customer_returns_prior_month: return whose original_sale_date is in a prior month; verifies it is credited in the filing month.",
+      "test_lpa_conversion: verifies duty is calculated per liter of pure alcohol (dutiable_quantity × abv/100 × rate), not per liter of product.",
+      "test_denatured_spirits_rate: product with code starting 'DEN' and category='spirits'; verifies 50% of spirits rate is applied, not the full rate.",
+      "test_opening_stock_includes_receipts: product with opening_balance=8000 and early_receipts=2000; verifies tolerance uses 10000 (not 8000) as the base.",
+      "test_portal_503_retry: portal returns 503 on first submit; verifies script retries after checking status with same request_id.",
+      "test_no_duplicate_submissions: portal returns 503 but data was saved; verifies audit log has exactly one submit action.",
+      "test_confirmation_archival: verifies /app/confirmation.txt exists with all three fields in correct format.",
+      "test_all_products_covered: verifies every product with non-zero dutiable quantity has a line in the return.",
+      "test_rounding_order: multiple lines whose per-line rounding affects the total; verifies round-per-line-then-sum-then-round-total.",
+      "test_practice_covers_hidden_cases: reads shipped practice data and verifies each movement type (sale, evaporation_loss, transfer_out, customer_return) appears at least 3 times, at least 3 denatured products exist, and at least 3 products have non-zero early_receipts."
+    ],
+    "anti_cheat": "The graded data uses a different seed from the practice data, so hard-coded amounts fail. The portal state file is recomputed by the test's generator and compared line by line. A hidden test checks the portal's audit log for duplicate submissions. The confirmation file format is parsed and all three fields verified. A hidden test disables any non-standard-library module except requests and flask at runtime, preventing use of pandas, numpy, or other computation shortcuts.",
+    "failure_modes": "An agent that only verifies portal acceptance (format OK) but not duty amounts will pass practice but fail graded tests on incorrect calculations. Using < instead of ≤ for tolerance comparison works on practice data (no boundary loss) but fails the at-limit test. Applying the duty rate per liter instead of per LPA gives wrong amounts that the portal still accepts. Looking up rate by category field alone misses the denatured-spirits code-prefix exception. Using the raw opening_balance instead of opening_stock (balance + early_receipts) gives wrong tolerance values. Filtering returns by original_sale_date drops prior-month credits silently. Skipping the confirm step leaves the return in submitted-but-unconfirmed state. A blind retry with a new request_id after a 503 creates a duplicate in the audit log. Following the quick reference card instead of the procedure manual leads to multiple wrong rules simultaneously.",
+    "shape": "procedure-driven work over local mock services; graded by the portal's final state and audit log",
+    "hidden_evaluation": "Tests generate fresh movement data from sibling seeds in tests/generator.py, covering each quirk-matrix cell (loss within/at-limit/over, sales/transfers/returns, portal none/503/duplicate-risk). Every instance also includes denatured-spirits products and products with early_receipts so that the LPA conversion, denatured-rate, and opening-stock rules are exercised in all scenarios. The portal state file and confirmation file are compared against the generator's expected duty. The portal's audit log is inspected for duplicate submissions and correct request_id reuse. About 30% of cells are easy (sales only, no faults); the rest exercise at least one tricky rule or fault scenario.",
+    "checks": [
+      {
+        "requirement": "Evaporation and storage losses not exceeding 0.5% of the opening stock … are excluded from duty (procedure manual §4.1)",
+        "assumed_instead": "All losses are dutiable, or tolerance threshold is applied with strict less-than",
+        "hidden_test_input": "A product with evaporation loss of 0.3% of opening stock (well within tolerance)",
+        "why_missed": "The portal accepts any amount; no runtime error signals an incorrect duty figure",
+        "caught_by_tests": ["test_within_tolerance_loss"]
+      },
+      {
+        "requirement": "Not exceeding 0.5% includes the exact boundary—losses at exactly 0.5% are excluded (procedure manual §4.1, 'not exceeding')",
+        "assumed_instead": "Strict less-than: losses strictly below 0.5% are excluded, at 0.5% they are over",
+        "hidden_test_input": "A product with opening stock 10000 L and evaporation loss of exactly 50 L (0.500%)",
+        "why_missed": "Practice data never lands on the exact boundary; code using < 0.005 instead of <= 0.005 passes practice but fails graded",
+        "caught_by_tests": ["test_at_limit_loss"]
+      },
+      {
+        "requirement": "Losses exceeding this tolerance are dutiable on the excess portion only (procedure manual §4.2)",
+        "assumed_instead": "The full loss amount is dutiable once the threshold is crossed",
+        "hidden_test_input": "A product with loss of 0.8% of opening stock—only the 0.3% excess should be dutiable",
+        "why_missed": "The portal accepts the over-payment; no error is raised",
+        "caught_by_tests": ["test_over_tolerance_loss"]
+      },
+      {
+        "requirement": "Transfers between bonded sites are not duty events (procedure manual §3.3)",
+        "assumed_instead": "All stock leaving the warehouse is dutiable, including transfers",
+        "hidden_test_input": "Two transfer_out movements to other bonded sites in the graded month",
+        "why_missed": "The starter script treats transfer_out like a sale; the quick reference says transfers are dutiable; portal accepts the inflated return",
+        "caught_by_tests": ["test_transfers_excluded"]
+      },
+      {
+        "requirement": "Customer returns are credited against duty in the month the goods are received back … regardless of the original sale date (procedure manual §3.2)",
+        "assumed_instead": "Returns are only credited if the original sale was in the filing month",
+        "hidden_test_input": "A return received in November for a sale made in September",
+        "why_missed": "The starter script filters by original_sale_date; the quick reference says 'same month only'; the return is silently dropped and the credit lost",
+        "caught_by_tests": ["test_customer_returns_prior_month"]
+      },
+      {
+        "requirement": "Duty is charged per liter of pure alcohol (LPA): dutiable_lpa = dutiable_quantity_liters × (abv / 100) (procedure manual §2.1)",
+        "assumed_instead": "Duty rate is applied directly to the quantity in liters (as the quick reference states '£28.74 per liter')",
+        "hidden_test_input": "A spirits product with 500 L dutiable quantity and 40% ABV; duty should be 200 LPA × rate, not 500 L × rate",
+        "why_missed": "The quick reference card states a flat per-liter rate; the portal accepts the wrong amount; only the manual's §2.1 specifies the LPA convention",
+        "caught_by_tests": ["test_lpa_conversion"]
+      },
+      {
+        "requirement": "Denatured spirits (product codes beginning with 'DEN') are charged at 50% of the standard spirits rate (procedure manual §2.3)",
+        "assumed_instead": "Look up rate by category field only; denatured products have category='spirits', so apply full spirits rate",
+        "hidden_test_input": "Product DEN-001 with category='spirits' and code starting with 'DEN'; full rate is £31.64/LPA but should be £15.82/LPA",
+        "why_missed": "A category-only lookup returns the full spirits rate; §2.3 is an exception to the category rule that is easy to miss when scanning; the portal accepts the over-payment",
+        "caught_by_tests": ["test_denatured_spirits_rate"]
+      },
+      {
+        "requirement": "Opening stock includes goods received at the warehouse by the 25th that were in bond at month start (procedure manual §1 definition, used in §4 tolerance calculation)",
+        "assumed_instead": "Opening stock = the balance at the start of the month (the value returned by /api/opening_balance)",
+        "hidden_test_input": "A product with opening_balance=8000 L and early_receipts=2000 L; tolerance should be 0.005×10000=50 L, not 0.005×8000=40 L",
+        "why_missed": "The endpoint is named 'opening_balance'; the quick reference says opening stock = balance at start; §1's definition is in a different section from §4's usage; only cross-referencing reveals the error",
+        "caught_by_tests": ["test_opening_stock_includes_receipts"]
+      },
+      {
+        "requirement": "The filing portal requires a two-step submission process: submit then confirm (procedure manual §5.1)",
+        "assumed_instead": "A single POST to /api/returns/submit completes the filing (as the quick reference states)",
+        "hidden_test_input": "Portal returns submission_id on submit but the return is only recorded as accepted after confirm",
+        "why_missed": "The submit endpoint returns a success-like response; the quick reference says submit completes filing; without confirm, the return remains in submitted state",
+        "caught_by_tests": ["test_simple_month", "test_confirmation_archival"]
+      },
+      {
+        "requirement": "The request_id is the idempotency key; the same request_id must be used for all retry attempts (procedure manual §5.2)",
+        "assumed_instead": "Generate a new UUID on each attempt, including retries",
+        "hidden_test_input": "Portal faults on first submit; agent retries with a different request_id, creating a duplicate",
+        "why_missed": "No runtime error; both submissions are format-valid; only the audit log reveals the duplicate",
+        "caught_by_tests": ["test_portal_503_retry", "test_no_duplicate_submissions"]
+      },
+      {
+        "requirement": "Before retrying, check the status of the original request by calling GET /api/returns/status?request_id=<request_id> (procedure manual §5.3)",
+        "assumed_instead": "Always retry from step 1 without checking whether the first attempt succeeded",
+        "hidden_test_input": "First submit returns 503 but was actually saved; status endpoint would reveal it",
+        "why_missed": "The procedure manual explicitly states the retry procedure; a blind retry with same request_id is idempotent but does not follow the stated procedure and may proceed without a submission_id",
+        "caught_by_tests": ["test_portal_503_retry"]
+      },
+      {
+        "requirement": "Write confirmation details to /app/confirmation.txt as: <confirmation_code> <submission_id> <YYYY-MM-DD> (procedure manual §5.4)",
+        "assumed_instead": "Write only the confirmation code, or omit the file, or use a different format",
+        "hidden_test_input": "After successful filing, the test reads /app/confirmation.txt and parses all three fields",
+        "why_missed": "The portal does not check this file; omitting it causes no runtime error",
+        "caught_by_tests": ["test_confirmation_archival"]
+      },
+      {
+        "requirement": "Round each line to 2 decimal places, sum all lines, then round the total to 2 decimal places (procedure manual §6.2)",
+        "assumed_instead": "Sum unrounded line amounts then round once, or round before multiplying, or truncate",
+        "hidden_test_input": "Multiple lines whose per-line rounding causes the sum of rounded lines to differ from the rounded sum of unrounded lines",
+        "why_missed": "The difference is typically a penny or two; the portal accepts any total",
+        "caught_by_tests": ["test_rounding_order"]
+      }
+    ],
+    "preserved_behaviours": [
+      {
+        "behaviour": "All files under /app/data/ must remain unchanged (read-only)",
+        "hidden_test_input": "Checksum of every file under /app/data/ before and after the agent's work"
+      },
+      {
+        "behaviour": "Products with zero dutiable quantity have no line in the return",
+        "hidden_test_input": "A product that only had transfers out should not appear as a zero-amount line"
+      }
+    ],
+    "ground_truth": "A seeded Python generator in tests/generator.py creates products (with code, name, category, abv, duty_rate_per_lpa), opening balance, early receipts, and movements for a given month and seed. It also computes the expected duty return by applying every procedure rule exactly (opening stock = balance + early_receipts, tolerance with ≤, excess-only for over-tolerance, transfer exclusion, returns credited in month received, LPA conversion via abv/100, denatured rate at 50% of spirits, per-line rounding then sum then round total). The tests call this generator for each graded scenario, write the data to the service data files, start the services, run the agent's script, then read the portal state file (/tmp/portal_state.json) and /app/confirmation.txt and compare against the generator's expected values. The generator is deterministic: same seed produces identical bytes.",
+    "verifier_packages": [],
+    "verifier_apt": [],
+    "reference_access": "none",
+    "quirk_evidence": [
+      {
+        "quirk": "loss_tolerance: within",
+        "evidence": "/app/data/movements_2024-11.json contains three products with evaporation losses below 0.5% of opening stock; procedure manual §4.1 states these are excluded"
+      },
+      {
+        "quirk": "loss_tolerance: over",
+        "evidence": "/app/data/movements_2024-11.json contains products with loss exceeding 0.5%; procedure manual §4.2 worked example shows excess-only calculation"
+      },
+      {
+        "quirk": "loss_tolerance: at_limit",
+        "evidence": "Procedure manual §4.1 says 'not exceeding 0.5%' — the phrase 'not exceeding' implies the boundary is inclusive; no movement in the practice data lands exactly at the limit"
+      },
+      {
+        "quirk": "movement_types: plus_transfers",
+        "evidence": "/app/data/movements_2024-11.json contains three transfer_out entries; procedure manual §3.3 says they are not duty events"
+      },
+      {
+        "quirk": "movement_types: plus_returns",
+        "evidence": "/app/data/movements_2024-11.json contains three customer_return entries, at least three with original_sale_date in a prior month; procedure manual §3.2 says credited regardless of original sale date"
+      },
+      {
+        "quirk": "portal_faults: one_503",
+        "evidence": "Procedure manual §5.3 describes the retry and status-check procedure; the practice portal_config.json has fault_mode 'none', so no 503 occurs in the practice run"
+      },
+      {
+        "quirk": "portal_faults: 503_then_duplicate_risk",
+        "evidence": "Procedure manual §5.3 warns 'Do not submit a new return without first checking the status. Duplicate submissions are flagged in the audit log.'; practice data has no fault"
+      },
+      {
+        "quirk": "lpa_conversion",
+        "evidence": "/app/data/products.json contains abv field for every product; procedure manual §2.1 states duty is charged per liter of pure alcohol; the quick reference card incorrectly states a per-liter rate"
+      },
+      {
+        "quirk": "denatured_spirits_rate",
+        "evidence": "/app/data/products.json contains three products with codes starting with 'DEN' and category='spirits'; procedure manual §2.3 states these are charged at 50% of the standard spirits rate; the quick reference does not mention this exception"
+      },
+      {
+        "quirk": "opening_stock_includes_receipts",
+        "evidence": "/app/data/early_receipts_2024-11.json contains non-zero receipt quantities for at least three products; procedure manual §1 defines opening stock as balance + early_receipts; the quick reference says opening stock = balance at start"
+      }
+    ],
+    "answer_source": "stated",
+    "inferred_rules": [],
+    "stated_facts": [
+      {
+        "fact": "Loss tolerance boundary is inclusive (≤): 'not exceeding 0.5%' in §4.1 means losses at exactly 0.5% are excluded",
+        "why": "The boundary semantics (≤ vs <) are a matter of legal interpretation stated in the procedure manual; the data cannot demonstrate inclusivity because a boundary loss is a degenerate case"
+      },
+      {
+        "fact": "Duty is charged per liter of pure alcohol (LPA), not per liter of product; the conversion is dutiable_lpa = dutiable_quantity_liters × (abv / 100)",
+        "why": "The LPA convention is a unit definition stated in §2.1; the product catalog has abv fields, but the data alone does not indicate that abv must be used in the duty calculation — the quick reference incorrectly states a per-liter rate"
+      },
+      {
+        "fact": "Denatured spirits (codes beginning with 'DEN') are charged at 50% of the standard spirits rate regardless of their category field",
+        "why": "This is a code-prefix exception stated in §2.3; the data shows denatured products but their category field is 'spirits', so a category-only lookup cannot reveal the exception"
+      },
+      {
+        "fact": "Opening stock = opening_balance + early_receipts (goods received by the 25th in bond at month start), not just the balance at month start",
+        "why": "This definition is in §1, separate from §4 where it is used; the endpoint /api/opening_balance returns only the balance component; the data shows early_receipts but the agent must read §1 to know to combine them"
+      },
+      {
+        "fact": "The filing portal requires a two-step submission (submit then confirm) and the request_id serves as idempotency key",
+        "why": "These are API contract details stated in the procedure manual §5.1-5.2; the data cannot show them because they are procedural requirements, not patterns in the movements"
+      },
+      {
+        "fact": "After a 503, the agent must check the submission status before retrying, using the same request_id",
+        "why": "Retry semantics are a stated procedure rule §5.3; the data cannot show whether a 503 response means the server did or did not process the request"
+      },
+      {
+        "fact": "Confirmation must be archived to /app/confirmation.txt in the format <confirmation_code> <submission_id> <YYYY-MM-DD>",
+        "why": "The archival path and format are stated requirements in §5.4; the data cannot imply them"
+      }
+    ],
+    "reference_binary": "",
+    "sample_file": "",
+    "spec_document": "",
+    "dial": "Number of procedure rules exercised by this month's movements. Fair range 4–8; chosen value 7 (tolerance-within, tolerance-at-limit, tolerance-over, transfer exclusion, prior-month returns, two-step filing, retry/idempotency). Moving toward 4 removes the harder rules (at-limit, retry); moving toward 8 adds more product categories with cross-interactions.",
+    "quirk_matrix": "{\"dimensions\": {\"loss_tolerance\": [\"within\", \"at_limit\", \"over\"], \"movement_types\": [\"sales_only\", \"plus_transfers\", \"plus_returns\"], \"portal_faults\": [\"none\", \"one_503\", \"503_then_duplicate_risk\"]}, \"mix\": \"About 30% easy cells (sales_only + within_tolerance + no_faults). Remaining cells exercise at least one non-trivial rule or fault scenario. Each graded test draws from one cell; across all tests, every level of every dimension is exercised at least once.\"}",
+    "public_tests": "A single visible test in /app/tests_public/test_simple_return.py that runs the filing script for a trivial month (2 products, sales only, no losses/transfers/returns, no portal faults) and checks that the portal has one accepted return with correct total duty. Covers about 30% of the graded surface (basic sales calculation, LPA conversion for standard products, two-step submission, confirmation archival). Ships in the image so the agent can run it during development.",
+    "anti_cheese": "The tests recompute the correct return from the movement data using the generator (no hard-coded expected values). The portal's audit log is inspected for duplicate submissions—simply submitting twice with different request_ids is caught. The confirmation file format is parsed and all three fields verified. A hidden test removes non-standard-library modules (except requests and flask) from sys.modules at runtime and verifies the script does not import disallowed modules.",
+    "graded_instances": "Graded instances use sibling seeds (100–108) in tests/generator.py, each producing a different month of movements covering a specific quirk-matrix cell. Every instance includes denatured-spirits products and products with early_receipts so the LPA conversion, denatured rate, and opening-stock rules are always exercised. The generator is deterministic: running it twice with the same seed produces byte-identical JSON. A different seed changes the product quantities, ABV values, and movement dates. The practice data (seed 42) is never reused in graded tests. Each graded test writes its data to /app/data/, restarts the services, clears the portal state, runs the agent's script, and checks the results.",
+    "self_check_gap": "A solution that produces zero mismatches on the practice month (seed 42) can still fail on graded instances because: (1) the practice month has no evaporation loss exactly at the 0.5% boundary, so < passes practice but fails the at-limit graded test; (2) the practice portal has no faults, so retry and idempotency logic is never exercised at runtime; (3) the practice month's denatured products happen to have the same dutiable LPA as some standard products, so an agent who applies the full rate might not notice the difference if they only check totals; (4) the practice month's early_receipts are small relative to opening_balance (e.g., 200 out of 10000), so the tolerance difference (50 vs 49) might not cause a visible mismatch in the practice total; (5) the quick reference card states multiple wrong rules, and an agent who follows it will produce a practice result that is wrong but might look plausible. The practice data nonetheless determines the right answer because the procedure manual states every rule explicitly—including the inclusive boundary, the LPA convention, the denatured exception, the opening stock definition, the retry procedure, and the regardless-of-original-date rule—and the agent must implement what the manual says, not just what the practice data exercises.",
+    "margins": [
+      {
+        "test": "Duty amount per line matches generator's expected value",
+        "bar": "Within 0.01 of expected (rounding tolerance)",
+        "oracle_value": "Exact match after rounding to 2 decimal places",
+        "baseline": "N/A (absolute check against generator)"
+      },
+      {
+        "test": "Total duty matches generator's expected total",
+        "bar": "Within 0.01 of expected",
+        "oracle_value": "Exact match after rounding to 2 decimal places",
+        "baseline": "N/A"
+      },
+      {
+        "test": "Number of submissions in audit log",
+        "bar": "Exactly 1 submission per month",
+        "oracle_value": "1",
+        "baseline": "N/A"
+      },
+      {
+        "test": "Number of confirmations in audit log",
+        "bar": "Exactly 1 confirmation per month",
+        "oracle_value": "1",
+        "baseline": "N/A"
+      }
+    ],
+    "contract": [
+      "Entry point: /app/file_return.py <YYYY-MM> (month as command-line argument)",
+      "The script queries http://localhost:8001/api/products, http://localhost:8001/api/movements?month=…, http://localhost:8002/api/opening_balance?month=…, http://localhost:8002/api/early_receipts?month=…",
+      "Opening stock per product = opening_balance + early_receipts for that product",
+      "Tolerance per product = opening_stock × 0.005; losses ≤ tolerance are excluded; losses > tolerance: only the excess (loss − tolerance) is dutiable",
+      "Dutiable quantity per product (liters) = sales + max(0, evaporation_loss − tolerance) − customer_returns_this_month",
+      "transfer_out movements are excluded from the dutiable quantity entirely",
+      "customer_return movements are credited in the month received regardless of original_sale_date",
+      "Dutiable LPA per product = dutiable_quantity_liters × (abv / 100)",
+      "Duty rate per product: look up by category from the rate table; if product code starts with 'DEN', use 50% of the spirits rate regardless of category field",
+      "Duty per line = round(dutiable_lpa × effective_rate, 2); products with zero dutiable quantity are omitted",
+      "Total duty = round(sum of all line duty_amounts, 2)",
+      "Submit: POST http://localhost:8003/api/returns/submit with JSON body {request_id, month, declarant, lines, total_duty}; response contains submission_id",
+      "Confirm: POST http://localhost:8003/api/returns/confirm with JSON body {submission_id}; response contains confirmation_code",
+      "On 503 from submit: wait 2 s, GET http://localhost:8003/api/returns/status?request_id=…; if found, proceed to confirm with returned submission_id; if not found, retry submit with same request_id",
+      "The same request_id must be used for all retry attempts of the same submission",
+      "Confirmation archival: write to /app/confirmation.txt a single line: <confirmation_code> <submission_id> <YYYY-MM-DD>",
+      "Exit code 0 on success; non-zero on unrecoverable failure"
+    ],
+    "invisible_traps": [
+      {
+        "trap": "Loss exactly at 0.5% tolerance: using strict less-than (< 0.005) excludes the boundary case that should be included, adding a spurious dutiable quantity. The portal accepts the wrong amount with no error.",
+        "stated_in": "Procedure manual §4.1: 'losses not exceeding 0.5% of the opening stock … are excluded from duty' — 'not exceeding' means ≤"
+      },
+      {
+        "trap": "Over-tolerance loss: dutiably treating the full loss amount instead of only the excess. The portal accepts the over-payment with no error.",
+        "stated_in": "Procedure manual §4.2: 'Losses exceeding this tolerance are dutiable on the excess portion only'"
+      },
+      {
+        "trap": "LPA conversion: applying the duty rate directly to the quantity in liters instead of converting to liters of pure alcohol via abv/100. The portal accepts the wrong amount with no error. The quick reference card reinforces this mistake by stating a per-liter rate.",
+        "stated_in": "Procedure manual §2.1: 'Duty is charged per liter of pure alcohol (LPA). For each product, the dutiable LPA is calculated as: dutiable_lpa = dutiable_quantity_liters × (product_abv / 100)'"
+      },
+      {
+        "trap": "Denatured spirits: looking up the rate by category field only gives the full spirits rate for DEN- products (which have category='spirits'). The 50% exception in §2.3 is based on product code prefix, not category. The portal accepts the over-payment with no error.",
+        "stated_in": "Procedure manual §2.3: 'Denatured spirits (product codes beginning with DEN) are charged at 50% of the standard spirits rate'"
+      },
+      {
+        "trap": "Opening stock: using the raw opening_balance from /api/opening_balance instead of adding early_receipts. This gives a wrong tolerance base. The quick reference says opening stock = balance at start. The portal accepts the wrong tolerance with no error.",
+        "stated_in": "Procedure manual §1: 'Opening stock: the total quantity of each product in bond at the start of the filing month. This includes the balance at month start PLUS goods received at the warehouse by the 25th of the month that were still in bond at month start.'"
+      },
+      {
+        "trap": "After a 503, the submission may have been saved. Retrying with a new request_id creates a duplicate. The portal accepts both submissions; only the audit log reveals the error.",
+        "stated_in": "Procedure manual §5.3: 'Before retrying, check the status of the original request' and §5.2: 'The request_id is the idempotency key'"
+      },
+      {
+        "trap": "Customer returns from a prior month: filtering by original_sale_date drops the credit. The quick reference says 'same month only'. The portal accepts the higher duty with no error.",
+        "stated_in": "Procedure manual §3.2: 'credited against duty in the month the goods are received back … regardless of the original sale date'"
+      },
+      {
+        "trap": "Skipping the confirm step: the submit endpoint returns a submission_id and a 200 response, but the return is not formally accepted until confirmed. The quick reference says submit completes the filing. No runtime error occurs.",
+        "stated_in": "Procedure manual §5.1: 'The filing portal requires a two-step submission process'"
+      }
+    ],
+    "instance_plan": [
+      {
+        "instance": "seed 100 — simple month",
+        "quirks": "loss_tolerance=within, movement_types=sales_only, portal_faults=none",
+        "purpose": "Basic sales across categories, LPA conversion, per-line rounding, two-step submission, confirmation archival"
+      },
+      {
+        "instance": "seed 101 — LPA and denatured focus",
+        "quirks": "loss_tolerance=within, movement_types=sales_only, portal_faults=none",
+        "purpose": "Emphasises LPA conversion with varied ABV and multiple denatured products"
+      },
+      {
+        "instance": "seed 102 — at-limit loss",
+        "quirks": "loss_tolerance=at_limit, movement_types=sales_only, portal_faults=none",
+        "purpose": "Boundary case: loss exactly at 0.5% must be excluded (≤ not <)"
+      },
+      {
+        "instance": "seed 103 — over-tolerance loss",
+        "quirks": "loss_tolerance=over, movement_types=sales_only, portal_faults=none",
+        "purpose": "Only the excess over 0.5% is dutiable"
+      },
+      {
+        "instance": "seed 104 — transfers",
+        "quirks": "loss_tolerance=within, movement_types=plus_transfers, portal_faults=none",
+        "purpose": "Inter-site transfers are excluded from duty"
+      },
+      {
+        "instance": "seed 105 — customer returns from prior month",
+        "quirks": "loss_tolerance=within, movement_types=plus_returns, portal_faults=none",
+        "purpose": "Returns credited in month received regardless of original sale date"
+      },
+      {
+        "instance": "seed 106 — portal 503",
+        "quirks": "loss_tolerance=within, movement_types=sales_only, portal_faults=one_503",
+        "purpose": "Retry after 503 with status check and same request_id"
+      },
+      {
+        "instance": "seed 107 — duplicate risk",
+        "quirks": "loss_tolerance=over, movement_types=plus_transfers, portal_faults=503_then_duplicate_risk",
+        "purpose": "503 where data was saved; must not create duplicate; also tests excess-loss and transfer rules together"
+      },
+      {
+        "instance": "seed 108 — combined",
+        "quirks": "loss_tolerance=at_limit, movement_types=plus_transfers+plus_returns, portal_faults=one_503",
+        "purpose": "Multiple tricky rules exercised together: at-limit loss, transfers, prior-month returns, and portal fault"
+      }
+    ],
+    "adjust_rules": {
+      "too_easy": [
+        "Add a second tolerance tier (e.g., a lower 0.25% tolerance for beer products) requiring the agent to look up product-specific tolerance rates",
+        "Add a requirement to also file a supplementary return for late-arriving movements received after the 25th",
+        "Add a minimum duty threshold per line (lines below £0.50 are rounded up to £0.50)"
+      ],
+      "too_hard": [
+        "Remove portal faults from graded tests (only test calculation correctness)",
+        "Add a near-boundary loss example (0.499%) to the practice data so the agent can visually confirm the ≤ comparison",
+        "Include a worked example in the procedure manual showing the denatured-spirits rate calculation explicitly",
+        "Include a worked example showing opening_stock = balance + early_receipts explicitly"
+      ]
+    },
+    "knobs": [
+      {
+        "knob": "transient service faults",
+        "where": "Portal server reads /app/data/portal_config.json; graded tests write a fault configuration before starting the portal",
+        "fairness": "Procedure manual §5.3 explicitly states the retry policy (wait 2 s, check status, reuse request_id) and warns about duplicate submissions; faults are deterministic per config, not random"
+      },
+      {
+        "knob": "irreversible, audited steps",
+        "where": "The portal records every submit and confirm action in its audit log (/tmp/portal_state.json); duplicate submissions are permanently recorded",
+        "fairness": "Instruction.md states 'Submissions are final and audited; the portal's audit log is part of the compliance record'; the procedure manual §5.3 warns 'Do not submit a new return without first checking the status'"
+      },
+      {
+        "knob": "contradicting sources with stated precedence",
+        "where": "/app/quick_reference.md contains simplified rules that conflict with /app/procedure_manual.md on multiple points (duty per liter vs per LPA, all losses dutiable, transfers dutiable, returns same-month only, single-step filing, opening stock = balance only)",
+        "fairness": "Instruction.md states: 'In case of conflict with any other document, the procedure manual takes precedence'; the quick reference card itself notes it is 'for convenience' and the manual is authoritative"
+      }
+    ],
+    "seed_card": "",
+    "crux": "The agent must discover every discrepancy between the starter script and the procedure manual without an explicit bug list, while resisting the misleading quick reference card that reinforces the script's existing errors. Cross-referencing between manual sections (§1 definition used in §4, §2 rates used in §6, §2.3 exception to §2.2) is essential.",
+    "expected_agent_steps": null
+  }
+}
+```

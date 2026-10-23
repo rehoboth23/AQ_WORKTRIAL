@@ -1,0 +1,368 @@
+```json
+{
+  "name": "address-rewrite-rule-recovery",
+  "description": "Infer the ordered rewrite rules of a retired address-normalisation engine from 900 before/after pairs and implement a Python normaliser reproducing it on unseen addresses.",
+  "difficulty": "hard",
+  "category": "data-processing",
+  "tags": ["rule-induction", "address-normalization", "regex-ordering", "word-boundaries"],
+  "expert_time_estimate_min": 50,
+  "junior_time_estimate_min": 120,
+  "base_image": "python:3.12-slim-bookworm",
+  "scenario": "The company's retired address-normalisation engine applied a fixed sequence of rewrite rules to standardise US postal addresses. The engine no longer runs, but 900 before/after address pairs from its logs survive in /app/data/training_pairs.tsv. You must reverse-engineer the engine's rewrite rules and their execution order from these pairs, then implement a replacement normaliser in /app/normalise.py that reproduces the engine's behaviour on unseen addresses.",
+  "environment_setup": "The Dockerfile builds a python:3.12-slim-bookworm image with WORKDIR /app. It copies: /app/data/training_pairs.tsv (900 before/after address pairs, tab-separated 'before' and 'after' columns, with a header row), /app/data/README.md (output conventions only: uppercase output, single-space word separators, trimmed whitespace, empty/whitespace-only input → empty output; also notes that rare rules exist and that the engine handled US-style addresses), /app/normalise.py (a stub that passes each input line through unchanged, already implementing --input and --output argparse flags plus stdin/stdout fallback), and /app/tests_public/ (several TSV files totalling ~60 pairs covering common single-rule cases only — no ordering interactions, no near-miss patterns, no rare rules). The reference engine (28 ordered rules) and the seeded address generator are kept exclusively in tests/ and are never copied into the image. All address generation is done offline at build time; the generator script is deleted from the image. No network access.",
+  "instruction_summary": "Implement /app/normalise.py to normalise US addresses. Read from --input FILEPATH or stdin; write to --output FILEPATH or stdout; one address per line. Output must be uppercase with single-space word separators, trimmed, and empty lines produce empty output. Training pairs are in /app/data/training_pairs.tsv and public test pairs in /app/tests_public/. Graded on 300 held-out addresses: at least 92% must exactly match the retired engine's output.",
+  "solution_outline": [
+    "Read all 900 training pairs from /app/data/training_pairs.tsv and the README from /app/data/README.md",
+    "Infer preprocessing rules from pairs: uppercase entire string, remove all periods, remove all commas, collapse multiple whitespace to single space, trim",
+    "Infer compound-pattern rules that must fire before general ones: 'P O BOX' → 'PO BOX' (after whitespace collapse), 'COUNTY ROAD' → 'CR' (before ROAD→RD), 'COUNTY HIGHWAY' → 'CH' (before HIGHWAY→HWY; rare, 3 training examples)",
+    "Infer direction normalisation with word boundaries: \\bNORTH\\b→N, \\bSOUTH\\b→S, \\bEAST\\b→E, \\bWEST\\b→W",
+    "Infer place-name abbreviation with word boundaries: \\bFORT\\b→FT, \\bMOUNT\\b→MT, \\bSAINT\\b→ST (each 3 training examples)",
+    "Infer street-type abbreviation with word boundaries: \\bSTREET\\b→ST, \\bAVENUE\\b→AVE, \\bBOULEVARD\\b→BLVD, \\bDRIVE\\b→DR, \\bROAD\\b→RD, \\bLANE\\b→LN, \\bCOURT\\b→CT, \\bHIGHWAY\\b→HWY",
+    "Infer unit designator abbreviation with word boundaries: \\bAPARTMENT\\b→APT, \\bSUITE\\b→STE",
+    "Infer rare unit designator rules: \\bBUILDING\\b→BLDG, \\bFLOOR\\b→FL, \\bBASEMENT\\b→BSMT (each 3 training examples)",
+    "Determine the correct rule ordering from pairs where overlapping rules produce different results (compound patterns before component general rules; preprocessing before substitution)",
+    "Write normalise.py implementing all rules in the inferred order, preserving --input/--output flags and stdin/stdout fallback",
+    "Validate against all 900 training pairs and public test pairs, fixing any mismatches iteratively",
+    "Handle empty and whitespace-only input lines per the README specification"
+  ],
+  "test_plan": [
+    "test_overall_accuracy: generate 300 held-out addresses from seed 99, run normalise.py via /usr/local/bin/python3, compare each output to reference engine output; assert ≥92% exact match",
+    "test_punctuation_removal: held-out addresses with periods (St., Ave., P.O., Apt., Blvd.) and commas; verify no periods or commas appear in output",
+    "test_whitespace_normalization: held-out addresses with double+ spaces and leading/trailing whitespace; verify single-space separated and trimmed",
+    "test_direction_word_boundary: held-out addresses with near-miss direction words (NORTHFIELD, EASTWOOD, WESTMINSTER, SOUTHINGTON); verify they are NOT abbreviated (e.g., NORTHFIELD stays NORTHFIELD)",
+    "test_street_type_word_boundary: held-out addresses with compound street names (BROAD STREET where ROAD is inside BROAD, GROVELAND LANE); verify substrings are NOT replaced",
+    "test_county_road_order: held-out addresses with COUNTY ROAD; verify output has 'CR' not 'COUNTY RD'",
+    "test_county_highway_order: held-out addresses with COUNTY HIGHWAY; verify output has 'CH' not 'COUNTY HWY'",
+    "test_po_box_normalization: held-out addresses with 'P O BOX' spaced variant; verify output has 'PO BOX'",
+    "test_three_rule_chain: held-out addresses combining period removal + whitespace collapse + PO BOX normalisation (e.g., 'P.  O.  Box 321, Suite 100'); verify output is 'PO BOX 321 STE 100'",
+    "test_place_name_abbreviation: held-out addresses with FORT and MOUNT place names; verify FT and MT in output",
+    "test_saint_abbreviation: held-out addresses with SAINT place names; verify ST in output (same string as STREET→ST but from different input word)",
+    "test_rare_unit_designators: held-out addresses with BUILDING, FLOOR, BASEMENT; verify BLDG, FL, BSMT in output",
+    "test_empty_lines: empty string and whitespace-only strings as input lines; verify empty output lines",
+    "test_practice_covers_hidden_cases: read training_pairs.tsv and verify every hidden-case kind has ≥3 training examples (direction near-miss, COUNTY ROAD, COUNTY HIGHWAY, BROAD, FORT, MOUNT, SAINT, BUILDING, FLOOR, BASEMENT, PO BOX, 3-rule chain, empty line stated in README)",
+    "test_determinism: same seed produces identical address lists and engine outputs",
+    "test_different_seeds: different seeds produce different address lists",
+    "test_cli_interface: verify --input and --output flags work with file I/O; verify stdin/stdout fallback works when flags omitted",
+    "test_anti_cheese: generate addresses not present in training and verify normaliser produces correct outputs (not memorised values); also verify normaliser fails if implemented as a lookup table"
+  ],
+  "anti_cheat": "The 300 held-out addresses are generated from seed 99 (with backup seeds 100-101) using the same generator that produced training data from seed 42. The held-out addresses have different street names, house numbers, and feature combinations from any training pair. A lookup table of training pairs fails on held-out addresses because they are novel. No network access means no external lookup. The anti-cheese test runs the normaliser on addresses provably absent from the training set and checks the outputs are correct (computed by the engine), not memorised.",
+  "failure_modes": [
+    "Using str.replace without word boundaries for directions: 'NORTHFIELD AVE' becomes 'NFIELD AVE' instead of staying 'NORTHFIELD AVE'",
+    "Applying ROAD→RD before COUNTY ROAD→CR: 'COUNTY ROAD 5' becomes 'COUNTY RD 5' instead of 'CR 5'",
+    "Similarly for HIGHWAY→HWY before COUNTY HIGHWAY→CH",
+    "Missing period removal as a preprocessing step: 'ST.' stays as 'ST.' instead of 'ST'",
+    "Missing comma removal: '123 MAIN ST, APT 5' keeps the comma",
+    "Not implementing rare rules (BUILDING→BLDG, FLOOR→FL, BASEMENT→BSMT) because they appear only 3 times each in training",
+    "Missing PO BOX pattern normalisation: 'P O BOX' stays as 'P O BOX' instead of becoming 'PO BOX'",
+    "Failing to chain preprocessing correctly: not removing periods before matching P O BOX, so 'P.O. Box' fails to normalise to 'PO BOX'",
+    "Missing SAINT→ST because it produces the same 'ST' output as STREET→ST and seems redundant",
+    "Using str.replace for street types without word boundaries: 'BROAD STREET' becomes 'BRD ST' instead of 'BROAD ST'",
+    "Not handling empty/whitespace-only input lines per the README specification"
+  ],
+  "shape": "rule induction from examples; graded on held-out address pairs",
+  "hidden_evaluation": "300 held-out address pairs generated from seed 99 (and backup seeds 100-101) by the same seeded generator that produced training data from seed 42. The generator creates addresses with the same distribution of features but different specific street names, numbers, and feature combinations. Each address is normalised by the reference engine (28 ordered rules kept in tests/engine.py). The evaluation checks exact string match of each output line against the engine's output. Varied draws from multiple seeds ensure a slightly wrong solution fails on some draws. The agent cannot reproduce this evaluation because the held-out addresses and the engine are not available in the image.",
+  "checks": [
+    {
+      "requirement": "Training pairs show '123 Main St.' → '123 MAIN ST' and 'P.O. Box 456' → 'PO BOX 456': all periods are silently removed before any word-level rule fires",
+      "assumed_instead": "Agent preserves periods in output, only normalising full words like STREET→ST",
+      "hidden_test_input": "Held-out addresses with periods in abbreviations: 'St.', 'Ave.', 'P.O.', 'Apt.', 'Blvd.', 'Ft.', 'Mt.', 'Ste.'",
+      "why_missed": "Agent focuses on word-level replacement rules and overlooks that the engine strips all periods as a preprocessing step before word matching; most training pairs don't have periods, so a normaliser without period removal still matches most pairs",
+      "caught_by_tests": ["test_punctuation_removal"]
+    },
+    {
+      "requirement": "Training pairs show '123, Main St, Apt 5' → '123 MAIN ST APT 5': commas are silently removed",
+      "assumed_instead": "Agent preserves commas in output as address separators",
+      "hidden_test_input": "Held-out addresses with commas between address components",
+      "why_missed": "Many training pairs don't contain commas, so a normaliser without comma removal still matches most pairs; commas look like legitimate address punctuation",
+      "caught_by_tests": ["test_punctuation_removal"]
+    },
+    {
+      "requirement": "Training pairs show '  123   Main   St  ' → '123 MAIN ST': multiple spaces collapse, leading/trailing whitespace is trimmed",
+      "assumed_instead": "Agent preserves original whitespace structure from the input",
+      "hidden_test_input": "Held-out addresses with double spaces and leading/trailing spaces",
+      "why_missed": "Most training pairs have normalised whitespace already; a normaliser that doesn't collapse whitespace still matches most pairs",
+      "caught_by_tests": ["test_whitespace_normalization"]
+    },
+    {
+      "requirement": "Training pairs show '456 NORTHFIELD AVE' → '456 NORTHFIELD AVE' unchanged while '123 NORTH AVE' → '123 N AVE'; similarly EASTWOOD/WESTMINSTER/SOUTHINGTON must stay unchanged",
+      "assumed_instead": "Agent uses str.replace('NORTH','N') without word boundaries, turning 'NORTHFIELD' into 'NFIELD'",
+      "hidden_test_input": "Held-out addresses with near-miss direction-containing street names: NORTHFIELD, EASTWOOD, WESTMINSTER, SOUTHINGTON, NORTHAMPTON",
+      "why_missed": "~90% of training pairs work fine with naive string replacement; only the ~5% near-miss pairs reveal the word-boundary requirement; the agent's self-test against training might not flag these if they are a small fraction",
+      "caught_by_tests": ["test_direction_word_boundary"]
+    },
+    {
+      "requirement": "Training pairs show 'BROAD STREET' → 'BROAD ST' (not 'BRD ST'), meaning ROAD inside BROAD is not matched by ROAD→RD",
+      "assumed_instead": "Agent uses str.replace for street-type abbreviations without word boundaries, turning 'BROAD' into 'BRD'",
+      "hidden_test_input": "Held-out addresses with compound street names: BROAD STREET, GROVELAND LANE, COURTNEY PLACE",
+      "why_missed": "Most addresses don't embed a street-type word inside another word, so naive replacement appears to work on training data; the BROAD pattern appears only a few times",
+      "caught_by_tests": ["test_street_type_word_boundary"]
+    },
+    {
+      "requirement": "Training pairs show 'COUNTY ROAD 5' → 'CR 5' (not 'COUNTY RD 5'): the compound pattern COUNTY ROAD→CR must fire before the general ROAD→RD rule",
+      "assumed_instead": "Agent applies ROAD→RD before checking for COUNTY ROAD, producing 'COUNTY RD 5'",
+      "hidden_test_input": "Held-out addresses with 'COUNTY ROAD' followed by a number and optional direction (e.g., 'COUNTY ROAD 12 NORTH')",
+      "why_missed": "Both outputs ('CR 5' and 'COUNTY RD 5') look like reasonable abbreviations with no runtime error; only the training data disambiguates, and the agent might not test COUNTY ROAD addresses specifically after implementing ROAD→RD",
+      "caught_by_tests": ["test_county_road_order"]
+    },
+    {
+      "requirement": "Training pairs show 'COUNTY HIGHWAY 7' → 'CH 7' (not 'COUNTY HWY 7'): COUNTY HIGHWAY→CH must fire before HIGHWAY→HWY; this rule appears only 3 times in training",
+      "assumed_instead": "Agent applies HIGHWAY→HWY first (producing 'COUNTY HWY 7'), or misses the COUNTY HIGHWAY pattern entirely due to its rarity",
+      "hidden_test_input": "Held-out addresses with 'COUNTY HIGHWAY' and a number",
+      "why_missed": "The rule is rare (3 training examples) and the ordering interaction mirrors COUNTY ROAD; the agent might assume the same fix applies without checking, or might miss the rule entirely",
+      "caught_by_tests": ["test_county_highway_order"]
+    },
+    {
+      "requirement": "Training pairs show 'P O BOX 456' → 'PO BOX 456': the spaced variant is collapsed to the standard form after whitespace normalisation",
+      "assumed_instead": "Agent doesn't implement P O BOX→PO BOX normalisation, assuming PO BOX is already the input format",
+      "hidden_test_input": "Held-out addresses with 'P O BOX' spaced variant (e.g., 'P O BOX 789')",
+      "why_missed": "Most PO BOX examples in training use 'PO BOX' or 'P.O. Box' (which becomes 'P O BOX' after period removal); the specific 'P O BOX' spaced pattern might be missed if the agent doesn't trace the preprocessing chain",
+      "caught_by_tests": ["test_po_box_normalization"]
+    },
+    {
+      "requirement": "Training pairs show 'P.O.  Box 456' → 'PO BOX 456': period removal → whitespace collapse → P O BOX→PO BOX must all fire in sequence",
+      "assumed_instead": "Agent handles each preprocessing step independently but doesn't ensure they chain correctly on one address; e.g., applying P O BOX→PO BOX before whitespace collapse fails on 'P  O  BOX'",
+      "hidden_test_input": "Held-out addresses with 'P.O.  Box' (periods AND extra spaces) requiring all three preprocessing+normalisation steps to fire in order",
+      "why_missed": "Training shows each rule's effect separately; only a few training examples combine all three on one address; the agent's self-test might not exercise this specific combination",
+      "caught_by_tests": ["test_three_rule_chain"]
+    },
+    {
+      "requirement": "Training pairs show 'FORT WORTH' → 'FT WORTH' and 'MOUNT VERNON' → 'MT VERNON' (each 3 training examples); word-boundary matching prevents FORTUNE→FTUNE or MOUNTAIN→MTAIN",
+      "assumed_instead": "Agent doesn't implement FORT→FT or MOUNT→MT, or implements without word boundaries",
+      "hidden_test_input": "Held-out addresses with FORT/MOUNT place names (FORT SMITH, MOUNT PLEASANT) and near-miss words (FORTUNE, MOUNTAIN) that must stay unchanged",
+      "why_missed": "Only 3 training examples each; easy to overlook or dismiss as anomalies; word boundary for place names is analogous to directions but might not be generalised",
+      "caught_by_tests": ["test_place_name_abbreviation"]
+    },
+    {
+      "requirement": "Training pairs show 'SAINT PAUL BLVD' → 'ST PAUL BLVD'; SAINT→ST appears 3 times and produces the same output string 'ST' as STREET→ST but from a different input word",
+      "assumed_instead": "Agent doesn't implement SAINT→ST separately, assuming 'ST' only comes from STREET→ST; or the agent tries to expand 'St.' to 'SAINT' first which is unnecessary after period removal",
+      "hidden_test_input": "Held-out addresses with 'SAINT' as a place name (SAINT LOUIS, SAINT CLOUD, SAINT HELENA)",
+      "why_missed": "Output 'ST' is identical to STREET→ST output, making the rule seem redundant; only 3 training examples; the agent might not trace which input words produce 'ST' in the output",
+      "caught_by_tests": ["test_saint_abbreviation"]
+    },
+    {
+      "requirement": "Training pairs show 'BUILDING 3' → 'BLDG 3', 'FLOOR 2' → 'FL 2', 'BASEMENT APT 5' → 'BSMT APT 5'; each appears exactly 3 times",
+      "assumed_instead": "Agent doesn't implement these rare unit designator abbreviations, treating BUILDING/FLOOR/BASEMENT as regular words that stay unchanged",
+      "hidden_test_input": "Held-out addresses with BUILDING, FLOOR, or BASEMENT as unit descriptors",
+      "why_missed": "Each rule has only 3 training examples; the agent might not notice these patterns among 900 pairs, or might dismiss them as noise",
+      "caught_by_tests": ["test_rare_unit_designators"]
+    },
+    {
+      "requirement": "README states: 'An empty or whitespace-only input line produces an empty output line'",
+      "assumed_instead": "Agent outputs a newline character or preserves whitespace-only content for empty input lines",
+      "hidden_test_input": "Empty string '' and whitespace-only strings '   ', '\\t' as input lines mixed among addresses",
+      "why_missed": "The data cannot show empty-line behaviour (no non-trivial before/after pair); this rule is only in the README, which the agent might skim; empty lines are a corner case unlikely to be exercised in self-testing",
+      "caught_by_tests": ["test_empty_lines"]
+    }
+  ],
+  "preserved_behaviours": [
+    {
+      "behaviour": "The --input and --output CLI flags must work as in the stub: --input reads from a file, --output writes to a file",
+      "hidden_test_input": "Running '/usr/local/bin/python3 /app/normalise.py --input /tmp/test_addrs.txt --output /tmp/test_out.txt' with a file of 20 addresses"
+    },
+    {
+      "behaviour": "Stdin/stdout fallback when flags are omitted must work as in the stub",
+      "hidden_test_input": "Piping 10 addresses via stdin: echo '123 Main St' | /usr/local/bin/python3 /app/normalise.py"
+    }
+  ],
+  "ground_truth": "The tests/ directory contains engine.py (the reference engine with 28 ordered regex/substitution rules applied sequentially) and generator.py (a seeded address generator that creates realistic US addresses with controlled feature distributions). The tests generate held-out addresses with seed 99 (and backup seeds 100, 101), normalise them with the reference engine, and compare each output line to the output of /app/normalise.py run via /usr/local/bin/python3. All expected values are computed by running engine.py on the fly; nothing is hardcoded.",
+  "dial": "Share of 300 held-out pairs reproduced exactly; fair range 85-97%, start 92%. A rule-per-pattern baseline (no ordering, no word boundaries) scores about 75%; the oracle scores 100%.",
+  "quirk_matrix": "Dimensions: rule overlap (none | 2-rule overlap | 3-rule chain) × rare rule frequency in training (10+ | 5 | 3) × near-miss (absent | 1 decoy pattern | decoy plus casing variant). Mix: ~30% easy cells (no overlap, 10+ frequency, no near-miss), ~40% medium (2-rule overlap or 5-frequency or 1 decoy), ~30% hard (3-rule chain or 3-frequency or decoy+casing).",
+  "answer_source": "inferred",
+  "inferred_rules": [
+    {
+      "rule": "Preprocessing: uppercase, remove all periods, remove all commas, collapse whitespace to single spaces, trim",
+      "shown_by": "Many training pairs show case change, period removal (e.g., 'St.'→'ST'), comma removal, and whitespace collapse; 100+ pairs total"
+    },
+    {
+      "rule": "Compound patterns before general: 'COUNTY ROAD'→'CR' (before 'ROAD'→'RD'), 'COUNTY HIGHWAY'→'CH' (before 'HIGHWAY'→'HWY'), 'P O BOX'→'PO BOX' (after whitespace collapse)",
+      "shown_by": "COUNTY ROAD→CR: 10+ training pairs; COUNTY HIGHWAY→CH: 3 pairs; P O BOX→PO BOX: 10+ pairs; each also has counterpart general-rule pairs showing the component words are normalised separately"
+    },
+    {
+      "rule": "Direction normalisation with word boundaries: \\bNORTH\\b→N, \\bSOUTH\\b→S, \\bEAST\\b→E, \\bWEST\\b→W",
+      "shown_by": "NORTH→N: 20+ pairs; near-miss NORTHFIELD unchanged: 10+ pairs; same pattern for SOUTH, EAST, WEST with both matching and near-miss pairs"
+    },
+    {
+      "rule": "Place-name abbreviation with word boundaries: \\bFORT\\b→FT, \\bMOUNT\\b→MT, \\bSAINT\\b→ST",
+      "shown_by": "FORT→FT: 3 pairs; MOUNT→MT: 3 pairs; SAINT→ST: 3 pairs; each with distinct place-name examples"
+    },
+    {
+      "rule": "Street-type abbreviation with word boundaries: \\bSTREET\\b→ST, \\bAVENUE\\b→AVE, \\bBOULEVARD\\b→BLVD, \\bDRIVE\\b→DR, \\bROAD\\b→RD, \\bLANE\\b→LN, \\bCOURT\\b→CT, \\bHIGHWAY\\b→HWY",
+      "shown_by": "Each appears 10+ times in training pairs; BROAD STREET→BROAD ST shows word-boundary requirement for ROAD-type rules (5+ pairs)"
+    },
+    {
+      "rule": "Unit designator abbreviation: \\bAPARTMENT\\b→APT, \\bSUITE\\b→STE",
+      "shown_by": "Each appears 10+ times in training pairs"
+    },
+    {
+      "rule": "Rare unit designator abbreviation: \\bBUILDING\\b→BLDG, \\bFLOOR\\b→FL, \\bBASEMENT\\b→BSMT",
+      "shown_by": "Each appears exactly 3 times in training pairs with clear before/after evidence"
+    }
+  ],
+  "stated_facts": [
+    {
+      "fact": "All output is uppercase",
+      "why": "While the data shows uppercase output, the convention could be misinterpreted as 'preserve input case' without the explicit README statement"
+    },
+    {
+      "fact": "Words are separated by exactly one space in output",
+      "why": "The data shows single-spaced output, but the agent might not infer this is a hard rule vs. an artifact of clean input data"
+    },
+    {
+      "fact": "Leading and trailing whitespace is trimmed from output",
+      "why": "The training data's 'before' column may not reliably contain leading/trailing whitespace, so the data cannot demonstrate trimming"
+    },
+    {
+      "fact": "An empty or whitespace-only input line produces an empty output line",
+      "why": "There are no non-trivial before/after pairs for empty lines; the data cannot show this behaviour"
+    }
+  ],
+  "quirk_evidence": [
+    {
+      "quirk": "Rule overlap (order matters): COUNTY ROAD→CR before ROAD→RD",
+      "evidence": "training_pairs.tsv: 10+ pairs with COUNTY ROAD→CR and 10+ with ROAD→RD; the different outputs for 'COUNTY ROAD 5' (→CR 5) vs 'MAIN ROAD 5' (→MAIN RD 5) show ordering"
+    },
+    {
+      "quirk": "Rule overlap: COUNTY HIGHWAY→CH before HIGHWAY→HWY (rare, 3 training examples)",
+      "evidence": "training_pairs.tsv: 3 pairs with COUNTY HIGHWAY→CH, 10+ pairs with HIGHWAY→HWY"
+    },
+    {
+      "quirk": "3-rule chain: period removal → whitespace collapse → P O BOX→PO BOX",
+      "evidence": "training_pairs.tsv: 5+ pairs with 'P.O. Box'→'PO BOX' showing the full chain; separately many pairs for each individual step"
+    },
+    {
+      "quirk": "Near-miss: direction words inside compound street names must NOT be abbreviated",
+      "evidence": "training_pairs.tsv: 10+ pairs showing NORTHFIELD/EASTWOOD/WESTMINSTER/SOUTHINGTON unchanged alongside 20+ pairs showing standalone NORTH/SOUTH/EAST/WEST abbreviated"
+    },
+    {
+      "quirk": "Near-miss: street-type words inside compound names (ROAD inside BROAD)",
+      "evidence": "training_pairs.tsv: 5+ pairs with BROAD STREET→BROAD ST (not BRD ST)"
+    },
+    {
+      "quirk": "Rare rule frequency (3 examples): FORT→FT, MOUNT→MT, SAINT→ST, BUILDING→BLDG, FLOOR→FL, BASEMENT→BSMT, COUNTY HIGHWAY→CH",
+      "evidence": "training_pairs.tsv: each appears exactly 3 times with clear before/after mapping"
+    }
+  ],
+  "public_tests": "About 30%: 60 visible pairs in /app/tests_public/ covering single-rule cases only — basic street-type abbreviation (STREET→ST, AVENUE→AVE, etc.), simple direction normalisation (NORTH→N on standalone direction words), unit designator normalisation (APARTMENT→APT, SUITE→STE), and simple preprocessing (uppercase, period removal on common abbreviations). No ordering interactions (COUNTY ROAD/HIGHWAY), no near-miss patterns (NORTHFIELD, BROAD), no rare rules (FORT, MOUNT, SAINT, BUILDING, FLOOR, BASEMENT), no 3-rule chains, no empty lines.",
+  "anti_cheese": "Output-identity check on 300 hidden pairs from fresh seeds: the held-out addresses have different street names, house numbers, and feature combinations from any training pair, so a lookup table of training pairs fails. The anti-cheese test generates addresses provably absent from the training set (verified by comparing the generated addresses against the training TSV) and checks that the normaliser produces the engine-correct output. No network access. Forbidden: modifying the Python interpreter, its standard library or import hooks, or anything under /tests.",
+  "graded_instances": "300 held-out pairs generated from seed 99 using the same address generator and engine that produced training pairs from seed 42. Backup seeds 100 and 101 provide varied draws for robustness. The generator is deterministic: same seed → identical address list and engine outputs (verified by test_determinism). Different seed → different address list (verified by test_different_seeds). Each held-out instance exercises a known combination of quirk-matrix cells; ~30% easy (no overlap, common rules only), ~40% medium (2-rule overlap or moderate frequency or one near-miss), ~30% hard (3-rule chain or rare rules or decoy+casing near-miss).",
+  "self_check_gap": "Every rule is visible multiple times in training, so a solution matching all 900 training pairs typically scores ~98-100% on held-out pairs. The gap is 3-rule chains that training shows only pairwise: period removal + PO BOX normalisation appear together in only ~5 training pairs, but 15+ held-out pairs combine them with extra whitespace ('P.  O.  Box'). A solution matching all 900 pairs but applying P O BOX→PO BOX before whitespace collapse would fail on these inputs. The practice set nonetheless determines the correct answer because each individual rule is unambiguous and the chaining order follows from the preprocessing sequence (periods removed before whitespace collapsed before word patterns matched).",
+  "margins": [
+    {
+      "test": "test_overall_accuracy",
+      "bar": "≥92% of 300 held-out pairs (276+ exact matches)",
+      "oracle_value": "100% (300/300)",
+      "baseline": "Not applicable (absolute threshold)"
+    },
+    {
+      "test": "test_county_road_order",
+      "bar": "≥90% of COUNTY ROAD held-out addresses match engine output",
+      "oracle_value": "100%",
+      "baseline": "Not applicable (absolute threshold per category)"
+    },
+    {
+      "test": "test_direction_word_boundary",
+      "bar": "≥90% of near-miss direction addresses stay unchanged",
+      "oracle_value": "100%",
+      "baseline": "Not applicable (absolute threshold per category)"
+    },
+    {
+      "test": "test_three_rule_chain",
+      "bar": "≥80% of 3-rule chain addresses match engine output",
+      "oracle_value": "100%",
+      "baseline": "Not applicable (absolute threshold per category)"
+    }
+  ],
+  "contract": [
+    "Entry point: /app/normalise.py",
+    "CLI flags: --input FILEPATH reads addresses one per line; --output FILEPATH writes normalised addresses one per line; if --input omitted, read from stdin; if --output omitted, write to stdout",
+    "Output format: one normalised address per output line, each terminated by newline",
+    "All alphabetic characters in output are uppercase",
+    "Words in output are separated by exactly one space character",
+    "No leading or trailing whitespace in any output line",
+    "An empty or whitespace-only input line produces an empty output line (empty string, no trailing space)",
+    "Exit code 0 on success; the normaliser must not crash on any valid input",
+    "Grading: at least 92% of 300 held-out address outputs must exactly match the retired engine's output character-by-character"
+  ],
+  "invisible_traps": [
+    {
+      "trap": "Using str.replace for direction words without word boundaries: 'NORTHFIELD AVE' → 'NFIELD AVE' produces a plausible-looking abbreviation with no runtime error; the output still looks like an address",
+      "stated_in": "Training pairs showing '456 NORTHFIELD AVE' → '456 NORTHFIELD AVE' (unchanged) alongside '123 NORTH AVE' → '123 N AVE' demonstrate the word-boundary requirement"
+    },
+    {
+      "trap": "Applying ROAD→RD before COUNTY ROAD→CR: 'COUNTY ROAD 5' → 'COUNTY RD 5' looks like a reasonable abbreviation with no runtime error; the output differs from the engine's 'CR 5' only in how aggressively it abbreviates",
+      "stated_in": "Training pairs showing 'COUNTY ROAD 5' → 'CR 5' demonstrate the compound-pattern-first ordering"
+    },
+    {
+      "trap": "Not removing commas: '123 MAIN ST, APT 5' → '123 MAIN ST, APT 5' preserves the comma; the output looks like a valid address with a comma separator, no error",
+      "stated_in": "Training pairs where commas in the 'before' column disappear in the 'after' column demonstrate comma removal"
+    },
+    {
+      "trap": "Missing SAINT→ST: 'SAINT PAUL BLVD' → 'SAINT PAUL BLVD' looks like an unabbreviated but valid address; no error, but the engine produces 'ST PAUL BLVD'",
+      "stated_in": "3 training pairs showing 'SAINT PAUL' → 'ST PAUL' and similar demonstrate the SAINT→ST rule"
+    }
+  ],
+  "instance_plan": [
+    {
+      "instance": "Simple single-rule addresses (no overlap, 10+ frequency, no near-miss)",
+      "quirks": "none × 10+ × absent",
+      "purpose": "Verify basic abbreviation and preprocessing rules work on common cases"
+    },
+    {
+      "instance": "County road with direction (2-rule overlap, 10+ frequency, no near-miss)",
+      "quirks": "2-rule overlap × 10+ × absent",
+      "purpose": "Test compound-pattern ordering (CR before RD) combined with direction normalisation"
+    },
+    {
+      "instance": "PO BOX with punctuation and extra whitespace (3-rule chain, 5+ frequency, 1 decoy)",
+      "quirks": "3-rule chain × 5+ × 1 decoy pattern",
+      "purpose": "Test that period removal → whitespace collapse → PO BOX normalisation chain correctly; decoy is 'P O BOX' as separate pattern that must also normalise"
+    },
+    {
+      "instance": "Near-miss direction in compound street name (2-rule overlap, 10+ frequency, decoy plus casing variant)",
+      "quirks": "2-rule overlap × 10+ × decoy + casing variant",
+      "purpose": "Test word boundary usage for direction rules when input has mixed case (e.g., 'north FIELD AVE' where 'north' is lowercase direction + 'FIELD' is separate word vs. 'NORTHFIELD' as one word)"
+    },
+    {
+      "instance": "Rare place name with street type (2-rule overlap, 3 frequency, 1 decoy)",
+      "quirks": "2-rule overlap × 3 × 1 decoy pattern",
+      "purpose": "Test rare rule detection (FORT→FT, MOUNT→MT) combined with street-type abbreviation; decoy is 'MOUNTAIN' which must stay unchanged"
+    },
+    {
+      "instance": "All features combined (3-rule chain, 3 frequency, decoy plus casing variant)",
+      "quirks": "3-rule chain × 3 × decoy + casing variant",
+      "purpose": "Test that all rules interact correctly in a complex address combining preprocessing chain, rare rule, and near-miss"
+    }
+  ],
+  "adjust_rules": {
+    "too_easy": [
+      "Increase overall threshold from 92% to 96%",
+      "Add more near-miss street-type compounds (PARKWAY containing PARK, GROVELAND containing LAND near LANE)",
+      "Reduce rare rule frequency to minimum 3 instances each and add 2 more rare rules (e.g., ROOM→RM, REAR→REAR)",
+      "Increase the share of 3-rule chain addresses in held-out from 5% to 12%",
+      "Add a second compound-pattern rule ordering (e.g., STATE ROAD→SR before ROAD→RD)"
+    ],
+    "too_hard": [
+      "Decrease overall threshold from 92% to 88%",
+      "Increase rare rule frequency from 3 to 5 training examples each",
+      "Add a note in README hinting that word boundaries matter for some rules",
+      "Include more 3-rule chain examples in training data (10+ instead of 5+)",
+      "Include a few BROAD STREET examples in the public test pairs"
+    ]
+  },
+  "verifier_packages": [],
+  "verifier_apt": [],
+  "reference_access": "none",
+  "knobs": [
+    {
+      "knob": "Varied hidden draws",
+      "where": "Held-out addresses generated from seeds 99, 100, 101 (same generator, different seeds from training seed 42); the test_overall_accuracy uses seed 99 by default",
+      "fairness": "README states the engine applied a fixed set of rewrite rules; training and held-out come from the same distribution with the same feature mix"
+    },
+    {
+      "knob": "Convention trap",
+      "where": "Output conventions (uppercase, single spaces, trimmed, empty→empty) are stated only in /app/data/README.md; no rewrite rule, abbreviation table, firing condition, or rule order is stated anywhere in the environment",
+      "fairness": "README states only output conventions; all rules and ordering must be inferred from the 900 training pairs; the README explicitly notes that rare rules exist"
+    }
+  ]
+}
+```
