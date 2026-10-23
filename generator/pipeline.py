@@ -142,8 +142,8 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     # One review call: a verdict for every failed run plus the lesson for the next design.
     # Learnable tasks: every failure must be the model's fault to keep the task. Too-hard tasks
     # count their task faults too, so an unfair test is recorded, not mistaken for difficulty.
-    reviewed = (review_band(task_dir, valid, spec, mutation, log.llm) if band.verdict != "error" and spec
-                else {"triage": [], "postmortem": {}})
+    reviewed = (review_band(task_dir, valid, spec, mutation, log.llm) if band.verdict not in ("error", "inconclusive")
+                else {"triage": [], "postmortem": {}})  # also with no spec (--eval-only): the README wants every failure explained
     failures = reviewed["triage"] if band.verdict in ("learnable", "too_hard") else []
     first = {"verdict": band.verdict, "passes": band.passes, "n_valid": band.n_valid}
     adjustments = []
@@ -154,7 +154,9 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     task_faults = [f for f in failures if f["fault"] == "task"]
     unknown = [f for f in failures if f["fault"] not in ("model", "task")]
 
-    if band.verdict != "learnable":
+    if band.verdict in ("error", "inconclusive"):  # infrastructure, not the task (README: timeouts don't count): evaluate again
+        decision, why = "rerun", f"{band.verdict}: " + (band.error or f"{band.n_invalid} invalid runs, {band.n_valid} valid")[:200]
+    elif band.verdict != "learnable":
         decision, why = "rejected", band.verdict + (
             f" (stopped early: {band.passes} passes, no failure yet; EARLY_STOP_PASSES={EARLY_STOP_PASSES})"
             if band.early_stop else "")
@@ -196,7 +198,7 @@ def evaluate_task(task_dir: str, log: RunLog, arm: str = "treatment", spec: dict
     else:
         record["task_dir"] = task_dir
 
-    if band.verdict != "error" and arm != "control":
+    if decision != "rerun" and arm != "control":
         note = ("UNFAIR, rejected: " + task_faults[0]["category"]) if task_faults else (
             failures[0]["category"] if failures else "")
         if band.median_steps:  # concrete evidence for the next design, not just "5/5"
@@ -274,6 +276,7 @@ def funnel_flags(state: dict) -> dict:
         "kept": rec.get("decision") == "kept",
         "confirmed": bool(rec.get("confirmed")),
         "review": rec.get("decision") == "review",
+        "rerun": rec.get("decision") == "rerun",
     }
 
 
@@ -441,7 +444,11 @@ def process_topic(topic: str, ledger: Ledger, log: RunLog, control: bool) -> dic
     finally:
         _release_band_slot(ledger, topic, slot)
     record = {**rec, "topic": topic, "stage": "eval", "gen_logs_dir": gen["logs_dir"]}
-    st = ledger.set(topic, "done", why=record["decision"], record=record, harbor_pid=None)
+    if rec["decision"] == "rerun":  # no verdict (harbor error, timeouts exhausted): a fresh run_id, so --resume evaluates again
+        new_id = f"{os.path.basename(gen['task_dir'])}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(2).hex()}"
+        st = ledger.set(topic, "evaluating", why=f"rerun after {rec['verdict']}", run_id=new_id, record=record, harbor_pid=None)
+    else:
+        st = ledger.set(topic, "done", why=record["decision"], record=record, harbor_pid=None)
     write_text_atomic(os.path.join(record["task_dir"], "VERDICT.md"), verdict_md(st))
     return record
 
@@ -528,7 +535,7 @@ def write_report(batch_id: str, ledger: Ledger | None = None, records: list[dict
                                   + sum(c.get("cost_usd") or 0.0 for c in rec.get("confirmations") or []),
                      "gen_sec": _span_seconds(_events(gen.get("logs_dir") or s.get("logs_dir"))),
                      "eval_sec": band.get("seconds") or 0.0})
-    triage_cost = llm_spend(os.path.join(os.path.abspath(LOGS_DIR), batch_id), "triage")["cost_usd"]
+    triage_cost = llm_spend(os.path.join(os.path.abspath(LOGS_DIR), batch_id), ("band-review", "triage", "adjust"))["cost_usd"]
     n = len(rows)
     count = lambda k: sum(r["flags"][k] for r in rows)
     pct = lambda a, b: f"{100 * a / b:.0f}%" if b else "-"

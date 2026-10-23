@@ -186,7 +186,7 @@ def _restates(rule_words: set[str], text_words: set[str]) -> bool:
     return len(rule_words) >= 3 and len(rule_words & text_words) >= max(3, 0.6 * len(rule_words))
 
 
-def stated_rule_leaks(files: dict[str, str], spec: dict | None) -> list[str]:
+def stated_rule_leaks(files: dict[str, str], spec: dict | None, kinds=("number", "restate")) -> list[str]:
     """On an inferred task, instruction.md or a document must not hand over a rule the agent has to
     infer. Four signs, each checked against the design's `inferred_rules`: a rule's value (a
     threshold, a port) next to its words; a sentence that restates most of a rule's words; an
@@ -215,15 +215,15 @@ def stated_rule_leaks(files: dict[str, str], spec: dict | None) -> list[str]:
             for rule, rw, rt in zip(rules, rwords, rtokens):
                 nums = {n for n in _NUMBER.findall(rule) if (len(n.lstrip("-").replace(".", "")) >= 2 or "." in n)} - allowed
                 found = nums & set(_NUMBER.findall(sent))
-                if found and len(rw & sw) >= 2:
+                if found and len(rw & sw) >= 2 and "number" in kinds:
                     why = f"gives {sorted(found)[0]} from rule {rule[:50]!r}"
-                elif _restates(rw, sw):
+                elif "restate" in kinds and _restates(rw, sw):
                     why = f"restates rule {rule[:50]!r}"
-                elif _MAPPING.search(sent) and len(rt & st) >= 2 and len(rt & st) >= 0.5 * len(st):
+                elif "mapping" in kinds and _MAPPING.search(sent) and len(rt & st) >= 2 and len(rt & st) >= 0.5 * len(st):
                     why = f"maps tokens of rule {rule[:50]!r}"
                 if why:
                     break
-            if not why and _ORDER.search(sent) and len(union & sw) >= 2:
+            if not why and "order" in kinds and _ORDER.search(sent) and len(union & sw) >= 2:
                 why = "states an order between inferred rules"
             if why:
                 hits.append(f"{path}: {sent.strip()[:100]!r} {why}")
@@ -555,7 +555,8 @@ def reference_copies(files: dict[str, str]) -> list[str]:
 
 
 _ORACLE_CMD = re.compile(r"""(?:add_parser|add_command|subparsers?\.add_parser|choices\s*=\s*\[[^\]]*|command\s*==|cmd\s*==|args?\.command\s*==|case\s+)\s*['"]?(verify|check|validate|compare|diff|selftest|self-test|lint)['"]?\b""", re.I)
-_ORACLE_FILE = re.compile(r"(^|/)(verify|check|validate|compare|selftest|self_test|expected[_-]?output|reference)[\w.-]*$", re.I)
+# Whole words only: checkpoint.go, checksum.py and checker.py are ordinary names, check.py and verify_all.py are not.
+_ORACLE_FILE = re.compile(r"(^|/)(verify|check|validate|compare|selftest|self_test|expected[_-]?output|reference)(?![a-z])[\w.-]*$", re.I)
 _ORACLE_INSTR = re.compile(r"\b(run|use|until)\b[^.\n]{0,80}\b(verify|check|validate|compare|diff|self-?test)\b[^.\n]{0,60}\b(ok|pass|clean|match|no (mismatch|discrepanc|error))", re.I)
 
 
@@ -691,6 +692,11 @@ def files_warnings(files: dict[str, str], spec: dict | None = None) -> list[str]
     keys = answer_key_leaks(files, spec, set(docs))
     if keys:
         hints.append("comments in environment/ may state a rule or label code: " + "; ".join(keys[:5]))
+    # Table rows and before/after sentences that share words with the inferred rules: as blockers
+    # they fired on interface text ("after the run, the tool prints a summary"), so the review decides.
+    rows = stated_rule_leaks(files, spec, kinds=("mapping", "order"))
+    if rows:
+        hints.append("a table row or an ordering sentence may hand over an inferred rule: " + "; ".join(rows[:4]))
     ptr = pointer_leaks(instruction, allowed)
     if ptr:
         hints.append(f"instruction.md may point at where an answer is written: {', '.join(ptr)}")
