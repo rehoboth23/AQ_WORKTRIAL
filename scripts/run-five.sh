@@ -48,7 +48,7 @@ bash scripts/run-batch.sh "$TOPICS" "$BATCH" "$COPIES"
 
 # Wait for every copy of this batch to exit (they share the ledger; Ctrl-C here leaves them running).
 echo "waiting for the batch (Ctrl-C stops only this wait; resume later with: bash scripts/pipeline.sh --resume $BATCH)"
-while pgrep -f "pipeline.py --topics .* --batch-id $BATCH" >/dev/null 2>&1; do
+while pgrep -f "pipeline.py (--topics .* --batch-id|--resume) $BATCH( |$)" >/dev/null 2>&1; do  # the originals and any --resume copy
     sleep 30
 done
 bash scripts/pipeline.sh --report "$BATCH" >/dev/null 2>&1 || true

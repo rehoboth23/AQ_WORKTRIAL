@@ -14,7 +14,7 @@ import re
 import subprocess
 import time
 
-from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, N_RUNS, load_difficulty
+from config import BAND_HIGH, BAND_LOW, CALIBRATION_FILE, JOBS_DIR, LOGS_DIR, N_RUNS, OUTPUT_DIR, load_difficulty
 
 OUT = os.path.join(JOBS_DIR, "dashboard.html")
 # Optional focus: show only processes, runs, jobs and containers whose name or path contains
@@ -96,17 +96,36 @@ def _arg(args: str, flag: str) -> str:
     return parts[parts.index(flag) + 1] if flag in parts and parts.index(flag) + 1 < len(parts) else ""
 
 
-def describe(what: str, args: str, rs: list[dict]) -> str:
+def _pid_topic(batch: str, pid: str) -> str:
+    """The topic a batch copy holds: the last topic this pid moved or resumed in the batch's audit
+    log. (Every copy has the same command line, so the topics file cannot tell them apart.)"""
+    topic = ""
+    try:
+        with open(os.path.join(OUTPUT_DIR, "_batches", batch, "audit.jsonl"), encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if str(e.get("pid")) == str(pid) and e.get("event") in ("stage", "resume") and e.get("topic"):
+                    topic = e["topic"]
+    except OSError:
+        pass
+    return topic
+
+
+def describe(what: str, args: str, rs: list[dict], pid: str = "") -> str:
     """What a process is working on: topic/task and stage for a pipeline, task and check type
     for a harbor run."""
     if what.startswith("pipeline"):
-        topic = ""
-        tfile = _arg(args, "--topics")
-        if tfile and os.path.exists(tfile):
-            with open(tfile, encoding="utf-8") as f:
-                topic = f.readline().strip()
+        batch = _arg(args, "--batch-id") or _arg(args, "--resume")
+        topic = _pid_topic(batch, pid) if batch else ""
         if not topic:
-            return _arg(args, "--batch-id") or " ".join(args.split()[2:])[:80]
+            tfile = _arg(args, "--topics")
+            if tfile and os.path.exists(tfile) and sum(1 for l in open(tfile, encoding="utf-8") if l.strip()) == 1:
+                topic = open(tfile, encoding="utf-8").readline().strip()  # a one-topic run: no ambiguity
+        if not topic:
+            return (f"batch {batch} (topic not claimed yet)" if batch else " ".join(args.split()[2:])[:80])
         run = next((r for r in rs if r["topic"] == topic), None)
         name, stage = "", ""
         if run:
@@ -461,7 +480,7 @@ def render() -> str:
     sections = [
         f'<h2>Now {"<span class=chip run>busy</span>" if busy else "<span class=chip ok>idle</span>"}</h2>',
         table(["pid", "running for", "what", "working on"],
-              [(e(p), e(t), e(w), e(describe(w, a, rs))) for p, t, w, a in procs]),
+              [(e(p), e(t), e(w), e(describe(w, a, rs, p))) for p, t, w, a in procs]),
         "<h2>GLM activity</h2>",
         "<p class=muted>glm-5.1 (task author) per run. [inferred] = run started before live call logging; "
         "stage implied by its last finished step.</p>",
